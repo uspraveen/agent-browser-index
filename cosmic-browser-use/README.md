@@ -272,7 +272,7 @@ python main.py --help
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--goal` | str | required | Task objective. |
-| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`. |
+| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`, `fireworks_kimi`. |
 | `--url` | str | `None` | Optional starting URL. |
 | `--steps` | int | `1000` | Max steps. |
 | `--headless` | bool flag | `False` | Run browser headless. |
@@ -287,12 +287,25 @@ python main.py --help
 | `--ask-user-timeout` | int | `120` | Seconds to wait for `AskUser`. |
 | `--large-notes-path` | str | `<run_dir>/large_notes.jsonl` | External large-notes storage path. |
 
+### Fireworks Kimi (K2.6)
+
+Uses the OpenAI Python SDK against Fireworks’ OpenAI-compatible base URL (same pattern as Cosmic-OS Backend).
+
+- **CLI:** `--provider fireworks_kimi`
+- **Auth:** `FIREWORKS_API_KEY` (or `--api-key`, or `SLIDE_AGENT_FIREWORKS_API_KEY`)
+- **Base URL:** `FIREWORKS_BASE_URL` (default `https://api.fireworks.ai/inference/v1`)
+- **Model:** `FIREWORKS_KIMI_MODEL` (default `accounts/fireworks/models/kimi-k2p6`); override fast/slow with `FIREWORKS_FAST_MODEL` / `FIREWORKS_SLOW_MODEL` or `--fast-model` / `--slow-model`
+- **Optional:** `FIREWORKS_REASONING_EFFORT` (e.g. `low` / `medium`); for model IDs containing `thinking`, effort defaults to `medium` if unset
+- **Token limits:** `FIREWORKS_FAST_MAX_TOKENS` (default `8192`), `FIREWORKS_SLOW_MAX_TOKENS` (default `32768`)
+- **Temperature:** `FIREWORKS_TEMPERATURE` (default `0.6`) unless `--temperature` is set
+
 ## SDK Entry Point
 
 `run_task(...)` in `main.py` is usable as a programmatic entry point.
 
 ```python
 import asyncio
+import os
 from main import run_task
 from cosmic_types import LLMConfig, LLMProvider, LLMTier
 
@@ -309,6 +322,17 @@ async def run():
         api_key="YOUR_KEY",
         tier=LLMTier.SLOW,
     )
+
+    # Fireworks Kimi (OpenAI-compatible endpoint):
+    # fast_fw = LLMConfig(
+    #     provider=LLMProvider.FIREWORKS_KIMI,
+    #     model_id="accounts/fireworks/models/kimi-k2p6",
+    #     api_key=os.environ["FIREWORKS_API_KEY"],
+    #     api_base="https://api.fireworks.ai/inference/v1",
+    #     tier=LLMTier.FAST,
+    #     max_tokens=8192,
+    #     temperature=0.6,
+    # )
 
     result = await run_task(
         goal="Collect and summarize latest pricing from target page",

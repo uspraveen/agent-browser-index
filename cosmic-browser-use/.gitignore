@@ -23,6 +23,11 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Runtime/debug artifacts
+runs/
+data/smoke_supermemory/
+data/cosmic_memory_indexer_*/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

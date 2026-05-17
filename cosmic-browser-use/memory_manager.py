@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -19,6 +20,7 @@ from collections import deque
 from openai import OpenAI
 
 from cosmic_types import Step, BrowserState, ActionResult, TaskConfig
+from cosmic_memory.coordinates import build_visual_index
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -29,7 +31,16 @@ class MemoryManager:
     """
     
     
-    def __init__(self, config: TaskConfig, working_dir: Path, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        config: TaskConfig,
+        working_dir: Path,
+        api_key: Optional[str] = None,
+        summary_provider: Optional[str] = None,
+        summary_model: Optional[str] = None,
+        summary_api_key: Optional[str] = None,
+        summary_api_base: Optional[str] = None,
+    ):
         self.config = config
         self.working_dir = working_dir
         self.screenshots_dir = working_dir / "screenshots"
@@ -48,8 +59,32 @@ class MemoryManager:
         self._compression_task: Optional[asyncio.Task] = None
         self.total_tokens_saved: int = 0
         
-        # Initialize OpenAI for compression
-        self.client = OpenAI(api_key=api_key) if api_key else None
+        # Initialize compression LLM. It can use OpenAI Responses or Fireworks
+        # Kimi through the OpenAI-compatible chat-completions API.
+        self.summary_provider = (summary_provider or os.getenv("SUMMARY_LLM_PROVIDER") or "openai").strip().lower()
+        self.summary_model = (
+            summary_model
+            or os.getenv("SUMMARY_LLM_MODEL")
+            or (
+                os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6")
+                if self.summary_provider in {"fireworks", "fireworks_kimi", "kimi"}
+                else "gpt-4o-mini"
+            )
+        ).strip().strip('"')
+        self.summary_temperature = float(os.getenv("SUMMARY_LLM_TEMPERATURE", "0.1"))
+        self.summary_max_tokens = int(os.getenv("SUMMARY_LLM_MAX_TOKENS", "900"))
+
+        if self.summary_provider in {"fireworks", "fireworks_kimi", "kimi"}:
+            self.summary_provider = "fireworks_kimi"
+            key = summary_api_key or os.getenv("FIREWORKS_API_KEY") or os.getenv("SLIDE_AGENT_FIREWORKS_API_KEY")
+            base_url = (summary_api_base or os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1").rstrip("/")
+            self.client = OpenAI(api_key=key, base_url=base_url) if key else None
+            if not summary_model and not os.getenv("SUMMARY_LLM_MODEL"):
+                self.summary_model = os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6").strip().strip('"')
+        else:
+            self.summary_provider = "openai"
+            key = summary_api_key or api_key or os.getenv("OPENAI_API_KEY")
+            self.client = OpenAI(api_key=key) if key else None
         
     def add_step(
         self, 
@@ -59,8 +94,24 @@ class MemoryManager:
         action: Optional[ActionResult] = None,
         summary: str = "",
         thinking: Optional[str] = None,
+        before_browser_state: Optional[BrowserState] = None,
+        after_browser_state: Optional[BrowserState] = None,
+        after_screenshot_path: Optional[str] = None,
+        after_screenshot_hash: Optional[str] = None,
+        tool_call: Optional[Dict[str, Any]] = None,
+        llm_response: Optional[Dict[str, Any]] = None,
+        visual_index: Optional[Dict[str, Any]] = None,
     ) -> Step:
         step_number = len(self.steps) + 1
+        if visual_index is None and action and before_browser_state:
+            visual_index = build_visual_index(
+                action=action,
+                tool_call=tool_call,
+                before_state=before_browser_state,
+                screenshot_path=screenshot_path,
+            )
+            if visual_index is not None:
+                action.metadata.setdefault("visual_index", visual_index)
         
         step = Step(
             step_number=step_number,
@@ -71,6 +122,13 @@ class MemoryManager:
             action=action,
             summary=summary,
             thinking=thinking,
+            before_browser_state=before_browser_state,
+            after_browser_state=after_browser_state,
+            after_screenshot_path=after_screenshot_path,
+            after_screenshot_hash=after_screenshot_hash,
+            tool_call=tool_call,
+            llm_response=llm_response,
+            visual_index=visual_index,
         )
         
         self.steps.append(step)
@@ -113,7 +171,7 @@ class MemoryManager:
         self.cumulative_summary += f" Step {step.step_number}: {summary_text}."
     
     async def _compress_summary(self) -> None:
-        """Compress older steps in the summary using GPT-5.2."""
+        """Compress older steps in the summary using the configured summary LLM."""
         if len(self.steps) < 10 or not self.client:
            return
         
@@ -129,7 +187,24 @@ class MemoryManager:
         for s in steps_to_summarize:
             action_desc = s.action.description if s.action else "No Action"
             status = "FAILED" if s.action and not s.action.success else "SUCCESS"
-            history_text += f"Step {s.step_number} ({status}): {action_desc}\n"
+            action_type = s.action.action_type.value if s.action else "None"
+            verification = s.action.verification_status.value if s.action and s.action.verification_status else "unknown"
+            progress = s.action.estimated_completion if s.action else 0.0
+            params = {}
+            if s.tool_call:
+                params = s.tool_call.get("parameters", {}) or {}
+            params_text = json.dumps(params, ensure_ascii=False, separators=(",", ":"))
+            if len(params_text) > 300:
+                params_text = params_text[:297] + "..."
+            url = s.browser_state.url if s.browser_state else ""
+            title = s.browser_state.title if s.browser_state else ""
+            scroll_y = s.browser_state.scroll_y if s.browser_state else None
+            err = f" error={s.action.error}" if s.action and s.action.error else ""
+            history_text += (
+                f"Step {s.step_number} ({status}): action={action_type}; desc={action_desc}; "
+                f"params={params_text}; verification={verification}; progress={progress:.2f}; "
+                f"url={url}; title={title}; scroll_y={scroll_y}{err}\n"
+            )
             if s.browser_state.notes:
                 history_text += f"  Notes: {s.browser_state.notes[-1]}\n"
 
@@ -148,22 +223,20 @@ class MemoryManager:
         1. Keep the summary under 550 words.
         2. EXPLICITLY retain any SAVED NOTES (e.g., "Step 5: Saved note '...'").
         3. Mention outcome of KEY GOALS (e.g., "Logged in successfully").
-        4. Drop repetitive navigation details (e.g., "scrolled down 5 times" -> "browsed page").
+        4. Condense repetitive details, but PRESERVE the exact repeated action pattern when it indicates a loop or wasted motion.
         5. PRESERVE FAILURES: You MUST retain the specific details of any action that failed (e.g., "Tried simple-login-page.com but failed"). This is critical so the agent does not repeat mistakes.
+        6. PRESERVE WRONG-PAGE / WRONG-TARGET EVENTS: if the agent clicked the wrong result, recommendation, menu, overlay, link, or toolbar control, say exactly what happened.
+        7. PRESERVE VISIBLE ANSWER STATE: if requested information became visible, include what was visible and that the next action should save it instead of further clicking/scrolling/waiting.
+        8. PRESERVE URL/TITLE transitions when they show drift to the wrong page or return to the right page.
         """
         
         try:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None, 
-                lambda: self.client.responses.create(
-                    model=os.getenv("SUMMARY_LLM_MODEL", "gpt-5.2-mini"),
-                    input=prompt,
-                    reasoning={"effort": "medium"},
-                    text={"verbosity": "low"}
-                )
+                lambda: self._call_summary_model(prompt)
             )
-            new_summary = response.output_text
+            new_summary = response
             
             # Update stats
             saved = len(history_text)
@@ -172,11 +245,53 @@ class MemoryManager:
             self.last_summarized_idx += len(steps_to_summarize)
             
             print(f"\n🧠 [Context Compression] Summary Updated (Saved ~{saved} chars)")
+            print(f"   Summary model: {self.summary_provider}:{self.summary_model}")
             print(f"   Consumed Range: Steps {steps_to_summarize[0].step_number}-{steps_to_summarize[-1].step_number}")
             print(f"   New Summary: {new_summary[:100]}...")
             
         except Exception as e:
             print(f"Compression failed: {e}")
+
+    def _call_summary_model(self, prompt: str) -> str:
+        if not self.client:
+            raise RuntimeError(f"No summary LLM client configured for provider={self.summary_provider}")
+
+        if self.summary_provider == "fireworks_kimi":
+            response = self.client.chat.completions.create(
+                model=self.summary_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You compress browser-agent history. Return only the updated summary, no markdown preamble.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=self.summary_temperature,
+                max_tokens=self.summary_max_tokens,
+                extra_body={"top_k": 40},
+            )
+            content = response.choices[0].message.content or ""
+            return self._strip_summary_thinking(content).strip()
+
+        request_kwargs = {
+            "model": self.summary_model,
+            "input": prompt,
+        }
+        if self.summary_model.startswith("gpt-5"):
+            request_kwargs["reasoning"] = {"effort": "medium"}
+            request_kwargs["text"] = {"verbosity": "low"}
+        response = self.client.responses.create(**request_kwargs)
+        return str(response.output_text or "").strip()
+
+    @staticmethod
+    def _strip_summary_thinking(text: str) -> str:
+        if not text:
+            return ""
+        stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+        if "```" in stripped:
+            stripped = re.sub(r"```(?:[a-zA-Z0-9_-]+)?\s*", "", stripped)
+            stripped = re.sub(r"\s*```\s*", "", stripped).strip()
+        return stripped
             
     def read_history(self, start_step: int, end_step: int) -> str:
         """Retrieve detailed history for a range of steps."""
@@ -216,12 +331,14 @@ class MemoryManager:
             "current_step": len(self.steps) + 1,
             "max_steps": self.config.max_steps,
             "cumulative_summary": self.cumulative_summary,
+            "enable_dom_fallback": self.config.enable_dom_fallback,
         }
         
         if self.steps:
             last_step = self.steps[-1]
             context["browser_state"] = last_step.browser_state.to_dict()
             context["last_action"] = last_step.action.to_dict() if last_step.action else None
+            context["recent_steps"] = self._recent_steps_for_prompt(limit=8)
             
             if include_screenshots:
                 context["screenshots"] = {
@@ -231,6 +348,7 @@ class MemoryManager:
         else:
             context["browser_state"] = None
             context["last_action"] = None
+            context["recent_steps"] = []
             if include_screenshots:
                 context["screenshots"] = {"current": current_screenshot_path}
         
@@ -249,6 +367,30 @@ class MemoryManager:
             context["estimated_progress"] = 0.0
         
         return context
+
+    def _recent_steps_for_prompt(self, limit: int = 8) -> List[Dict[str, Any]]:
+        """Compact, uncompressed recent action trace for loop-aware planning."""
+        rows: List[Dict[str, Any]] = []
+        for step in self.steps[-max(1, limit):]:
+            action = step.action
+            state = step.browser_state
+            tool = step.tool_call or {}
+            rows.append(
+                {
+                    "step": step.step_number,
+                    "url": state.url if state else None,
+                    "title": state.title if state else None,
+                    "scroll_y": state.scroll_y if state else None,
+                    "action_type": action.action_type.value if action else None,
+                    "description": action.description if action else None,
+                    "success": action.success if action else None,
+                    "error": action.error if action else None,
+                    "verification_status": action.verification_status.value if action and action.verification_status else None,
+                    "estimated_completion": action.estimated_completion if action else None,
+                    "requested_parameters": tool.get("parameters", {}),
+                }
+            )
+        return rows
     
     def detect_loop(self) -> bool:
         """Detect if agent is stuck in a loop.
@@ -341,4 +483,6 @@ class MemoryManager:
             "summary_length": len(self.cumulative_summary),
             "tokens_saved_via_compression": self.total_tokens_saved,
             "recent_action_window": len(self.recent_action_hashes),
+            "summary_provider": self.summary_provider,
+            "summary_model": self.summary_model,
         }

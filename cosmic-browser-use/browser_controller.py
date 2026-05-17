@@ -30,6 +30,7 @@ except Exception:
     tiktoken = None
 
 from cosmic_types import ActionType, ActionResult, BrowserState, TabInfo, ToolCall, VerificationStatus, TaskConfig
+from cosmic_memory.coordinates import replay_coordinates
 import os
 from dotenv import load_dotenv
 
@@ -146,11 +147,22 @@ class BrowserController:
         # Dialog handling queue — auto-accepted dialogs are recorded here
         self._pending_dialogs: List[Dict[str, str]] = []
 
-        self.http_client = httpx.AsyncClient(timeout=30.0)
+        self.mimo_max_tokens = max(8, int(os.getenv("MIMO_MAX_TOKENS", "128")))
+        self.mimo_temperature = float(os.getenv("MIMO_TEMPERATURE", "0"))
+        self.mimo_timeout = float(os.getenv("MIMO_TIMEOUT", "12"))
+        self.mimo_http2 = os.getenv("MIMO_HTTP2", "false").lower() in {"1", "true", "yes", "y"}
+        self.type_delay_ms = max(0, int(os.getenv("BROWSER_TYPE_DELAY_MS", "10")))
+        try:
+            self.http_client = httpx.AsyncClient(timeout=self.mimo_timeout, http2=self.mimo_http2)
+        except ImportError:
+            print("⚠️  MIMO_HTTP2 requested but optional HTTP/2 support is unavailable; falling back to HTTP/1.1 keep-alive.")
+            self.mimo_http2 = False
+            self.http_client = httpx.AsyncClient(timeout=self.mimo_timeout)
         self.total_actions = 0
         self.mimo_calls = 0
         self.dom_calls = 0
         self.large_note_count = 0
+        self.last_mimo_grounding: Optional[Dict[str, Any]] = None
         # Notes policy
         self.notes_token_budget = 2000
         self.large_note_min_tokens = 300
@@ -193,7 +205,7 @@ class BrowserController:
                 with open(self.large_notes_index_path, "r", encoding="utf-8") as f:
                     self.large_notes_index = json.load(f)
             except Exception as e:
-                print(f"⚠️  Failed to load large notes index: {e}. Rebuilding...")
+                print(f"Failed to load large notes index: {e}. Rebuilding...")
                 self._rebuild_large_notes_index()
         else:
             # Build index from existing JSONL
@@ -240,9 +252,9 @@ class BrowserController:
                         continue
             
             self._save_large_notes_index()
-            print(f"✅ Rebuilt large notes index: {len(self.large_notes_index)} notes")
+            print(f"Rebuilt large notes index: {len(self.large_notes_index)} notes")
         except Exception as e:
-            print(f"⚠️  Index rebuild failed: {e}")
+            print(f"Index rebuild failed: {e}")
 
     def _save_large_notes_index(self):
         """Save index to disk."""
@@ -250,7 +262,7 @@ class BrowserController:
             with open(self.large_notes_index_path, "w", encoding="utf-8") as f:
                 json.dump(self.large_notes_index, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️  Failed to save large notes index: {e}")
+            print(f"Failed to save large notes index: {e}")
 
     def _load_large_note_entries(self) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
@@ -559,6 +571,17 @@ class BrowserController:
             self.page = self.pages[self.active_tab_index]
         
         try:
+            if (
+                not self.config.enable_dom_fallback
+                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_EXTRACT}
+            ):
+                return ActionResult(
+                    success=False,
+                    action_type=tool_call.action_type,
+                    description=f"{tool_call.action_type.value} disabled",
+                    error="DOM tools are disabled in vision interaction mode.",
+                )
+
             if tool_call.action_type == ActionType.VISUAL_CLICK:
                 result = await self._visual_click(screenshot_path, tool_call.parameters["description"], tool_call.parameters.get("region_hint"))
             elif tool_call.action_type == ActionType.VISUAL_TYPE:
@@ -646,6 +669,90 @@ class BrowserController:
             return result
         except Exception as e:
             return ActionResult(success=False, action_type=tool_call.action_type, description=str(tool_call.parameters), error=str(e), execution_time_ms=(time.time() - start_time) * 1000)
+
+    async def execute_indexed_action(
+        self,
+        tool_call: ToolCall,
+        screenshot_path: str,
+        visual_index: Optional[Dict[str, Any]] = None,
+    ) -> ActionResult:
+        """Execute an indexed replay action.
+
+        VisualClick/VisualType/VisualHover can bypass MiMo by replaying the
+        normalized visual index against the current viewport. Non-visual actions
+        keep using the regular tool dispatcher.
+        """
+        if tool_call.action_type not in {
+            ActionType.VISUAL_CLICK,
+            ActionType.VISUAL_TYPE,
+            ActionType.VISUAL_HOVER,
+        }:
+            return await self.execute_tool(tool_call, screenshot_path)
+
+        try:
+            self.total_actions += 1
+            if self.pages:
+                self.page = self.pages[self.active_tab_index]
+            viewport = self.page.viewport_size or {"width": 1280, "height": 720}
+            coords = replay_coordinates(
+                visual_index or {},
+                viewport_width=int(viewport["width"]),
+                viewport_height=int(viewport["height"]),
+            )
+            if not coords:
+                fallback = await self.execute_tool(tool_call, screenshot_path)
+                fallback.metadata.setdefault("cosmic_indexed_replay", {})
+                fallback.metadata["cosmic_indexed_replay"]["fallback"] = "missing_visual_index_used_mimo"
+                return fallback
+
+            start = time.time()
+            x, y = coords
+            if tool_call.action_type == ActionType.VISUAL_CLICK:
+                await self.page.mouse.click(x, y)
+                try:
+                    await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
+                except Exception:
+                    pass
+                description = f"Indexed click at visual index for {visual_index.get('target_description', 'target') if visual_index else 'target'}"
+            elif tool_call.action_type == ActionType.VISUAL_HOVER:
+                await self.page.mouse.move(x, y)
+                await asyncio.sleep(0.3)
+                description = f"Indexed hover at visual index for {visual_index.get('target_description', 'target') if visual_index else 'target'}"
+            else:
+                params = tool_call.parameters or {}
+                await self.page.mouse.click(x, y)
+                await asyncio.sleep(0.2)
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Backspace")
+                await self.page.keyboard.type(str(params.get("text", "")), delay=self.type_delay_ms)
+                if params.get("press_enter", False):
+                    await self.page.keyboard.press("Enter")
+                    try:
+                        await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
+                    except Exception:
+                        pass
+                description = f"Indexed type into visual index for {visual_index.get('target_description', 'field') if visual_index else 'field'}"
+
+            return ActionResult(
+                success=True,
+                action_type=tool_call.action_type,
+                description=description,
+                coordinates=(x, y),
+                execution_time_ms=(time.time() - start) * 1000,
+                metadata={
+                    "cosmic_indexed_replay": {
+                        "used_visual_index": True,
+                        "visual_index": visual_index,
+                    }
+                },
+            )
+        except Exception as e:
+            return ActionResult(
+                success=False,
+                action_type=tool_call.action_type,
+                description=f"Indexed replay {tool_call.action_type.value}",
+                error=str(e),
+            )
 
     # --- Tab Actions ---
     async def _new_tab(self, url: str) -> ActionResult:
@@ -1251,7 +1358,7 @@ class BrowserController:
         await self.page.mouse.click(x, y)
         try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
         except: pass
-        return ActionResult(success=True, action_type=ActionType.VISUAL_CLICK, description=description, coordinates=(x, y))
+        return ActionResult(success=True, action_type=ActionType.VISUAL_CLICK, description=description, coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
 
     async def _visual_hover(self, screenshot_path: str, description: str, region_hint: Optional[str] = None) -> ActionResult:
         """Hover over an element without clicking (for dropdowns, tooltips, menus)."""
@@ -1261,7 +1368,7 @@ class BrowserController:
         x, y = coords
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)  # Wait for hover effects to render
-        return ActionResult(success=True, action_type=ActionType.VISUAL_HOVER, description=f"Hovered over: {description}", coordinates=(x, y))
+        return ActionResult(success=True, action_type=ActionType.VISUAL_HOVER, description=f"Hovered over: {description}", coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
 
     async def _visual_type(self, screenshot_path: str, field_description: str, text: str, press_enter: bool = False) -> ActionResult:
         coords = await self._call_mimo_grounding(screenshot_path, field_description)
@@ -1272,12 +1379,12 @@ class BrowserController:
         await asyncio.sleep(0.2)
         await self.page.keyboard.press("Control+A")
         await self.page.keyboard.press("Backspace")
-        await self.page.keyboard.type(text, delay=30)
+        await self.page.keyboard.type(text, delay=self.type_delay_ms)
         if press_enter:
             await self.page.keyboard.press("Enter")
             try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
             except: pass
-        return ActionResult(success=True, action_type=ActionType.VISUAL_TYPE, description=f"Typed '{text}'", coordinates=(x, y))
+        return ActionResult(success=True, action_type=ActionType.VISUAL_TYPE, description=f"Typed '{text}'", coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
 
     async def _visual_scroll(self, direction: str, amount: Any) -> ActionResult:
         direction_lower = direction.lower()
@@ -1296,11 +1403,12 @@ class BrowserController:
             # Resolve amount
             pixels = 500  # Default
             if isinstance(amount, int):
-                pixels = amount
+                pixels = amount * 500 if 1 <= amount <= 10 else amount
             elif isinstance(amount, str) and amount.lower() in scroll_map:
                 pixels = scroll_map[amount.lower()]
             elif isinstance(amount, str) and amount.isdigit():
-                pixels = int(amount)
+                numeric_amount = int(amount)
+                pixels = numeric_amount * 500 if 1 <= numeric_amount <= 10 else numeric_amount
             
         # 2. Get initial scroll position
         start_y = await self.page.evaluate("window.scrollY")
@@ -1385,8 +1493,63 @@ class BrowserController:
     async def _dom_click(self, selector: str) -> ActionResult:
         self.dom_calls += 1
         try:
-            await self.page.click(selector, timeout=5000)
-            return ActionResult(success=True, action_type=ActionType.DOM_CLICK, description=f"Clicked {selector}")
+            js_script = """
+            (selector) => {
+                const cleanText = (value) => {
+                    if (value === null || value === undefined) return "";
+                    return String(value).replace(/\\s+/g, " ").trim();
+                };
+                const isVisible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
+                        return false;
+                    }
+                    if (el.closest("[hidden], [aria-hidden='true']")) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                };
+
+                let elements = [];
+                try {
+                    elements = Array.from(document.querySelectorAll(selector));
+                } catch (error) {
+                    return {ok: false, error: `Invalid selector: ${error.message || error}`};
+                }
+
+                for (const el of elements) {
+                    if (!isVisible(el)) continue;
+                    if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+                    el.scrollIntoView({block: "center", inline: "center", behavior: "auto"});
+                    const rect = el.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    el.click();
+                    return {
+                        ok: true,
+                        text: cleanText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title")),
+                        x,
+                        y,
+                    };
+                }
+
+                return {ok: false, error: `No visible enabled element found for selector. Matched ${elements.length} elements.`};
+            }
+            """
+            result = await self.page.evaluate(js_script, selector)
+            if result and result.get("ok"):
+                return ActionResult(
+                    success=True,
+                    action_type=ActionType.DOM_CLICK,
+                    description=f"Clicked visible element for selector: {selector}",
+                    coordinates=(int(result.get("x", 0)), int(result.get("y", 0))),
+                    output=result.get("text") or None,
+                )
+            return ActionResult(
+                success=False,
+                action_type=ActionType.DOM_CLICK,
+                description=f"Click {selector}",
+                error=(result or {}).get("error", "No visible enabled element found."),
+            )
         except Exception as e: return ActionResult(success=False, action_type=ActionType.DOM_CLICK, description=f"Click {selector}", error=str(e))
 
     async def _dom_extract(self, query: str, schema: Optional[Dict], max_results: int) -> ActionResult:
@@ -1399,21 +1562,64 @@ class BrowserController:
                 const query = args.query;
                 const schema = args.schema;
                 const max_results = args.max_results;
+
+                const cleanText = (value) => {
+                    if (value === null || value === undefined) return "";
+                    return String(value).replace(/\\s+/g, " ").trim();
+                };
+
+                const extractText = (node) => {
+                    if (!node) return null;
+                    if (node.nodeType === Node.TEXT_NODE) return cleanText(node.textContent);
+                    if (node.nodeType !== Node.ELEMENT_NODE) return cleanText(node.textContent);
+
+                    const el = node;
+                    const candidates = [
+                        el.innerText,
+                        el.textContent,
+                        el.value,
+                        el.getAttribute && el.getAttribute("content"),
+                        el.getAttribute && el.getAttribute("aria-label"),
+                        el.getAttribute && el.getAttribute("title"),
+                        el.getAttribute && el.getAttribute("alt"),
+                        el.getAttribute && el.getAttribute("placeholder"),
+                        el.getAttribute && el.getAttribute("href"),
+                        el.getAttribute && el.getAttribute("src"),
+                    ];
+
+                    for (const candidate of candidates) {
+                        const text = cleanText(candidate);
+                        if (text) return text;
+                    }
+                    return null;
+                };
                 
                 const elements = Array.from(document.querySelectorAll(query)).slice(0, max_results);
                 
-                return elements.map(el => {
+                const rows = elements.map(el => {
                     if (schema) {
                         const item = {};
                         for (const key in schema) {
                             const selector = schema[key];
-                            const child = el.querySelector(selector);
-                            item[key] = child ? child.innerText.trim() : null;
+                            let child = null;
+                            try {
+                                child = el.querySelector(selector);
+                            } catch (_) {
+                                child = null;
+                            }
+                            item[key] = extractText(child);
                         }
                         return item;
                     } else {
-                        return el.innerText.trim();
+                        return extractText(el);
                     }
+                });
+
+                return rows.filter(row => {
+                    if (row === null || row === undefined) return false;
+                    if (typeof row === "string") return row.length > 0;
+                    if (typeof row === "object") return Object.values(row).some(value => cleanText(value).length > 0);
+                    return true;
                 });
             }
             """
@@ -1426,7 +1632,7 @@ class BrowserController:
             
             # Limit output size to prevent context overflow
             import json
-            output_str = json.dumps(data, indent=2)
+            output_str = json.dumps(data, ensure_ascii=False, indent=2)
             if len(output_str) > 100000:
                 output_str = output_str[:100000] + "... (truncated)"
             
@@ -1437,6 +1643,19 @@ class BrowserController:
                 output=output_str
             )
         except Exception as e: return ActionResult(success=False, action_type=ActionType.DOM_EXTRACT, description=f"Extract {query}", error=str(e))
+
+    @staticmethod
+    def _is_extreme_edge_coordinate(x: int, y: int, width: int, height: int) -> bool:
+        """Detect likely bad grounding coordinates at the extreme screenshot border.
+
+        This is deliberately site-agnostic. It does not know about YouTube or any
+        page layout; it only treats coordinates hugging the outer screenshot edge
+        as low-confidence because grounding models sometimes fall back to [0, 0].
+        """
+        ratio = float(os.getenv("MIMO_EDGE_GUARD_RATIO", "0.015"))
+        margin_x = max(3, int(width * ratio))
+        margin_y = max(3, int(height * ratio))
+        return x <= margin_x or y <= margin_y or x >= width - margin_x or y >= height - margin_y
 
     async def _navigate(self, url: str) -> ActionResult:
         try:
@@ -1525,8 +1744,15 @@ class BrowserController:
         )
 
     async def _press_key(self, key: str) -> ActionResult:
-        await self.page.keyboard.press(key)
-        return ActionResult(success=True, action_type=ActionType.PRESS_KEY, description=f"Pressed {key}")
+        normalized_key = {
+            "return": "Enter",
+            "newline": "Enter",
+            "esc": "Escape",
+            "del": "Delete",
+            "backspace": "Backspace",
+        }.get(str(key).strip().lower(), key)
+        await self.page.keyboard.press(normalized_key)
+        return ActionResult(success=True, action_type=ActionType.PRESS_KEY, description=f"Pressed {normalized_key}")
 
     async def _screenshot(self, name: Optional[str] = None) -> ActionResult:
         """Capture an explicit screenshot and return the saved file path."""
@@ -1555,6 +1781,7 @@ class BrowserController:
     async def _call_mimo_grounding(self, screenshot_path: str, instruction: str) -> Optional[Tuple[int, int]]:
         """Call MiMo-VL to find element coordinates with robust parsing."""
         self.mimo_calls += 1
+        self.last_mimo_grounding = None
 
         # --- Encode ---
         t0 = time.time()
@@ -1565,27 +1792,28 @@ class BrowserController:
             img_b64 = base64.b64encode(buffered.getvalue()).decode()
         encode_ms = (time.time() - t0) * 1000
 
+        def make_payload(query_text: str, *, max_tokens: Optional[int] = None) -> Dict[str, Any]:
+            return {
+                "model": "XiaomiMiMo/MiMo-VL-7B-RL",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a GUI grounding assistant. Given a screenshot and an element description, output the pixel coordinates (x, y) of the center of that element.\n\nOutput format: Return ONLY the coordinates as [x, y] where x and y are pixel values.\nDo not include thinking, prose, explanation, markdown, XML tags, or any other text."
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                            {"type": "text", "text": query_text}
+                        ]
+                    }
+                ],
+                "temperature": self.mimo_temperature,
+                "max_tokens": max_tokens or self.mimo_max_tokens,
+            }
+
         # CORRECTED QUERY FORMAT matching find_coordinates_mimo.py
         query = f"Image size: {w}x{h} pixels\n\nFind the element: {instruction}\n\nOutput the center coordinates as [x, y] in pixels."
-        
-        payload = {
-            "model": "XiaomiMiMo/MiMo-VL-7B-RL",
-            "messages": [
-                {
-                    "role": "system", 
-                    "content": "You are a GUI grounding assistant. Given a screenshot and an element description, output the pixel coordinates (x, y) of the center of that element.\n\nOutput format: Return ONLY the coordinates as [x, y] where x and y are pixel values.\nDo not include any other text, explanation, or formatting."
-                },
-                {
-                    "role": "user", 
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}, 
-                        {"type": "text", "text": query}
-                    ]
-                }
-            ],
-            "temperature": 0.3,   # Updated to 0.3
-            "max_tokens": 1024,   # Updated to 1024 to allow for reasoning tags
-        }
         
         try:
             headers = {}
@@ -1594,7 +1822,12 @@ class BrowserController:
 
             # --- HTTP inference ---
             t1 = time.time()
-            response = await self.http_client.post(self.mimo_chat_completions_url, json=payload, headers=headers)
+            try:
+                response = await self.http_client.post(self.mimo_chat_completions_url, json=make_payload(query), headers=headers)
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.PoolTimeout) as e:
+                print(f"⚠️ MiMo transport error, retrying once: {e}")
+                await asyncio.sleep(0.2)
+                response = await self.http_client.post(self.mimo_chat_completions_url, json=make_payload(query), headers=headers)
             response.raise_for_status()
             infer_ms = (time.time() - t1) * 1000
 
@@ -1605,13 +1838,139 @@ class BrowserController:
             try:
                 coords = parse_coordinates(content, (w, h))
                 parse_ms = (time.time() - t2) * 1000
-                print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms:.0f}ms | parse={parse_ms:.0f}ms | total={encode_ms+infer_ms+parse_ms:.0f}ms")
+                x, y = coords
+                edge_guard = None
+                if self._is_extreme_edge_coordinate(x, y, w, h):
+                    retry_query = (
+                        f"Image size: {w}x{h} pixels\n\n"
+                        f"Find the element: {instruction}\n\n"
+                        f"Your previous candidate coordinate [{x}, {y}] is on the extreme screenshot edge. "
+                        "Return an edge or corner coordinate only if the requested element is visibly centered there. "
+                        "Otherwise return the true center of the requested element. "
+                        "Output only [x, y] in pixels."
+                    )
+                    retry_start = time.time()
+                    retry_response = await self.http_client.post(
+                        self.mimo_chat_completions_url,
+                        json=make_payload(retry_query),
+                        headers=headers,
+                    )
+                    retry_response.raise_for_status()
+                    retry_infer_ms = (time.time() - retry_start) * 1000
+                    retry_content = retry_response.json()["choices"][0]["message"]["content"]
+                    try:
+                        retry_coords = parse_coordinates(retry_content, (w, h))
+                        retry_x, retry_y = retry_coords
+                        edge_guard = {
+                            "triggered": True,
+                            "first_coordinates": {"x": int(x), "y": int(y)},
+                            "retry_raw_model_output": retry_content,
+                            "retry_infer_ms": retry_infer_ms,
+                            "retry_coordinates": {"x": int(retry_x), "y": int(retry_y)},
+                        }
+                        if self._is_extreme_edge_coordinate(retry_x, retry_y, w, h):
+                            edge_guard["rejected"] = True
+                            self.last_mimo_grounding = {
+                                "instruction": instruction,
+                                "image_size": {"width": w, "height": h},
+                                "pixel_coordinates": {"x": int(retry_x), "y": int(retry_y)},
+                                "normalized_coordinates": {
+                                    "x": round(float(retry_x) / max(1, w), 6),
+                                    "y": round(float(retry_y) / max(1, h), 6),
+                                },
+                                "raw_model_output": content,
+                                "parser": "browser_controller.parse_coordinates",
+                                "edge_guard": edge_guard,
+                            }
+                            print(f"⚠️ MiMo edge-coordinate guard rejected suspicious coordinates: first=({x}, {y}) retry=({retry_x}, {retry_y})")
+                            print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms + retry_infer_ms:.0f}ms | parse={parse_ms:.0f}ms | total={encode_ms+infer_ms+retry_infer_ms+parse_ms:.0f}ms")
+                            return None
+                        coords = retry_coords
+                        x, y = coords
+                        edge_guard["rejected"] = False
+                    except ValueError:
+                        edge_guard = {
+                            "triggered": True,
+                            "first_coordinates": {"x": int(x), "y": int(y)},
+                            "retry_raw_model_output": retry_content,
+                            "retry_infer_ms": retry_infer_ms,
+                            "rejected": True,
+                            "retry_parse_error": True,
+                        }
+                        self.last_mimo_grounding = {
+                            "instruction": instruction,
+                            "image_size": {"width": w, "height": h},
+                            "pixel_coordinates": {"x": int(x), "y": int(y)},
+                            "normalized_coordinates": {
+                                "x": round(float(x) / max(1, w), 6),
+                                "y": round(float(y) / max(1, h), 6),
+                            },
+                            "raw_model_output": content,
+                            "parser": "browser_controller.parse_coordinates",
+                            "edge_guard": edge_guard,
+                        }
+                        print(f"⚠️ MiMo edge-coordinate guard rejected suspicious coordinate after retry parse failure: ({x}, {y})")
+                        return None
+                self.last_mimo_grounding = {
+                    "instruction": instruction,
+                    "image_size": {"width": w, "height": h},
+                    "pixel_coordinates": {"x": int(x), "y": int(y)},
+                    "normalized_coordinates": {
+                        "x": round(float(x) / max(1, w), 6),
+                        "y": round(float(y) / max(1, h), 6),
+                    },
+                    "raw_model_output": content,
+                    "parser": "browser_controller.parse_coordinates",
+                    "edge_guard": edge_guard,
+                }
+                displayed_infer_ms = infer_ms + float((edge_guard or {}).get("retry_infer_ms") or 0.0)
+                print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={displayed_infer_ms:.0f}ms | parse={parse_ms:.0f}ms | total={encode_ms+displayed_infer_ms+parse_ms:.0f}ms")
                 return coords
             except ValueError:
                 parse_ms = (time.time() - t2) * 1000
-                print(f"⚠️ MiMo parse failed. Raw Output: '{content}'")
-                print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms:.0f}ms | parse={parse_ms:.0f}ms")
-                return None
+                retry_query = (
+                    f"Image size: {w}x{h} pixels\n\n"
+                    f"Find the element: {instruction}\n\n"
+                    "STRICT OUTPUT MODE. Do not think. Do not explain. Do not use XML tags. "
+                    "Return exactly one coordinate pair only, formatted like [123, 456]."
+                )
+                retry_start = time.time()
+                try:
+                    retry_response = await self.http_client.post(
+                        self.mimo_chat_completions_url,
+                        json=make_payload(retry_query, max_tokens=max(32, min(self.mimo_max_tokens, 96))),
+                        headers=headers,
+                    )
+                    retry_response.raise_for_status()
+                    retry_infer_ms = (time.time() - retry_start) * 1000
+                    retry_content = retry_response.json()["choices"][0]["message"]["content"]
+                    retry_coords = parse_coordinates(retry_content, (w, h))
+                    retry_x, retry_y = retry_coords
+                    retry_parse_ms = (time.time() - retry_start) * 1000 - retry_infer_ms
+                    self.last_mimo_grounding = {
+                        "instruction": instruction,
+                        "image_size": {"width": w, "height": h},
+                        "pixel_coordinates": {"x": int(retry_x), "y": int(retry_y)},
+                        "normalized_coordinates": {
+                            "x": round(float(retry_x) / max(1, w), 6),
+                            "y": round(float(retry_y) / max(1, h), 6),
+                        },
+                        "raw_model_output": content,
+                        "parser": "browser_controller.parse_coordinates",
+                        "parse_retry": {
+                            "triggered": True,
+                            "retry_raw_model_output": retry_content,
+                            "retry_infer_ms": retry_infer_ms,
+                        },
+                    }
+                    print(f"⚠️ MiMo parse failed once, strict retry succeeded. First raw output: '{content[:240]}'")
+                    print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms + retry_infer_ms:.0f}ms | parse={parse_ms + retry_parse_ms:.0f}ms | total={encode_ms+infer_ms+retry_infer_ms+parse_ms+retry_parse_ms:.0f}ms")
+                    return retry_coords
+                except Exception as retry_error:
+                    print(f"⚠️ MiMo parse failed. Raw Output: '{content}'")
+                    print(f"⚠️ MiMo strict retry failed: {retry_error}")
+                    print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms:.0f}ms | parse={parse_ms:.0f}ms")
+                    return None
             
         except Exception as e:
             print(f"MiMo call failed: {e}")
@@ -1634,6 +1993,10 @@ class BrowserController:
             "total_actions": self.total_actions,
             "mimo_calls": self.mimo_calls,
             "dom_calls": self.dom_calls,
+            "mimo_max_tokens": self.mimo_max_tokens,
+            "mimo_temperature": self.mimo_temperature,
+            "mimo_timeout": self.mimo_timeout,
+            "mimo_http2": self.mimo_http2,
             "large_notes_path": str(self.large_notes_path),
             "large_notes_count": self.large_note_count,
             "notes_token_budget": self.notes_token_budget,

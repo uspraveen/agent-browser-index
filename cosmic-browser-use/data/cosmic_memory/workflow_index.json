@@ -1,0 +1,25 @@
+[
+  {
+    "workflow_id": "youtube_com_youtube_video_description_official_openai_gpt_launch_video_success",
+    "name": "YouTube video description extraction",
+    "domain": "youtube.com",
+    "intent": "Find a specific YouTube video by search and extract its full description",
+    "intent_tokens": [
+      "find",
+      "specific",
+      "youtube",
+      "video",
+      "search",
+      "extract",
+      "its",
+      "full",
+      "description"
+    ],
+    "task_signature": "youtube_com_youtube_video_description_official_openai_gpt_launch_video",
+    "summary": "Navigate to YouTube, search for a video by query, select the correct result from search results or recommendations, expand the description if truncated, and save the description text.",
+    "success_count": 3,
+    "step_count": 7,
+    "updated_at": "2026-05-17T23:28:39.917061+00:00",
+    "path": "data\\cosmic_memory\\workflows\\youtube_com_youtube_video_description_official_openai_gpt_launch_video_success.json"
+  }
+]

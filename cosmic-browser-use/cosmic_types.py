@@ -53,6 +53,8 @@ class LLMProvider(str, Enum):
     GEMINI = "gemini"
     CLAUDE = "claude"
     OPENAI = "openai"
+    # Fireworks OpenAI-compatible API (e.g. Kimi K2.6 — accounts/fireworks/models/kimi-k2p6)
+    FIREWORKS_KIMI = "fireworks_kimi"
     VLLM = "vllm"
     OLLAMA = "ollama"
 
@@ -118,6 +120,7 @@ class ActionResult:
     verification_status: Optional[VerificationStatus] = None
     state_change_score: float = 0.0  # 0-1, how much the page changed
     estimated_completion: float = 0.0  # 0-1, copied from LLM decision for progress tracking
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -131,6 +134,7 @@ class ActionResult:
             "verification_status": self.verification_status.value if self.verification_status else None,
             "state_change_score": self.state_change_score,
             "estimated_completion": self.estimated_completion,
+            "metadata": self.metadata,
         }
 
 
@@ -145,6 +149,13 @@ class Step:
     action: Optional[ActionResult] = None
     summary: str = ""
     thinking: Optional[str] = None  # LLM reasoning
+    before_browser_state: Optional[BrowserState] = None
+    after_browser_state: Optional[BrowserState] = None
+    after_screenshot_path: Optional[str] = None
+    after_screenshot_hash: Optional[str] = None
+    tool_call: Optional[Dict[str, Any]] = None
+    llm_response: Optional[Dict[str, Any]] = None
+    visual_index: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -156,6 +167,13 @@ class Step:
             "action": self.action.to_dict() if self.action else None,
             "summary": self.summary,
             "thinking": self.thinking,
+            "before_browser_state": self.before_browser_state.to_dict() if self.before_browser_state else None,
+            "after_browser_state": self.after_browser_state.to_dict() if self.after_browser_state else None,
+            "after_screenshot_path": self.after_screenshot_path,
+            "after_screenshot_hash": self.after_screenshot_hash,
+            "tool_call": self.tool_call,
+            "llm_response": self.llm_response,
+            "visual_index": self.visual_index,
         }
 
 

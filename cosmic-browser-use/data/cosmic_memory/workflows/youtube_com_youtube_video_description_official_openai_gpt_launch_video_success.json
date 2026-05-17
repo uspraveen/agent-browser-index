@@ -1,0 +1,1219 @@
+{
+  "workflow_id": "youtube_com_youtube_video_description_official_openai_gpt_launch_video_success",
+  "name": "YouTube video description extraction",
+  "domain": "youtube.com",
+  "intent": "Find a specific YouTube video by search and extract its full description",
+  "task_signature": "youtube_com_youtube_video_description_official_openai_gpt_launch_video",
+  "created_at": "2026-05-17T23:28:39.917061+00:00",
+  "updated_at": "2026-05-17T23:28:39.917061+00:00",
+  "success_count": 3,
+  "avg_runtime_seconds": null,
+  "summary": "Navigate to YouTube, search for a video by query, select the correct result from search results or recommendations, expand the description if truncated, and save the description text.",
+  "route_strategy": "Search on YouTube, checkpoint at results page for dynamic selection, then navigate to target video page, scroll to description, expand if needed, and extract.",
+  "generalization_level": "template",
+  "quality": {
+    "usable": true,
+    "confidence": 0.85,
+    "generalization_level": "template",
+    "reason": "Successful extraction of YouTube video description. The search-then-select pattern is reusable, though result selection requires dynamic visual matching since search results vary."
+  },
+  "variables": [
+    {
+      "name": "search_query",
+      "default": "OpenAI GPT-4o launch video",
+      "source": "goal",
+      "applies_to_source_steps": [
+        3
+      ]
+    },
+    {
+      "name": "target_video_hint",
+      "default": "Introducing GPT-4o",
+      "source": "goal",
+      "applies_to_source_steps": [
+        9
+      ]
+    }
+  ],
+  "acceptance_criteria": {
+    "must_match": [
+      "youtube.com/watch",
+      "OpenAI",
+      "GPT-4o",
+      "Introducing GPT-4o",
+      "Spring Update"
+    ],
+    "reject": [
+      "unrelated video",
+      "wrong channel",
+      "not official OpenAI"
+    ]
+  },
+  "source_run_dir": "runs\\20260517_155250",
+  "source_status": "success",
+  "indexer": {
+    "source": "llm",
+    "provider": "fireworks_kimi",
+    "model": "accounts/fireworks/models/kimi-k2p6",
+    "version": "cosmic_run_indexer_v1"
+  },
+  "discarded_steps": [
+    {
+      "source_step": 4,
+      "reason": "Wrong target video selected (live demo translation instead of official launch video)"
+    },
+    {
+      "source_step": 5,
+      "reason": "Detour scroll on wrong video page"
+    },
+    {
+      "source_step": 6,
+      "reason": "Detour scroll on wrong video page"
+    },
+    {
+      "source_step": 7,
+      "reason": "Failed click on wrong video page description"
+    },
+    {
+      "source_step": 8,
+      "reason": "Unnecessary wait on wrong video page"
+    },
+    {
+      "source_step": 10,
+      "reason": "Failed click before scrolling to position description properly"
+    },
+    {
+      "source_step": 13,
+      "reason": "Unnecessary wait before final extraction"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.youtube.com",
+      "parameters": {
+        "url": "https://www.youtube.com"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/",
+        "title": "[Tab 1/1] YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "YouTube search bar at top center",
+      "parameters": {
+        "description": "YouTube search bar at top center"
+      },
+      "coordinates": [
+        596,
+        28
+      ],
+      "visual_index": {
+        "target_description": "YouTube search bar at top center",
+        "normalized_coordinates": {
+          "x": 0.465625,
+          "y": 0.038889
+        },
+        "pixel_coordinates": {
+          "x": 596,
+          "y": 28
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.youtube.com/",
+        "page_title": "[Tab 1/1] YouTube"
+      },
+      "before": {
+        "url": "https://www.youtube.com/",
+        "title": "[Tab 1/1] YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/",
+        "title": "[Tab 1/1] YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualType",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Typed 'OpenAI GPT-4o launch video'",
+      "parameters": {
+        "field_description": "YouTube search bar",
+        "text": "OpenAI GPT-4o launch video",
+        "press_enter": true
+      },
+      "coordinates": [
+        575,
+        26
+      ],
+      "visual_index": {
+        "target_description": "YouTube search bar",
+        "normalized_coordinates": {
+          "x": 0.449219,
+          "y": 0.036111
+        },
+        "pixel_coordinates": {
+          "x": 575,
+          "y": 26
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.youtube.com/",
+        "page_title": "[Tab 1/1] YouTube"
+      },
+      "before": {
+        "url": "https://www.youtube.com/",
+        "title": "[Tab 1/1] YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/results?search_query=OpenAI+GPT-4o+launch+video",
+        "title": "[Tab 1/1] OpenAI GPT-4o launch video - YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": false,
+      "discarded_reason": "Wrong target video selected (live demo translation instead of official launch video)",
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Live demo of GPT-4o realtime translation video thumbnail by OpenAI at bottom of page",
+      "parameters": {
+        "description": "Live demo of GPT-4o realtime translation video thumbnail by OpenAI at bottom of page"
+      },
+      "coordinates": [
+        351,
+        622
+      ],
+      "visual_index": {
+        "target_description": "Live demo of GPT-4o realtime translation video thumbnail by OpenAI at bottom of page",
+        "normalized_coordinates": {
+          "x": 0.274219,
+          "y": 0.863889
+        },
+        "pixel_coordinates": {
+          "x": 351,
+          "y": 622
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.youtube.com/results?search_query=OpenAI+GPT-4o+launch+video",
+        "page_title": "[Tab 1/1] OpenAI GPT-4o launch video - YouTube"
+      },
+      "before": {
+        "url": "https://www.youtube.com/results?search_query=OpenAI+GPT-4o+launch+video",
+        "title": "[Tab 1/1] OpenAI GPT-4o launch video - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": false,
+      "discarded_reason": "Detour scroll on wrong video page",
+      "action_type": "VisualScroll",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Scrolled down by 1500px",
+      "parameters": {
+        "direction": "down",
+        "amount": 3
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 1484
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": "Detour scroll on wrong video page",
+      "action_type": "VisualScroll",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Scrolled up by 2500px",
+      "parameters": {
+        "direction": "up",
+        "amount": 5
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 1484
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": "Failed click on wrong video page description",
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "...more button at end of video description below the video",
+      "parameters": {
+        "description": "...more button at end of video description below the video"
+      },
+      "coordinates": [
+        477,
+        716
+      ],
+      "visual_index": {
+        "target_description": "...more button at end of video description below the video",
+        "normalized_coordinates": {
+          "x": 0.372656,
+          "y": 0.994444
+        },
+        "pixel_coordinates": {
+          "x": 477,
+          "y": 716
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "page_title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube"
+      },
+      "before": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": false,
+      "discarded_reason": "Unnecessary wait on wrong video page",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI",
+      "parameters": {
+        "description": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI"
+      },
+      "coordinates": [
+        900,
+        111
+      ],
+      "visual_index": {
+        "target_description": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI",
+        "normalized_coordinates": {
+          "x": 0.703125,
+          "y": 0.154167
+        },
+        "pixel_coordinates": {
+          "x": 900,
+          "y": 111
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "page_title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube"
+      },
+      "before": {
+        "url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": false,
+      "discarded_reason": "Failed click before scrolling to position description properly",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "success",
+      "error": "MiMo failed to find element",
+      "description": "...more button at end of video description text below the video",
+      "parameters": {
+        "description": "...more button at end of video description text below the video"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualScroll",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Scrolled down by 500px",
+      "parameters": {
+        "direction": "down",
+        "amount": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      }
+    },
+    {
+      "source_step": 12,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "more button at end of video description text, below the video title and view count",
+      "parameters": {
+        "description": "more button at end of video description text, below the video title and view count"
+      },
+      "coordinates": [
+        373,
+        212
+      ],
+      "visual_index": {
+        "target_description": "more button at end of video description text, below the video title and view count",
+        "normalized_coordinates": {
+          "x": 0.291406,
+          "y": 0.294444
+        },
+        "pixel_coordinates": {
+          "x": 373,
+          "y": 212
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "page_title": "[Tab 1/1] Introducing GPT-4o - YouTube"
+      },
+      "before": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      }
+    },
+    {
+      "source_step": 13,
+      "selected": false,
+      "discarded_reason": "Unnecessary wait before final extraction",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      }
+    },
+    {
+      "source_step": 14,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (67 tokens)",
+      "parameters": {
+        "note": "YouTube video description for the official OpenAI GPT-4o launch video (https://www.youtube.com/watch?v=DQacCB9tDaw):\n\nOpenAI Spring Update – streamed live on Monday, May 13, 2024.\n\nIntroducing GPT-4o, updates to ChatGPT, and more."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      },
+      "after": {
+        "url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "scroll_y": 500
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "youtube_com_state_001_tab_1_1",
+      "name": "[Tab 1/1] ",
+      "url_pattern": "about:blank",
+      "page_summary": "[Tab 1/1]  at about:blank",
+      "visual_markers": [
+        "tab",
+        "youtube",
+        "homepage"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_001.webp",
+      "screenshot_hash": "0000000000000000"
+    },
+    {
+      "state_id": "youtube_com_state_002_tab_1_1_youtube",
+      "name": "[Tab 1/1] YouTube",
+      "url_pattern": "https://www.youtube.com/",
+      "page_summary": "[Tab 1/1] YouTube at https://www.youtube.com/",
+      "visual_markers": [
+        "tab",
+        "youtube",
+        "search",
+        "bar",
+        "top",
+        "center"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_002.webp",
+      "screenshot_hash": "0043437fffffffff"
+    },
+    {
+      "state_id": "youtube_com_state_003_tab_1_1_youtube",
+      "name": "[Tab 1/1] YouTube",
+      "url_pattern": "https://www.youtube.com/",
+      "page_summary": "[Tab 1/1] YouTube at https://www.youtube.com/",
+      "visual_markers": [
+        "tab",
+        "youtube",
+        "search",
+        "bar"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_003.webp",
+      "screenshot_hash": "02634b7fffffffff"
+    },
+    {
+      "state_id": "youtube_com_state_004_tab_1_1_live_demo_of_gpt_4o_",
+      "name": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+      "url_pattern": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+      "page_summary": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube at https://www.youtube.com/watch?v=c2DFg53Zhvw",
+      "visual_markers": [
+        "tab",
+        "live",
+        "demo",
+        "gpt",
+        "realtime",
+        "translation",
+        "youtube",
+        "correct",
+        "target",
+        "video",
+        "thumbnail",
+        "search"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_009.webp",
+      "screenshot_hash": "ff0303030303ffff"
+    },
+    {
+      "state_id": "youtube_com_state_005_tab_1_1_introducing_gpt_4o_y",
+      "name": "[Tab 1/1] Introducing GPT-4o - YouTube",
+      "url_pattern": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "page_summary": "[Tab 1/1] Introducing GPT-4o - YouTube at https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "visual_markers": [
+        "tab",
+        "introducing",
+        "gpt",
+        "youtube",
+        "scroll",
+        "down",
+        "bring",
+        "video",
+        "description",
+        "view"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_011.webp",
+      "screenshot_hash": "fbf9f9f9f9f9b939"
+    },
+    {
+      "state_id": "youtube_com_state_006_tab_1_1_introducing_gpt_4o_y",
+      "name": "[Tab 1/1] Introducing GPT-4o - YouTube",
+      "url_pattern": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "page_summary": "[Tab 1/1] Introducing GPT-4o - YouTube at https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "visual_markers": [
+        "tab",
+        "introducing",
+        "gpt",
+        "youtube",
+        "more",
+        "button",
+        "end",
+        "truncated",
+        "video",
+        "description",
+        "text",
+        "below"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_012.webp",
+      "screenshot_hash": "f9b9f9f9f9f9f9f9"
+    },
+    {
+      "state_id": "youtube_com_state_007_tab_1_1_introducing_gpt_4o_y",
+      "name": "[Tab 1/1] Introducing GPT-4o - YouTube",
+      "url_pattern": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "page_summary": "[Tab 1/1] Introducing GPT-4o - YouTube at https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "visual_markers": [
+        "tab",
+        "introducing",
+        "gpt",
+        "youtube",
+        "save",
+        "visible",
+        "video",
+        "description",
+        "text"
+      ],
+      "screenshot_path": "runs\\20260517_155250\\screenshots\\step_014.webp",
+      "screenshot_hash": "fff9f9090b0909fb"
+    },
+    {
+      "state_id": "youtube_com_state_008_tab_1_1_introducing_gpt_4o_y",
+      "name": "[Tab 1/1] Introducing GPT-4o - YouTube",
+      "url_pattern": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "page_summary": "[Tab 1/1] Introducing GPT-4o - YouTube at https://www.youtube.com/watch?v=DQacCB9tDaw",
+      "visual_markers": [
+        "tab",
+        "introducing",
+        "gpt",
+        "youtube"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "navigation",
+      "from_state_id": "youtube_com_state_001_tab_1_1",
+      "action_type": "Navigate",
+      "target_description": "YouTube homepage",
+      "parameters_template": {
+        "url": "https://www.youtube.com"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "YouTube homepage loads",
+      "to_state_id": "youtube_com_state_002_tab_1_1_youtube",
+      "delay_ms": 1500,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_002",
+      "source_step": 2,
+      "source_evidence_steps": [
+        2
+      ],
+      "role": "navigation",
+      "from_state_id": "youtube_com_state_002_tab_1_1_youtube",
+      "action_type": "VisualClick",
+      "target_description": "YouTube search bar at top center",
+      "parameters_template": {
+        "description": "YouTube search bar at top center"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "YouTube search bar at top center",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_002.webp",
+        "page_url": "https://www.youtube.com/",
+        "page_title": "[Tab 1/1] YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 596,
+          "y": 28
+        },
+        "normalized_coordinates": {
+          "x": 0.465625,
+          "y": 0.038889
+        },
+        "mimo_grounding": {
+          "instruction": "YouTube search bar at top center",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 596,
+            "y": 28
+          },
+          "normalized_coordinates": {
+            "x": 0.465625,
+            "y": 0.038889
+          },
+          "raw_model_output": "<think>\n</think>\n\n[596, 28]\n</think>\n\n[596, 28]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "YouTube search bar at top center",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_002.webp",
+        "page_url": "https://www.youtube.com/",
+        "page_title": "[Tab 1/1] YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 596,
+          "y": 28
+        },
+        "normalized_coordinates": {
+          "x": 0.465625,
+          "y": 0.038889
+        },
+        "mimo_grounding": {
+          "instruction": "YouTube search bar at top center",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 596,
+            "y": 28
+          },
+          "normalized_coordinates": {
+            "x": 0.465625,
+            "y": 0.038889
+          },
+          "raw_model_output": "<think>\n</think>\n\n[596, 28]\n</think>\n\n[596, 28]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        596,
+        28
+      ],
+      "expected_result": "Search bar focused",
+      "to_state_id": "youtube_com_state_003_tab_1_1_youtube",
+      "delay_ms": 300,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_003",
+      "source_step": 3,
+      "source_evidence_steps": [
+        3
+      ],
+      "role": "search_query",
+      "from_state_id": "youtube_com_state_003_tab_1_1_youtube",
+      "action_type": "VisualType",
+      "target_description": "YouTube search bar",
+      "parameters_template": {
+        "field_description": "YouTube search bar",
+        "text": "{{search_query}}",
+        "press_enter": true
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualType",
+        "target_description": "YouTube search bar",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_003.webp",
+        "page_url": "https://www.youtube.com/",
+        "page_title": "[Tab 1/1] YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 575,
+          "y": 26
+        },
+        "normalized_coordinates": {
+          "x": 0.449219,
+          "y": 0.036111
+        },
+        "mimo_grounding": {
+          "instruction": "YouTube search bar",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 575,
+            "y": 26
+          },
+          "normalized_coordinates": {
+            "x": 0.449219,
+            "y": 0.036111
+          },
+          "raw_model_output": "<think>\n</think>\n\n[575, 26]\n</think>\n\n[575, 26]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualType",
+        "target_description": "YouTube search bar",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_003.webp",
+        "page_url": "https://www.youtube.com/",
+        "page_title": "[Tab 1/1] YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 575,
+          "y": 26
+        },
+        "normalized_coordinates": {
+          "x": 0.449219,
+          "y": 0.036111
+        },
+        "mimo_grounding": {
+          "instruction": "YouTube search bar",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 575,
+            "y": 26
+          },
+          "normalized_coordinates": {
+            "x": 0.449219,
+            "y": 0.036111
+          },
+          "raw_model_output": "<think>\n</think>\n\n[575, 26]\n</think>\n\n[575, 26]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        575,
+        26
+      ],
+      "expected_result": "Search results page loads for query",
+      "to_state_id": "youtube_com_state_004_tab_1_1_openai_gpt_4o_launch",
+      "delay_ms": 800,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "parameterized",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_004",
+      "source_step": 9,
+      "source_evidence_steps": [
+        9
+      ],
+      "role": "open_target",
+      "from_state_id": "youtube_com_state_004_tab_1_1_live_demo_of_gpt_4o_",
+      "action_type": "VisualClick",
+      "target_description": "Correct target video thumbnail in search results or sidebar matching the intent",
+      "parameters_template": {
+        "description": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_009.webp",
+        "page_url": "https://www.youtube.com/watch?v=c2DFg53Zhvw",
+        "page_title": "[Tab 1/1] Live demo of GPT-4o realtime translation - YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 900,
+          "y": 111
+        },
+        "normalized_coordinates": {
+          "x": 0.703125,
+          "y": 0.154167
+        },
+        "mimo_grounding": {
+          "instruction": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 900,
+            "y": 111
+          },
+          "normalized_coordinates": {
+            "x": 0.703125,
+            "y": 0.154167
+          },
+          "raw_model_output": "<think>\n</think>\n\n```json\n[\n\t{\"x\": [900, 111], \"y\": [164]}\n]\n```",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": false,
+        "reason": "source_page_route_gap_requires_live_grounding"
+      },
+      "coordinates": null,
+      "expected_result": "Target video page loads with correct title",
+      "to_state_id": "youtube_com_state_005_tab_1_1_introducing_gpt_4o_y",
+      "delay_ms": 800,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "route_gap_requires_live_grounding",
+      "needs_grounding_on_replay": true
+    },
+    {
+      "step_id": "step_005",
+      "source_step": 11,
+      "source_evidence_steps": [
+        11
+      ],
+      "role": "expand_content",
+      "from_state_id": "youtube_com_state_005_tab_1_1_introducing_gpt_4o_y",
+      "action_type": "VisualScroll",
+      "target_description": "Scroll down to bring video description into view",
+      "parameters_template": {
+        "direction": "down",
+        "amount": 1
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Description area visible below video",
+      "to_state_id": "youtube_com_state_006_tab_1_1_introducing_gpt_4o_y",
+      "delay_ms": 300,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_006",
+      "source_step": 12,
+      "source_evidence_steps": [
+        12
+      ],
+      "role": "expand_content",
+      "from_state_id": "youtube_com_state_006_tab_1_1_introducing_gpt_4o_y",
+      "action_type": "VisualClick",
+      "target_description": "more button at end of truncated video description",
+      "parameters_template": {
+        "description": "more button at end of video description text, below the video title and view count"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "more button at end of video description text, below the video title and view count",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_012.webp",
+        "page_url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "page_title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 373,
+          "y": 212
+        },
+        "normalized_coordinates": {
+          "x": 0.291406,
+          "y": 0.294444
+        },
+        "mimo_grounding": {
+          "instruction": "more button at end of video description text, below the video title and view count",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 373,
+            "y": 212
+          },
+          "normalized_coordinates": {
+            "x": 0.291406,
+            "y": 0.294444
+          },
+          "raw_model_output": "<think>\n</think>\n\n[373, 212]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "more button at end of video description text, below the video title and view count",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260517_155250\\screenshots\\step_012.webp",
+        "page_url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+        "page_title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 373,
+          "y": 212
+        },
+        "normalized_coordinates": {
+          "x": 0.291406,
+          "y": 0.294444
+        },
+        "mimo_grounding": {
+          "instruction": "more button at end of video description text, below the video title and view count",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 373,
+            "y": 212
+          },
+          "normalized_coordinates": {
+            "x": 0.291406,
+            "y": 0.294444
+          },
+          "raw_model_output": "<think>\n</think>\n\n[373, 212]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        373,
+        212
+      ],
+      "expected_result": "Full description text expanded",
+      "to_state_id": "youtube_com_state_007_tab_1_1_introducing_gpt_4o_y",
+      "delay_ms": 500,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_007",
+      "source_step": 14,
+      "source_evidence_steps": [
+        14
+      ],
+      "role": "extract_answer",
+      "from_state_id": "youtube_com_state_007_tab_1_1_introducing_gpt_4o_y",
+      "action_type": "SaveNote",
+      "target_description": "Save the visible video description text",
+      "parameters_template": {
+        "note": "YouTube video description extracted from {{current_url}}:\n\n{{description_text}}"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Note saved with full description",
+      "to_state_id": "youtube_com_state_008_tab_1_1_introducing_gpt_4o_y",
+      "delay_ms": 300,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "mutation": "parameterized",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "youtube.com",
+      "applies_to_source_step": 4,
+      "failure": "Selected wrong video from search results (live demo instead of official launch)",
+      "fix": "After search results load, visually verify the target video title/channel matches intent before clicking; use sidebar recommendations as fallback if initial selection is wrong",
+      "confidence": 0.8
+    },
+    {
+      "patch_id": "patch_indexer_002",
+      "domain": "youtube.com",
+      "applies_to_source_step": 10,
+      "failure": "Click on ...more button failed because element not in viewport",
+      "fix": "Scroll down slightly to bring description and ...more button into viewport before clicking",
+      "confidence": 0.9
+    }
+  ],
+  "user_preferences": []
+}
