@@ -65,24 +65,21 @@ OVERLAY_INIT_SCRIPT = r"""
     // Avenir Next Condensed on macOS, Segoe UI Variable Display fallback).
     ['font', '12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif'],
     ['color', '#eef2f9'],
+    // Asserted once so page CSS can't make us invisible while still
+    // letting show()/hide() override them later in the same priority bucket.
+    ['opacity', '1'],
+    ['visibility', 'visible'],
     // Defensive: even if the panel inside the shadow loses its computed
     // height, the host itself stays clearly visible.
     ['min-height', '230px'],
   ];
 
-  let applyingHostStyles = false;
   function applyHostStyles(host) {
-    if (applyingHostStyles) return;
-    applyingHostStyles = true;
     try {
       for (const [prop, value] of HOST_STYLES) {
         host.style.setProperty(prop, value, 'important');
       }
-    } catch (_e) {
-    } finally {
-      // Let the same microtask's MutationObserver fire and ignore us.
-      Promise.resolve().then(() => { applyingHostStyles = false; });
-    }
+    } catch (_e) {}
   }
 
   function mount() {
@@ -99,7 +96,13 @@ OVERLAY_INIT_SCRIPT = r"""
     const shadow = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
     style.textContent = `
-      :host { all: initial; }
+      :host {
+        /* Reassert inherited properties inside the shadow so even if the
+           page's CSS or our own watchdog races, text and fonts stay set. */
+        color: #eef2f9 !important;
+        font: 12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif !important;
+        line-height: 1.45;
+      }
       * { box-sizing: border-box; }
       .panel {
         position: relative;
@@ -212,6 +215,30 @@ OVERLAY_INIT_SCRIPT = r"""
 
     const root = document.createElement('div');
     root.className = 'panel';
+    // Inline panel chrome so the glassy shell doesn't depend on the shadow
+    // stylesheet being applied. Matches the .panel CSS rule above.
+    root.setAttribute(
+      'style',
+      [
+        'position:relative',
+        'backdrop-filter:blur(22px) saturate(140%)',
+        '-webkit-backdrop-filter:blur(22px) saturate(140%)',
+        'background:linear-gradient(180deg, rgba(8,8,10,0.62) 0%, rgba(0,0,0,0.66) 100%)',
+        'border:1px solid rgba(255,255,255,0.10)',
+        'border-radius:14px',
+        'padding:14px 16px',
+        'box-shadow:0 18px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06), inset 0 0 0 1px rgba(255,255,255,0.03)',
+        'color:#eef2f9',
+        'font:12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif',
+        'min-height:220px',
+        'max-height:92vh',
+        'overflow:hidden',
+        'transform:translateZ(0)',
+        'transition:none',
+        'box-sizing:border-box',
+        'width:100%',
+      ].join(';'),
+    );
     shadow.appendChild(root);
 
     document.documentElement.appendChild(host);
@@ -255,9 +282,50 @@ OVERLAY_INIT_SCRIPT = r"""
       return s.length > 22 ? s.slice(0, 10) + '…' + s.slice(-8) : s;
     }
 
+    // ------------------------------------------------------------------
+    // Inline styles for every rendered child. Why inline? On busy SPAs
+    // (YouTube/Polymer) we saw the panel chrome painting correctly while
+    // child content vanished — almost certainly a cascade race against
+    // the shadow <style> element. Inline element styles are immune to
+    // that and cannot be overridden from outside the shadow tree.
+    // ------------------------------------------------------------------
+    const FONT_STACK = 'Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif';
+    const S = {
+      header:      'display:flex;align-items:center;gap:8px;margin:0 0 12px 0;color:#eef2f9;font-family:' + FONT_STACK + ';',
+      brand:       'font-family:' + FONT_STACK + ';font-weight:600;font-size:11px;letter-spacing:0.32em;color:#eef2f9;text-transform:uppercase;display:inline-flex;align-items:center;',
+      brandDot:    'display:inline-block;width:6px;height:6px;border-radius:999px;background:#ffffff;margin-right:8px;box-shadow:0 0 8px rgba(255,255,255,0.45);',
+      badge:       'margin-left:auto;font-family:' + FONT_STACK + ';font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,0.08);color:#eef2f9;border:1px solid rgba(255,255,255,0.16);letter-spacing:0.12em;text-transform:uppercase;',
+      row:         'display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-family:' + FONT_STACK + ';',
+      rowK:        'color:#9aa3b2;font-size:12px;',
+      rowV:        'color:#eef2f9;font-weight:500;font-size:12px;max-width:62%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      rowVOk:      'color:#9be8b6;font-weight:500;font-size:12px;max-width:62%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      rowVMuted:   'color:#9aa3b2;font-weight:500;font-size:12px;max-width:62%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      section:     'margin-top:10px;padding-top:8px;border-top:1px dashed rgba(255,255,255,0.08);font-family:' + FONT_STACK + ';',
+      sectionTitle:'font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#9aa3b2;margin:0 0 6px 0;',
+      phase:       'display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#ffffff;font-weight:500;font-size:12px;font-family:' + FONT_STACK + ';',
+      phaseDot:    'width:6px;height:6px;border-radius:999px;background:#ffffff;display:inline-block;',
+      timeline:    'display:flex;flex-direction:column;gap:4px;',
+      tlItem:      'display:flex;align-items:center;gap:8px;min-height:18px;font-size:12px;',
+      tlMarker:    'width:6px;height:6px;border-radius:999px;flex:none;',
+      tlLabel:     'color:#d8dde6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
+      tlLabelMuted:'color:#9aa3b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
+      metrics:     'display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;',
+      metricK:     'font-size:10px;color:#9aa3b2;text-transform:uppercase;letter-spacing:0.18em;font-family:' + FONT_STACK + ';',
+      metricV:     'font-size:14px;color:#eef2f9;font-weight:600;font-family:' + FONT_STACK + ';',
+      metricVOk:   'font-size:14px;color:#9be8b6;font-weight:600;font-family:' + FONT_STACK + ';',
+      patch:       'margin-top:8px;padding:6px 8px;border-radius:8px;background:rgba(255,200,120,0.08);border:1px solid rgba(255,200,120,0.22);color:#ffd9a8;font-size:11px;font-family:' + FONT_STACK + ';',
+    };
+    const MARKER_COLORS = {
+      recall:    '#c8b8ff',
+      indexed:   '#ffffff',
+      navigate:  '#b5e3c4',
+      checkpoint:'#ffd99a',
+      live:      '#ffb0bf',
+      saved:     '#9be8b6',
+    };
+
     function render() {
       const s = state;
-      const pulsing = Date.now() < (state.pulse_until || 0);
       const supermemoryRaw = String(s.supermemory || '');
       const supermemoryOk = /^connected/i.test(supermemoryRaw);
       const wf = shortWorkflow(s.workflow_id);
@@ -267,59 +335,65 @@ OVERLAY_INIT_SCRIPT = r"""
       const tlItems = (s.timeline || []).slice(-5);
       const timelineHtml = tlItems.length
         ? tlItems.map(item => {
-            const kind = escapeHtml(item.kind || 'indexed');
-            const label = escapeHtml(item.label || '');
-            return '<div class="tl-item ' + kind + '"><span class="marker"></span><span class="label">' + label + '</span></div>';
+            const kind = String(item.kind || 'indexed').toLowerCase();
+            const markerColor = MARKER_COLORS[kind] || '#ffffff';
+            const markerStyle = S.tlMarker + 'background:' + markerColor + ';';
+            return '<div style="' + S.tlItem + '">'
+              +   '<span style="' + markerStyle + '"></span>'
+              +   '<span style="' + S.tlLabel + '">' + escapeHtml(item.label || '') + '</span>'
+              + '</div>';
           }).join('')
-        : '<div class="tl-item"><span class="marker"></span><span class="label muted">No replay actions yet</span></div>';
+        : '<div style="' + S.tlItem + '"><span style="' + S.tlMarker + 'background:rgba(255,255,255,0.5);"></span><span style="' + S.tlLabelMuted + '">No replay actions yet</span></div>';
 
       const patchHtml = s.failure_patch
-        ? '<div class="patch">⚡ ' + escapeHtml(s.failure_patch) + '</div>'
+        ? '<div style="' + S.patch + '">⚡ ' + escapeHtml(s.failure_patch) + '</div>'
         : '';
 
-      const badgeClass = 'badge' + (pulsing ? ' pulse-ring' : '');
-      const phaseClass = 'phase' + (pulsing ? ' pulse-ring' : '');
+      const supermemoryValueStyle = supermemoryOk ? S.rowVOk : S.rowVMuted;
 
       root.innerHTML =
-        '<div class="header">' +
-          '<span class="brand"><span class="dot"></span>Cosmic Browser Memory</span>' +
-          '<span class="' + badgeClass + '">' + escapeHtml(s.mode || 'Idle') + '</span>' +
-        '</div>' +
-        '<div class="row"><span class="k">Supermemory</span>' +
-          '<span class="v ' + (supermemoryOk ? 'ok' : 'muted') + '">' + escapeHtml(supermemoryRaw || '—') + '</span></div>' +
-        '<div class="row"><span class="k">Workflow</span>' +
-          '<span class="v" title="' + escapeHtml(s.workflow_id || '') + '">' + escapeHtml(wf) + '</span></div>' +
-        '<div class="row"><span class="k">Recall score</span><span class="v">' + escapeHtml(score) + '</span></div>' +
-        '<div class="section">' +
-          '<div class="section-title">Replay phase</div>' +
-          '<div class="' + phaseClass + '"><span class="dot"></span>' + escapeHtml(s.phase || '—') + '</div>' +
-        '</div>' +
-        '<div class="section">' +
-          '<div class="section-title">Action timeline</div>' +
-          '<div class="timeline">' + timelineHtml + '</div>' +
-        '</div>' +
-        '<div class="section">' +
-          '<div class="section-title">Metrics</div>' +
-          '<div class="metrics">' +
-            '<div class="metric"><div class="k">Elapsed</div><div class="v">' + fmtTime(m.elapsed_sec) + '</div></div>' +
-            '<div class="metric"><div class="k">Replay actions</div><div class="v">' + escapeHtml(m.replay_actions || 0) + '</div></div>' +
-            '<div class="metric"><div class="k">MiMo avoided</div><div class="v ok">' + escapeHtml(m.mimo_calls_avoided || 0) + '</div></div>' +
-            '<div class="metric"><div class="k">MiMo calls</div><div class="v">' + escapeHtml(m.mimo_calls || 0) + '</div></div>' +
-            '<div class="metric"><div class="k">DOM calls</div><div class="v">' + escapeHtml(m.dom_calls || 0) + '</div></div>' +
-            '<div class="metric"><div class="k">LLM calls</div><div class="v">' + escapeHtml(m.llm_calls || 0) + '</div></div>' +
-          '</div>' +
-        '</div>' +
-        patchHtml;
+        '<div style="' + S.header + '">'
+        +   '<span style="' + S.brand + '"><span style="' + S.brandDot + '"></span>Cosmic Browser Memory</span>'
+        +   '<span style="' + S.badge + '">' + escapeHtml(s.mode || 'Idle') + '</span>'
+        + '</div>'
+        + '<div style="' + S.row + '"><span style="' + S.rowK + '">Supermemory</span>'
+        +   '<span style="' + supermemoryValueStyle + '">' + escapeHtml(supermemoryRaw || '—') + '</span></div>'
+        + '<div style="' + S.row + '"><span style="' + S.rowK + '">Workflow</span>'
+        +   '<span style="' + S.rowV + '" title="' + escapeHtml(s.workflow_id || '') + '">' + escapeHtml(wf) + '</span></div>'
+        + '<div style="' + S.row + '"><span style="' + S.rowK + '">Recall score</span>'
+        +   '<span style="' + S.rowV + '">' + escapeHtml(score) + '</span></div>'
+        + '<div style="' + S.section + '">'
+        +   '<div style="' + S.sectionTitle + '">Replay phase</div>'
+        +   '<div style="' + S.phase + '"><span style="' + S.phaseDot + '"></span>' + escapeHtml(s.phase || '—') + '</div>'
+        + '</div>'
+        + '<div style="' + S.section + '">'
+        +   '<div style="' + S.sectionTitle + '">Action timeline</div>'
+        +   '<div style="' + S.timeline + '">' + timelineHtml + '</div>'
+        + '</div>'
+        + '<div style="' + S.section + '">'
+        +   '<div style="' + S.sectionTitle + '">Metrics</div>'
+        +   '<div style="' + S.metrics + '">'
+        +     '<div><div style="' + S.metricK + '">Elapsed</div><div style="' + S.metricV + '">' + fmtTime(m.elapsed_sec) + '</div></div>'
+        +     '<div><div style="' + S.metricK + '">Replay actions</div><div style="' + S.metricV + '">' + escapeHtml(m.replay_actions || 0) + '</div></div>'
+        +     '<div><div style="' + S.metricK + '">MiMo avoided</div><div style="' + S.metricVOk + '">' + escapeHtml(m.mimo_calls_avoided || 0) + '</div></div>'
+        +     '<div><div style="' + S.metricK + '">MiMo calls</div><div style="' + S.metricV + '">' + escapeHtml(m.mimo_calls || 0) + '</div></div>'
+        +     '<div><div style="' + S.metricK + '">DOM calls</div><div style="' + S.metricV + '">' + escapeHtml(m.dom_calls || 0) + '</div></div>'
+        +     '<div><div style="' + S.metricK + '">LLM calls</div><div style="' + S.metricV + '">' + escapeHtml(m.llm_calls || 0) + '</div></div>'
+        +   '</div>'
+        + '</div>'
+        + patchHtml;
     }
 
     function update(patch) {
       try {
-        // Defensive: if the host got detached by a SPA re-render, reattach;
-        // if its inline styles got clobbered by page CSS, re-apply ours.
+        // Defensive: if the host got detached by a SPA re-render, reattach
+        // and re-apply our pinned styles. We do NOT call applyHostStyles on
+        // every update — that thrashes inline styles and triggers expensive
+        // mutation cycles on busy pages like YouTube.
         if (!host.isConnected) {
           try { document.documentElement.appendChild(host); } catch (_e) {}
+          applyHostStyles(host);
         }
-        applyHostStyles(host);
         if (!patch || typeof patch !== 'object') return;
         for (const [k, v] of Object.entries(patch)) {
           if (k === 'metrics' && v && typeof v === 'object') {
@@ -363,10 +437,12 @@ OVERLAY_INIT_SCRIPT = r"""
 
     render();
 
-    // Self-healing watcher: SPA frameworks (YouTube/Polymer, React) sometimes
-    // rewrite documentElement's children or clobber inline styles. If our
-    // host disappears we re-mount; if its style attribute is mutated we
-    // re-apply ours. Observer is cheap because it's scoped to two nodes.
+    // Self-healing watcher: SPA frameworks (YouTube/Polymer, React) can
+    // rewrite documentElement's children. If our host disappears we re-mount
+    // and re-pin styles. We deliberately do NOT observe the host's own style
+    // attribute — re-asserting on every style mutation triggered glitchy
+    // re-renders on busy pages and was the root cause of the "distorts when
+    // the agent starts working" symptom.
     try {
       const reattachObserver = new MutationObserver(() => {
         if (!host.isConnected) {
@@ -375,9 +451,6 @@ OVERLAY_INIT_SCRIPT = r"""
         }
       });
       reattachObserver.observe(document.documentElement, { childList: true, subtree: false });
-
-      const styleObserver = new MutationObserver(() => applyHostStyles(host));
-      styleObserver.observe(host, { attributes: true, attributeFilter: ['style', 'class'] });
     } catch (_e) {}
 
     return window.__cosmicOverlay;
@@ -422,7 +495,10 @@ class DemoOverlayManager:
 
     def __init__(self, enabled: bool = False):
         self.enabled = bool(enabled)
-        self._start_time = time.time()
+        # Timer is intentionally deferred — it starts the first time the agent
+        # actually acts on the browser (call start_timer()), not when the
+        # browser process boots. Until then `elapsed_sec` reports 0.
+        self._start_time: Optional[float] = None
         self._state: Dict[str, Any] = {
             "mode": "Idle",
             "supermemory": "Initializing",
@@ -467,6 +543,13 @@ class DemoOverlayManager:
             except (TypeError, ValueError):
                 self._state["metrics"][key] = value
 
+    def start_timer(self) -> None:
+        """Begin counting elapsed time. Idempotent — only the first call wins."""
+        if not self.enabled:
+            return
+        if self._start_time is None:
+            self._start_time = time.time()
+
     def request_pulse(self, ms: int = 1500) -> None:
         if not self.enabled:
             return
@@ -498,7 +581,11 @@ class DemoOverlayManager:
             "metrics": {
                 **dict(_DEFAULT_METRICS),
                 **(self._state.get("metrics") or {}),
-                "elapsed_sec": int(time.time() - self._start_time),
+                "elapsed_sec": (
+                    int(time.time() - self._start_time)
+                    if self._start_time is not None
+                    else 0
+                ),
             },
             "failure_patch": self._state.get("failure_patch"),
         }

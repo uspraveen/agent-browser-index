@@ -1,20 +1,29 @@
-# Cosmic Browser Use Agent
+# cosmic-browser-use
 
-Production-oriented, vision-first browser automation built on Playwright + MiMo-VL + multi-provider LLM orchestration.
+Vision-dominant browser automation for real websites, powered by Playwright, MiMo-7B-RL visual grounding, and COSMIC Browser Memory.
+
+This is the browser execution layer behind **COSMIC Browser Memory: Indexing the Web for Agents**. It can run as a normal autonomous browser agent, or it can run with traversal memory enabled so successful workflows become reusable executable routes.
+
+> Search engines indexed web pages for humans. COSMIC indexes how agents move through websites.
 
 ## What This Project Is
 
 Cosmic Browser Use Agent is an autonomous web task runner that:
 - Decides actions with an LLM orchestrator.
-- Grounds visual targets on screenshots using MiMo-VL.
+- Grounds visual targets on screenshots using **MiMo-7B-RL / MiMo-VL-7B-RL**.
 - Executes atomic actions through Playwright.
 - Maintains layered memory for long-running tasks.
+- Records successful runs into replayable COSMIC workflow memory.
 
 It is designed for real browsing environments where DOM-only automation is brittle.
 
 ## Highlights
 
 - Vision-first control loop with screenshot-grounded actions.
+- MiMo-7B-RL visual grounding: screenshot + target description -> pixel coordinate.
+- COSMIC traversal memory: page states, actions, visual indexes, failures, fixes, and replay checkpoints.
+- Supermemory-backed semantic recall for prior workflows.
+- Indexed replay that can execute known actions without spending a fresh LLM/MiMo call per step.
 - Multi-provider orchestration (OpenAI, Anthropic, Gemini; plus provider abstraction for vLLM in code).
 - Atomic tool model with robust recovery behavior.
 - Memory compression + rolling context window to keep long tasks stable.
@@ -34,7 +43,10 @@ flowchart TD
 
     O -->|Decide next tool call| B
     B -->|Playwright actions| PW[Chromium via Playwright]
-    B -->|Grounding API call| MIMO[MiMo-VL API]
+    B -->|Grounding API call| MIMO[MiMo-7B-RL / MiMo-VL API]
+    M --> COSMIC[COSMIC traversal memory]
+    COSMIC --> SM[Supermemory semantic recall]
+    COSMIC --> WF[Local executable workflow JSON]
 
     MEM -->|Context payload| O
     MEM -->|Append step records| LOG[log.json]
@@ -53,7 +65,7 @@ sequenceDiagram
     participant Memory as memory_manager.py
     participant Orch as orchestrator.py
     participant LLM as Provider LLM
-    participant Mimo as MiMo-VL
+    participant Mimo as MiMo-7B-RL
 
     Main->>Browser: capture_state(step_n)
     Browser-->>Main: screenshot + browser_state + hash
@@ -223,7 +235,7 @@ This is the complete action enum the LLM can return, with execution path:
 
 | `ActionType` value | Handler path | Notes |
 |---|---|---|
-| `VisualClick` | `browser_controller.execute_tool -> _visual_click` | Vision-grounded click via MiMo-VL. |
+| `VisualClick` | `browser_controller.execute_tool -> _visual_click` | Vision-grounded click via MiMo-7B-RL. |
 | `VisualType` | `browser_controller.execute_tool -> _visual_type` | Vision-grounded typing. |
 | `VisualScroll` | `browser_controller.execute_tool -> _visual_scroll` | Directional scroll/top/bottom logic. |
 | `VisualHover` | `browser_controller.execute_tool -> _visual_hover` | Hover without click. |
@@ -257,13 +269,24 @@ Prompt exposure note:
 
 ### Quick Start
 
-```bash
-python main.py --goal "Find top 3 ergonomic keyboards under $120 and save a concise comparison note"
+```powershell
+python main.py --provider google_gemini --goal "Find top 3 ergonomic keyboards under $120 and save a concise comparison note"
+```
+
+### Run with COSMIC recall
+
+```powershell
+python main.py `
+  --provider google_gemini `
+  --interaction-mode vision `
+  --memory-mode recall `
+  --goal "Get the YouTube video description for the official Claude Code launch video" `
+  --demo-overlay
 ```
 
 ### Help
 
-```bash
+```powershell
 python main.py --help
 ```
 
@@ -272,7 +295,7 @@ python main.py --help
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--goal` | str | required | Task objective. |
-| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`, `fireworks_kimi`. |
+| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`, `google_gemini`. |
 | `--url` | str | `None` | Optional starting URL. |
 | `--steps` | int | `1000` | Max steps. |
 | `--headless` | bool flag | `False` | Run browser headless. |
@@ -287,19 +310,31 @@ python main.py --help
 | `--ask-user-timeout` | int | `120` | Seconds to wait for `AskUser`. |
 | `--large-notes-path` | str | `<run_dir>/large_notes.jsonl` | External large-notes storage path. |
 
-### Fireworks Kimi (K2.6)
+### Demo Provider Label
 
-Uses the OpenAI Python SDK against Fireworks’ OpenAI-compatible base URL (same pattern as Cosmic-OS Backend).
+The CLI advertises `--provider google_gemini` as the demo-facing provider label. Internally, the existing provider wiring and environment variable names are preserved so the working hackathon path stays stable.
 
-On each **task run**, the first Fireworks request tries **HTTP/2** (via `httpx` + `h2`). If the transport fails, the run **falls back to HTTP/1.1** automatically; API errors after a connection (4xx/5xx) still count as HTTP/2 having worked.
+```powershell
+python main.py --provider google_gemini --goal "..."
+```
 
-- **CLI:** `--provider fireworks_kimi`
-- **Auth:** `FIREWORKS_API_KEY` (or `--api-key`, or `SLIDE_AGENT_FIREWORKS_API_KEY`)
-- **Base URL:** `FIREWORKS_BASE_URL` (default `https://api.fireworks.ai/inference/v1`)
-- **Model:** `FIREWORKS_KIMI_MODEL` (default `accounts/fireworks/models/kimi-k2p6`); override fast/slow with `FIREWORKS_FAST_MODEL` / `FIREWORKS_SLOW_MODEL` or `--fast-model` / `--slow-model`
-- **Optional:** `FIREWORKS_REASONING_EFFORT` (e.g. `low` / `medium`); for model IDs containing `thinking`, effort defaults to `medium` if unset
-- **Token limits:** `FIREWORKS_FAST_MAX_TOKENS` (default `8192`), `FIREWORKS_SLOW_MAX_TOKENS` (default `32768`)
-- **Temperature:** `FIREWORKS_TEMPERATURE` (default `0.6`) unless `--temperature` is set
+### MiMo-7B-RL Vision Grounding
+
+MiMo-7B-RL is the vision grounding model. For visual tools, the controller sends a screenshot plus a target description and expects the center pixel coordinate.
+
+```text
+Screenshot + "YouTube search bar at top center" -> [596, 28]
+```
+
+COSMIC stores both raw pixel coordinates and normalized viewport coordinates for replay:
+
+```json
+{
+  "pixel_coordinates": {"x": 596, "y": 28},
+  "normalized_coordinates": {"x": 0.465625, "y": 0.038889},
+  "viewport": {"width": 1280, "height": 720}
+}
+```
 
 ## SDK Entry Point
 

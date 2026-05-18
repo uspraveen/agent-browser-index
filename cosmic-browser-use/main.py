@@ -729,6 +729,8 @@ async def run_task(
             # "skipping exploration" story we want to show.
             live_llm_decisions += 1
             if demo_overlay.enabled:
+                # First real agent activity in live mode — start the clock.
+                demo_overlay.start_timer()
                 demo_overlay.set_state(phase="Live planner active")
                 demo_overlay.update_metrics(llm_calls=live_llm_decisions)
                 try:

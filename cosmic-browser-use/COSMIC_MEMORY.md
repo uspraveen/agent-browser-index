@@ -1,16 +1,30 @@
 # COSMIC Browser Memory
 
+## Indexing the Web for Agents
+
 COSMIC Browser Memory adds cross-run traversal memory around the existing vision browser agent.
+
+Search engines indexed web pages for humans. COSMIC indexes how agents move through websites: page states, screenshots, visual anchors, actions, coordinates, failures, fixes, and successful workflows.
+
+It runs on top of `cosmic-browser-use`, a vision-dominant browser automation agent that can see and operate real websites. The vision grounding model is **MiMo-7B-RL / MiMo-VL-7B-RL**.
+
+On the first run, the agent completes a task normally while COSMIC records the traversal path. After the task succeeds, COSMIC compresses that run into a reusable workflow, stores the executable route locally, and writes semantic workflow memory to Supermemory.
+
+On future runs, the agent retrieves relevant prior workflows, loads the executable route, adapts task-specific values, replays safe known actions, and hands control back to live vision whenever the website has changed or confidence drops.
+
+The result is a browser agent that does not rediscover the same websites from scratch every time.
+
+Every successful run becomes reusable intelligence for future tasks.
 
 The normal agent still works with:
 
-```bash
-python main.py --provider fireworks_kimi --goal "Get the YouTube video description for <video or query>"
+```powershell
+python main.py --provider google_gemini --goal "Get the YouTube video description for <video or query>"
 ```
 
 ## What Gets Stored
 
-MiMo is prompted to return the center of a visual target as pixel coordinates:
+MiMo-7B-RL is prompted to return the center of a visual target as pixel coordinates:
 
 ```text
 Image size: <w>x<h> pixels
@@ -87,26 +101,26 @@ COSMIC_INDEXER_MAX_TOKENS=4096
 
 Index a workflow:
 
-```bash
-python main.py --provider fireworks_kimi --memory-mode learn --goal "Get the YouTube video description for the official OpenAI GPT-4o launch video"
+```powershell
+python main.py --provider google_gemini --memory-mode learn --goal "Get the YouTube video description for the official OpenAI GPT-4o launch video" --demo-overlay
 ```
 
 Index an already-completed run:
 
-```bash
+```powershell
 python scripts/index_run.py --run-dir runs/20260517_155250
 ```
 
 For a local-only compile without Supermemory:
 
-```bash
+```powershell
 python scripts/index_run.py --run-dir runs/20260517_155250 --disable-supermemory
 ```
 
 Replay/adapt it:
 
-```bash
-python main.py --provider fireworks_kimi --memory-mode recall --goal "Get the YouTube video description for the official Supermemory demo video"
+```powershell
+python main.py --provider google_gemini --memory-mode recall --goal "Get the YouTube video description for the official Claude Code launch video" --demo-overlay
 ```
 
 For an exact target repeat, replay can skip search/result selection entirely:
@@ -119,8 +133,8 @@ For a changed target, replay falls back to the safe prefix and checkpoints at th
 
 Use `auto` during rehearsals when you want recall plus writeback:
 
-```bash
-python main.py --provider fireworks_kimi --memory-mode auto --goal "Get the YouTube video description for <new video>"
+```powershell
+python main.py --provider google_gemini --memory-mode auto --goal "Get the YouTube video description for <new video>" --demo-overlay
 ```
 
 ## Supermemory
@@ -138,6 +152,20 @@ client.search.memories(q="...", container_tag="cosmic-hackathon-demo:demo_user",
 COSMIC keeps exact executable route memory in local JSON and uses Supermemory for semantic recall.
 
 We explicitly use `task_type="memory"` for workflow summaries and retrieve with `search.memories(..., search_mode="hybrid")`. Supermemory documents `memory` as the full memory/context layer with SuperRAG built in, while `superrag` is the document/RAG-only mode. Browser traversal memory needs temporal context, user preferences, failure patches, and relationship-aware recall, so `memory` plus hybrid memory search is the right fit.
+
+## AgentPhone and AgentMail Ingress
+
+COSMIC can be invoked from more than the CLI.
+
+`AgentPhone/` provides a live call/SMS integration path. A user can call the agent, speak a browser task, and route that task into COSMIC.
+
+AgentMail follows the same task-ingress pattern for email. A user can email a task such as:
+
+```text
+Get me the latest 1040NR tax form.
+```
+
+The agent browses, completes the task, and replies with the result or attachment through the email layer.
 
 ## Debug Logs
 

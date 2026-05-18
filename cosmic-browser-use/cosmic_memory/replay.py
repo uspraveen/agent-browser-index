@@ -490,6 +490,9 @@ async def execute_indexed_replay_plan(
         )
     if demo_overlay is not None:
         try:
+            # First real agent activity — start the elapsed-time clock.
+            if hasattr(demo_overlay, "start_timer"):
+                demo_overlay.start_timer()
             await demo_overlay.update(
                 page=getattr(browser, "page", None),
                 mode="Replay Mode",
