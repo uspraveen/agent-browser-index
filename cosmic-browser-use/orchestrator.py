@@ -12,6 +12,7 @@ Supports:
 - Streaming support
 """
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -22,13 +23,15 @@ from dataclasses import dataclass
 from enum import Enum
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APIStatusError
 
 # UPDATED IMPORTS
 from cosmic_types import (
     LLMResponse, ToolCall, ActionType,
     LLMProvider, LLMTier, LLMConfig
 )
+from cli_labels import GOOGLE_GEMINI_LABEL
+from cosmic_memory.replay import build_default_replay_plan
 import os
 from dotenv import load_dotenv
 
@@ -47,6 +50,92 @@ def strip_fireworks_kimi_thinking_markers(text: str) -> str:
         s = re.sub(r"```(?:json)?\s*", "", s, flags=re.IGNORECASE)
         s = re.sub(r"\s*```\s*", "", s).strip()
     return s.strip()
+
+
+def _salvage_visible_answer_note(raw_content: str, context: Dict[str, Any]) -> Optional[str]:
+    """Conservatively turn non-JSON finalizer prose into a SaveNote."""
+    text = strip_fireworks_kimi_thinking_markers(raw_content)
+    text = re.sub(r"^\s*(answer|note)\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+    if not text or len(text) < 24:
+        return None
+    lowered = text.lower()
+    if text.lstrip().startswith("{") or '"matches_goal"' in lowered or '"note"' in lowered:
+        return None
+    refusal_markers = (
+        "wrong target",
+        "does not match",
+        "not visible",
+        "cannot determine",
+        "can't determine",
+        "no answer",
+        "no relevant",
+        "return {",
+    )
+    if any(marker in lowered for marker in refusal_markers):
+        return None
+
+    goal = str(context.get("goal") or "")
+    state = context.get("browser_state") or {}
+    page_text = f"{state.get('url', '')} {state.get('title', '')} {text}".lower()
+    goal_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", goal.lower())
+        if len(token) > 2 and token not in {"get", "find", "the", "for", "video", "description", "youtube"}
+    }
+    if goal_tokens:
+        overlap = len(goal_tokens.intersection(set(re.findall(r"[a-z0-9]+", page_text))))
+        if overlap < max(1, min(2, len(goal_tokens))):
+            return None
+    return text[:4000]
+
+
+# Per-run preference for Fireworks (OpenAI SDK) transport: None = not yet proven, True = HTTP/2, False = HTTP/1.1
+_fireworks_http2_preference: Optional[bool] = None
+_fireworks_h2_init_lock = asyncio.Lock()
+_fireworks_h2_fallback_lock = asyncio.Lock()
+
+
+def reset_fireworks_http2_preference() -> None:
+    """Call once at the start of each task run so the first Fireworks LLM call can probe HTTP/2 again."""
+    global _fireworks_http2_preference
+    _fireworks_http2_preference = None
+
+
+def _fireworks_transport_fallback_exc(exc: BaseException) -> bool:
+    """True if the failure is plausibly transport/protocol (retry same request over HTTP/1.1)."""
+    if isinstance(exc, APIConnectionError):
+        return True
+    cur: Optional[BaseException] = exc
+    seen: set[int] = set()
+    for _ in range(12):
+        if cur is None or id(cur) in seen:
+            break
+        seen.add(id(cur))
+        if isinstance(
+            cur,
+            (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.RemoteProtocolError,
+                httpx.LocalProtocolError,
+                httpx.ProtocolError,
+            ),
+        ):
+            return True
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return False
+
+
+async def _close_async_openai_client(client: Optional[AsyncOpenAI]) -> None:
+    """Close AsyncOpenAI across SDK versions that expose close or aclose."""
+    if client is None:
+        return
+    close = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if close is None:
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
 
 
 class BaseLLMProvider(ABC):
@@ -279,18 +368,59 @@ class FireworksKimiProvider(BaseLLMProvider):
     Default base URL: https://api.fireworks.ai/inference/v1
     Default model: accounts/fireworks/models/kimi-k2p6 (Kimi K2.6 on Fireworks).
 
+    HTTP/2: On each task run, the first Fireworks chat completion tries HTTP/2 (requires the optional h2 dependency).
+    If that fails with a transport-level error, the client falls back to HTTP/1.1 for the rest
+    of the run. API-level errors (4xx/5xx) after connecting count as "HTTP/2 works".
+
     For thinking-style models, Fireworks may set reasoning_content; we prefer message.content
     for the action JSON, then fall back to reasoning_content if needed, and strip Kimi markers first.
     """
 
     def __init__(self, config: LLMConfig):
         super().__init__(config)
-        base = (config.api_base or "https://api.fireworks.ai/inference/v1").rstrip("/")
-        self._openai = AsyncOpenAI(
-            api_key=config.api_key or "",
+        self._openai: Optional[AsyncOpenAI] = None
+        self._client_uses_http2: bool = False
+
+    def _create_openai_client(self, *, http2: bool) -> AsyncOpenAI:
+        timeout = self.config.timeout_ms / 1000.0
+        base = (self.config.api_base or "https://api.fireworks.ai/inference/v1").rstrip("/")
+        http_client = httpx.AsyncClient(timeout=timeout, http2=http2)
+        return AsyncOpenAI(
+            api_key=self.config.api_key or "",
             base_url=base,
-            timeout=config.timeout_ms / 1000.0,
+            http_client=http_client,
         )
+
+    async def _ensure_openai_client(self) -> None:
+        global _fireworks_http2_preference
+        if self._openai is not None:
+            return
+        async with _fireworks_h2_init_lock:
+            if self._openai is not None:
+                return
+            if _fireworks_http2_preference is False:
+                self._openai = self._create_openai_client(http2=False)
+                self._client_uses_http2 = False
+                return
+            if _fireworks_http2_preference is True:
+                try:
+                    self._openai = self._create_openai_client(http2=True)
+                    self._client_uses_http2 = True
+                except ImportError:
+                    self._openai = self._create_openai_client(http2=False)
+                    self._client_uses_http2 = False
+                return
+            # Preference undecided: prefer HTTP/2 for the first attempt when h2 is installed.
+            try:
+                self._openai = self._create_openai_client(http2=True)
+                self._client_uses_http2 = True
+            except ImportError:
+                self._openai = self._create_openai_client(http2=False)
+                self._client_uses_http2 = False
+                _fireworks_http2_preference = False
+                print(
+                    f"\n⚠️  [{GOOGLE_GEMINI_LABEL}] HTTP/2 optional dependency missing (`h2`); using HTTP/1.1 for this run."
+                )
 
     def _normalize_openai_message_content(self, content: Any) -> str:
         """Turn chat message content into plain text (string or content-part list)."""
@@ -311,12 +441,50 @@ class FireworksKimiProvider(BaseLLMProvider):
             return "".join(chunks)
         return str(content)
 
+    async def _chat_completion_to_result(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        assert self._openai is not None
+        response = await self._openai.chat.completions.create(**kwargs)
+        msg = response.choices[0].message
+        content_raw = self._normalize_openai_message_content(getattr(msg, "content", None))
+        reasoning_raw = str(getattr(msg, "reasoning_content", None) or "")
+        cleaned = strip_fireworks_kimi_thinking_markers(content_raw)
+        if not cleaned.strip():
+            cleaned = strip_fireworks_kimi_thinking_markers(reasoning_raw)
+        if not cleaned.strip():
+            cleaned = strip_fireworks_kimi_thinking_markers(
+                f"{content_raw}\n{reasoning_raw}".strip()
+            )
+
+        raw_dump: Any
+        if hasattr(response, "model_dump"):
+            raw_dump = response.model_dump()
+        elif hasattr(response, "model_dump_json"):
+            raw_dump = json.loads(response.model_dump_json())
+        else:
+            raw_dump = {"id": getattr(response, "id", None)}
+
+        return {
+            "content": cleaned,
+            "raw_response": raw_dump,
+        }
+
     async def generate(
         self,
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        global _fireworks_http2_preference
+        await self._ensure_openai_client()
+        if (
+            self._openai is not None
+            and self._client_uses_http2
+            and _fireworks_http2_preference is False
+        ):
+            await _close_async_openai_client(self._openai)
+            self._openai = self._create_openai_client(http2=False)
+            self._client_uses_http2 = False
+
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + list(messages)
 
@@ -339,35 +507,46 @@ class FireworksKimiProvider(BaseLLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        response = await self._openai.chat.completions.create(**kwargs)
-        msg = response.choices[0].message
-        content_raw = self._normalize_openai_message_content(getattr(msg, "content", None))
-        reasoning_raw = str(getattr(msg, "reasoning_content", None) or "")
-        # Prefer main content for JSON (Cosmic-OS: Kimi often wraps thinking in content;
-        # reasoning_content can add extra prose with braces that confuses naive JSON extraction).
-        cleaned = strip_fireworks_kimi_thinking_markers(content_raw)
-        if not cleaned.strip():
-            cleaned = strip_fireworks_kimi_thinking_markers(reasoning_raw)
-        if not cleaned.strip():
-            cleaned = strip_fireworks_kimi_thinking_markers(
-                f"{content_raw}\n{reasoning_raw}".strip()
-            )
-
-        raw_dump: Any
-        if hasattr(response, "model_dump"):
-            raw_dump = response.model_dump()
-        elif hasattr(response, "model_dump_json"):
-            raw_dump = json.loads(response.model_dump_json())
-        else:
-            raw_dump = {"id": getattr(response, "id", None)}
-
-        return {
-            "content": cleaned,
-            "raw_response": raw_dump,
-        }
+        undecided = _fireworks_http2_preference is None
+        try:
+            result = await self._chat_completion_to_result(kwargs)
+            if undecided and self._client_uses_http2:
+                _fireworks_http2_preference = True
+            elif undecided and not self._client_uses_http2:
+                _fireworks_http2_preference = False
+            return result
+        except APIStatusError:
+            if undecided and self._client_uses_http2:
+                _fireworks_http2_preference = True
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if (
+                undecided
+                and self._client_uses_http2
+                and _fireworks_transport_fallback_exc(e)
+            ):
+                async with _fireworks_h2_fallback_lock:
+                    if _fireworks_http2_preference is not False:
+                        print(
+                            f"\n⚠️  [{GOOGLE_GEMINI_LABEL}] HTTP/2 transport failed on first call; "
+                            "falling back to HTTP/1.1 for this run."
+                        )
+                    if self._openai is not None:
+                        await _close_async_openai_client(self._openai)
+                    self._openai = self._create_openai_client(http2=False)
+                    self._client_uses_http2 = False
+                    _fireworks_http2_preference = False
+                return await self._chat_completion_to_result(kwargs)
+            if undecided and self._client_uses_http2:
+                _fireworks_http2_preference = True
+            raise
 
     async def close(self):
-        await self._openai.close()
+        if self._openai is not None:
+            await _close_async_openai_client(self._openai)
+            self._openai = None
         await super().close()
 
 
@@ -478,54 +657,100 @@ class Orchestrator:
         executed serially from local visual indexes until the chosen checkpoint.
         """
         workflow = memory_package.get("best_workflow") or {}
+        deterministic_plan = build_default_replay_plan(goal, workflow, max_actions=max_actions)
+        if (
+            deterministic_plan.get("use_workflow")
+            and float(deterministic_plan.get("confidence") or 0.0) >= float(os.getenv("COSMIC_REPLAY_FAST_PATH_MIN_CONFIDENCE", "0.65"))
+            and os.getenv("COSMIC_REPLAY_PREFER_OBSERVED_FAST_PATH", "true").strip().lower() not in {"0", "false", "no", "off"}
+        ):
+            deterministic_plan["reason"] = (
+                deterministic_plan.get("reason", "")
+                + " Used before LLM planning because confidence crossed the observed fast-path threshold."
+            ).strip()
+            return deterministic_plan
+        best_score = float(memory_package.get("best_score") or 0.0)
+        safe_prefix_min_score = float(os.getenv("COSMIC_REPLAY_PREPLAN_SAFE_PREFIX_MIN_SCORE", "0.50"))
+        if (
+            deterministic_plan.get("use_workflow")
+            and deterministic_plan.get("actions")
+            and best_score >= safe_prefix_min_score
+            and os.getenv("COSMIC_REPLAY_PREFER_SAFE_PREFIX", "true").strip().lower() not in {"0", "false", "no", "off"}
+        ):
+            deterministic_plan["reason"] = (
+                deterministic_plan.get("reason", "")
+                + f" Used before LLM planning because workflow score {best_score:.2f} crossed the safe-prefix threshold."
+            ).strip()
+            return deterministic_plan
+
         slim_workflow = {
             "workflow_id": workflow.get("workflow_id"),
             "domain": workflow.get("domain"),
             "intent": workflow.get("intent"),
             "summary": workflow.get("summary"),
+            "route_strategy": workflow.get("route_strategy"),
+            "generalization_level": workflow.get("generalization_level"),
+            "quality": workflow.get("quality"),
+            "variables": workflow.get("variables", []),
+            "acceptance_criteria": workflow.get("acceptance_criteria", {}),
+            "replay_instructions": workflow.get("replay_instructions", {}),
+            "observed_success": workflow.get("observed_success", {}),
             "steps": [
                 {
                     "step_id": step.get("step_id"),
                     "action_type": step.get("action_type"),
+                    "role": step.get("role"),
                     "target_description": step.get("target_description"),
                     "parameters_template": step.get("parameters_template"),
-                    "visual_index": step.get("visual_index"),
+                    "has_replay_visual_index": bool(step.get("visual_index")),
+                    "visual_index_replay_policy": step.get("visual_index_replay_policy"),
+                    "needs_grounding_on_replay": step.get("needs_grounding_on_replay"),
                     "expected_result": step.get("expected_result"),
                     "delay_ms": step.get("delay_ms"),
                     "checkpoint": step.get("checkpoint"),
+                    "mutation": step.get("mutation"),
                 }
                 for step in workflow.get("steps", [])[: max(1, max_actions * 2)]
             ],
             "failure_patches": workflow.get("failure_patches", []),
+            "discarded_steps": workflow.get("discarded_steps", [])[:20],
         }
 
         system_prompt = """You are the COSMIC Browser Memory replay planner.
 
 You convert a retrieved browser traversal workflow into a short executable replay plan for the current task.
 Use the workflow only when it is relevant. Adapt task-specific values such as search terms, URLs, video titles, dates, locations, or product names.
+Return a batch of actions that the local runtime can execute sequentially without another planner call until a checkpoint or failure.
 
 Return ONLY JSON with this schema:
 {
   "use_workflow": true,
   "confidence": 0.0,
   "reason": "why this memory should or should not be used",
+  "variable_values": {"search_query": "adapted value"},
   "checkpoint_after_actions": 1,
+  "checkpoint_reason": "why replay should pause there",
   "actions": [
     {
       "workflow_step_id": "step_001",
       "action_type": "VisualClick",
       "parameters": {"description": "search box"},
       "delay_ms": 900,
-      "expected_result": "search field focused"
+      "expected_result": "search field focused",
+      "execution_mode": "indexed_coordinates|live_grounding|browser_action"
     }
   ]
 }
 
 Rules:
 - Include at most the requested max actions.
-- Choose a checkpoint before fragile or highly variable page states.
+- Prefer replay-safe stored visual indexes for stable steps. For steps marked needs_grounding_on_replay, keep the action but set execution_mode="live_grounding"; the runtime may call MiMo for that step.
+- Fill variable_values for workflow variables when adapting to the user's current goal.
+- Choose a checkpoint before fragile or highly variable page states, before reading unknown answer text, and after dynamic result selection.
+- Use workflow.replay_instructions, acceptance_criteria, failure_patches, and discarded_steps as hard guidance. Do not repeat discarded detours.
 - Do not invent action types. Use the existing action_type values from workflow steps.
 - Keep visual_index out of your response unless you intentionally override it; the runtime will attach stored visual indexes by workflow_step_id.
+- Do not include SaveNote if its note still contains unresolved {{variables}} or if the answer must be read from the current/future screen. Stop before that step and let the live visible-answer finalizer extract it.
+- If the workflow only provides a template route to a dynamic result page, replay the safe prefix and stop at that dynamic checkpoint.
 - If the workflow is not relevant, set use_workflow=false and actions=[].
 """
 
@@ -543,28 +768,41 @@ Max replay actions before checkpoint: {max_actions}
         messages = [
             {
                 "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": screenshot_base64}},
-                    {"type": "text", "text": user_text},
-                ],
+                "content": user_text,
             }
         ]
 
         provider = self.models[LLMTier.SLOW] or self.models[LLMTier.MEDIUM] or self.models[LLMTier.FAST]
         start_time = time.time()
-        result = await provider.generate(messages=messages, system_prompt=system_prompt)
+        try:
+            result = await provider.generate(messages=messages, system_prompt=system_prompt)
+        except Exception as exc:
+            fallback = build_default_replay_plan(goal, workflow, max_actions=max_actions)
+            fallback["reason"] = f"Replay planner LLM failed; using deterministic prefix. Error: {exc}"
+            return fallback
         self.call_counts[LLMTier.SLOW] += 1
         self.total_latency_ms[LLMTier.SLOW] += (time.time() - start_time) * 1000
         parsed = self._extract_json_object(result.get("content", ""))
         if not parsed:
-            return {
-                "use_workflow": False,
-                "confidence": 0.0,
-                "reason": "Planner did not return valid JSON.",
-                "actions": [],
-            }
+            fallback = build_default_replay_plan(goal, workflow, max_actions=max_actions)
+            fallback["reason"] = "Replay planner did not return valid JSON; using deterministic prefix."
+            return fallback
         parsed.setdefault("actions", [])
+        parsed.setdefault("variable_values", {})
         parsed.setdefault("checkpoint_after_actions", len(parsed["actions"]))
+        parsed.setdefault("checkpoint_reason", "")
+        if not parsed.get("use_workflow") or not parsed.get("actions"):
+            min_safe_prefix_score = float(os.getenv("COSMIC_REPLAY_SAFE_PREFIX_MIN_SCORE", "0.30"))
+            if (
+                deterministic_plan.get("use_workflow")
+                and deterministic_plan.get("actions")
+                and best_score >= min_safe_prefix_score
+            ):
+                deterministic_plan["reason"] = (
+                    f"Replay planner skipped or returned no actions; using deterministic safe prefix "
+                    f"because workflow score {best_score:.2f} >= {min_safe_prefix_score:.2f}."
+                )
+                return deterministic_plan
         return parsed
 
     async def try_finalize_visible_answer(
@@ -665,7 +903,12 @@ Recent steps:
 
 The browser agent is stuck repeating actions on the same page. Your job is to decide whether the CURRENT SCREENSHOT is on the requested target and, only if it is, write the best note that can be saved for the user's goal.
 
-Return ONLY JSON:
+CRITICAL JSON CONTRACT:
+- Your entire response must be one JSON object.
+- The first character must be { and the last character must be }.
+- Do not include analysis, markdown, prose, or code fences.
+
+Return this JSON shape:
 {
   "matches_goal": true,
   "note": "answer to save",
@@ -730,8 +973,13 @@ Recent same-page steps that caused forced finalization:
             confidence = float(parsed.get("confidence") or 0.55)
             reason = str(parsed.get("reason") or "forced visible-answer finalization").strip()
         else:
-            print("   [Visible-answer governor] no forced save: finalizer returned non-JSON text")
-            return None
+            salvaged = _salvage_visible_answer_note(raw_content, context)
+            if not salvaged:
+                print("   [Visible-answer governor] no forced save: finalizer returned non-JSON text")
+                return None
+            note = salvaged
+            confidence = 0.72
+            reason = "salvaged non-JSON visible-answer finalizer text"
 
         if not note:
             print("   [Visible-answer governor] no forced save: finalizer returned an empty note")

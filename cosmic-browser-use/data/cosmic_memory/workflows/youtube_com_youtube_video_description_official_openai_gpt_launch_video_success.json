@@ -4,18 +4,63 @@
   "domain": "youtube.com",
   "intent": "Find a specific YouTube video by search and extract its full description",
   "task_signature": "youtube_com_youtube_video_description_official_openai_gpt_launch_video",
-  "created_at": "2026-05-17T23:28:39.917061+00:00",
-  "updated_at": "2026-05-17T23:28:39.917061+00:00",
-  "success_count": 3,
+  "created_at": "2026-05-18T00:25:26.512815+00:00",
+  "updated_at": "2026-05-18T00:25:26.512815+00:00",
+  "success_count": 6,
   "avg_runtime_seconds": null,
-  "summary": "Navigate to YouTube, search for a video by query, select the correct result from search results or recommendations, expand the description if truncated, and save the description text.",
-  "route_strategy": "Search on YouTube, checkpoint at results page for dynamic selection, then navigate to target video page, scroll to description, expand if needed, and extract.",
+  "summary": "Navigate to YouTube, search for a target video, select the correct result from search results or recommendations, expand the description if truncated, and save the description text.",
+  "route_strategy": "Search-first with checkpoint after results; dynamic selection of correct video from results or sidebar recommendations; verify correct video by title/channel before extracting description.",
+  "replay_instructions": {
+    "do": [
+      "Navigate to youtube.com",
+      "Click search bar and type parameterized search query with Enter",
+      "Pause at search results checkpoint to identify correct video",
+      "If wrong video selected initially, use sidebar recommendations to find correct official video",
+      "Scroll to position description area in viewport",
+      "Click '...more' or 'Show more' to expand truncated descriptions",
+      "Save the full description text",
+      "Preserve goal-specific target hints: youtube, video, description, official, openai, gpt, launch, video.",
+      "Prefer the observed successful final URL when it still matches the goal: https://www.youtube.com/watch?v=DQacCB9tDaw.",
+      "Patch: After search results load, verify video title contains expected main title (e.g., 'Introducing GPT-4o') and is from official channel before clicking; if uncertain, pause at checkpoint for live agent verification.",
+      "Patch: Always scroll down slightly (1-2 scroll units) to position description area in viewport before attempting to click expand button.",
+      "Patch: If wrong video is suspected, abandon extraction immediately and navigate to correct video via search refinement or sidebar recommendations rather than continuing with wrong target."
+    ],
+    "avoid": [
+      "Clicking first search result without verifying it's the official/target video",
+      "Assuming the first video clicked is correct without checking title and channel",
+      "Scrolling excessively without purpose - small targeted scrolls are better",
+      "Clicking '...more' when it's not clearly visible in viewport",
+      "Do not replay source step 4: Wrong video selected - 'Live demo of GPT-4o realtime translation' is not the official launch video, just a demo clip from same event.",
+      "Do not replay source step 5: Excessive scroll on wrong video page - 1500px scroll was unnecessary and on wrong target.",
+      "Do not replay source step 6: Compensatory scroll up after wrong scroll direction - wasted step on wrong video.",
+      "Do not replay source step 7: Attempted to expand description on wrong video - would have extracted incorrect description.",
+      "Do not replay source step 8: Unnecessary wait on wrong video page - no progress toward correct goal.",
+      "Do not replay source step 10: Failed click on '...more' due to element not found - likely not in viewport, superseded by scroll-then-click pattern in steps 11-12.",
+      "Do not replay source step 13: Unnecessary wait - description already visible and expanded, no state change needed before save.",
+      "Avoid failure: Clicked wrong video from search results - selected demo/secondary video instead of main launch video."
+    ],
+    "checkpoints": [
+      "After search results load - verify correct video title and channel before clicking",
+      "After landing on video page - verify URL and title match expected target",
+      "After expanding description - confirm full text is visible before saving",
+      "Target page title should resemble: [Tab 1/1] Introducing GPT-4o - YouTube.",
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "Search returns no relevant results from official channel",
+      "Description area is missing or inaccessible",
+      "Multiple videos with similar titles - requires live agent judgment",
+      "Video page loads but description is completely empty",
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
   "generalization_level": "template",
   "quality": {
     "usable": true,
-    "confidence": 0.85,
+    "confidence": 0.92,
     "generalization_level": "template",
-    "reason": "Successful extraction of YouTube video description. The search-then-select pattern is reusable, though result selection requires dynamic visual matching since search results vary."
+    "reason": "Successful extraction of YouTube video description. The search-then-select pattern is reusable, though the specific video selection from search results requires dynamic decision-making."
   },
   "variables": [
     {
@@ -27,10 +72,20 @@
       ]
     },
     {
-      "name": "target_video_hint",
+      "name": "expected_channel",
+      "default": "OpenAI",
+      "source": "goal",
+      "applies_to_source_steps": [
+        3,
+        9
+      ]
+    },
+    {
+      "name": "expected_title_contains",
       "default": "Introducing GPT-4o",
       "source": "goal",
       "applies_to_source_steps": [
+        3,
         9
       ]
     }
@@ -40,14 +95,19 @@
       "youtube.com/watch",
       "OpenAI",
       "GPT-4o",
-      "Introducing GPT-4o",
-      "Spring Update"
+      "description text visible"
     ],
     "reject": [
-      "unrelated video",
-      "wrong channel",
-      "not official OpenAI"
+      "unrelated video title",
+      "wrong channel (not OpenAI)",
+      "search results page without selection"
     ]
+  },
+  "observed_success": {
+    "final_url": "https://www.youtube.com/watch?v=DQacCB9tDaw",
+    "final_title": "[Tab 1/1] Introducing GPT-4o - YouTube",
+    "final_note": "YouTube video description for the official OpenAI GPT-4o launch video (https://www.youtube.com/watch?v=DQacCB9tDaw):\n\nOpenAI Spring Update – streamed live on Monday, May 13, 2024.\n\nIntroducing GPT-4o, updates to ChatGPT, and more.",
+    "note_source_step": 14
   },
   "source_run_dir": "runs\\20260517_155250",
   "source_status": "success",
@@ -55,36 +115,36 @@
     "source": "llm",
     "provider": "fireworks_kimi",
     "model": "accounts/fireworks/models/kimi-k2p6",
-    "version": "cosmic_run_indexer_v1"
+    "version": "cosmic_run_indexer_v2"
   },
   "discarded_steps": [
     {
       "source_step": 4,
-      "reason": "Wrong target video selected (live demo translation instead of official launch video)"
+      "reason": "Wrong video selected - 'Live demo of GPT-4o realtime translation' is not the official launch video, just a demo clip from same event"
     },
     {
       "source_step": 5,
-      "reason": "Detour scroll on wrong video page"
+      "reason": "Excessive scroll on wrong video page - 1500px scroll was unnecessary and on wrong target"
     },
     {
       "source_step": 6,
-      "reason": "Detour scroll on wrong video page"
+      "reason": "Compensatory scroll up after wrong scroll direction - wasted step on wrong video"
     },
     {
       "source_step": 7,
-      "reason": "Failed click on wrong video page description"
+      "reason": "Attempted to expand description on wrong video - would have extracted incorrect description"
     },
     {
       "source_step": 8,
-      "reason": "Unnecessary wait on wrong video page"
+      "reason": "Unnecessary wait on wrong video page - no progress toward correct goal"
     },
     {
       "source_step": 10,
-      "reason": "Failed click before scrolling to position description properly"
+      "reason": "Failed click on '...more' due to element not found - likely not in viewport, superseded by scroll-then-click pattern in steps 11-12"
     },
     {
       "source_step": 13,
-      "reason": "Unnecessary wait before final extraction"
+      "reason": "Unnecessary wait - description already visible and expanded, no state change needed before save"
     }
   ],
   "trace_evidence": [
@@ -206,7 +266,7 @@
     {
       "source_step": 4,
       "selected": false,
-      "discarded_reason": "Wrong target video selected (live demo translation instead of official launch video)",
+      "discarded_reason": "Wrong video selected - 'Live demo of GPT-4o realtime translation' is not the official launch video, just a demo clip from same event",
       "action_type": "VisualClick",
       "success": true,
       "verification_status": "success",
@@ -250,7 +310,7 @@
     {
       "source_step": 5,
       "selected": false,
-      "discarded_reason": "Detour scroll on wrong video page",
+      "discarded_reason": "Excessive scroll on wrong video page - 1500px scroll was unnecessary and on wrong target",
       "action_type": "VisualScroll",
       "success": true,
       "verification_status": "success",
@@ -276,7 +336,7 @@
     {
       "source_step": 6,
       "selected": false,
-      "discarded_reason": "Detour scroll on wrong video page",
+      "discarded_reason": "Compensatory scroll up after wrong scroll direction - wasted step on wrong video",
       "action_type": "VisualScroll",
       "success": true,
       "verification_status": "success",
@@ -302,7 +362,7 @@
     {
       "source_step": 7,
       "selected": false,
-      "discarded_reason": "Failed click on wrong video page description",
+      "discarded_reason": "Attempted to expand description on wrong video - would have extracted incorrect description",
       "action_type": "VisualClick",
       "success": true,
       "verification_status": "no_change",
@@ -346,7 +406,7 @@
     {
       "source_step": 8,
       "selected": false,
-      "discarded_reason": "Unnecessary wait on wrong video page",
+      "discarded_reason": "Unnecessary wait on wrong video page - no progress toward correct goal",
       "action_type": "TimedWait",
       "success": true,
       "verification_status": "no_change",
@@ -415,7 +475,7 @@
     {
       "source_step": 10,
       "selected": false,
-      "discarded_reason": "Failed click before scrolling to position description properly",
+      "discarded_reason": "Failed click on '...more' due to element not found - likely not in viewport, superseded by scroll-then-click pattern in steps 11-12",
       "action_type": "VisualClick",
       "success": false,
       "verification_status": "success",
@@ -510,7 +570,7 @@
     {
       "source_step": 13,
       "selected": false,
-      "discarded_reason": "Unnecessary wait before final extraction",
+      "discarded_reason": "Unnecessary wait - description already visible and expanded, no state change needed before save",
       "action_type": "TimedWait",
       "success": true,
       "verification_status": "no_change",
@@ -619,7 +679,7 @@
         "target",
         "video",
         "thumbnail",
-        "search"
+        "sidebar"
       ],
       "screenshot_path": "runs\\20260517_155250\\screenshots\\step_009.webp",
       "screenshot_hash": "ff0303030303ffff"
@@ -636,10 +696,10 @@
         "youtube",
         "scroll",
         "down",
-        "bring",
+        "position",
         "video",
         "description",
-        "view"
+        "viewport"
       ],
       "screenshot_path": "runs\\20260517_155250\\screenshots\\step_011.webp",
       "screenshot_hash": "fbf9f9f9f9f9b939"
@@ -677,7 +737,7 @@
         "gpt",
         "youtube",
         "save",
-        "visible",
+        "full",
         "video",
         "description",
         "text"
@@ -725,7 +785,7 @@
       "coordinates": null,
       "expected_result": "YouTube homepage loads",
       "to_state_id": "youtube_com_state_002_tab_1_1_youtube",
-      "delay_ms": 1500,
+      "delay_ms": 500,
       "checkpoint": false,
       "success": true,
       "verification_status": "success",
@@ -739,7 +799,7 @@
       "source_evidence_steps": [
         2
       ],
-      "role": "navigation",
+      "role": "search_query",
       "from_state_id": "youtube_com_state_002_tab_1_1_youtube",
       "action_type": "VisualClick",
       "target_description": "YouTube search bar at top center",
@@ -832,7 +892,7 @@
         596,
         28
       ],
-      "expected_result": "Search bar focused",
+      "expected_result": "Search bar focused and ready for input",
       "to_state_id": "youtube_com_state_003_tab_1_1_youtube",
       "delay_ms": 300,
       "checkpoint": false,
@@ -962,9 +1022,9 @@
       "role": "open_target",
       "from_state_id": "youtube_com_state_004_tab_1_1_live_demo_of_gpt_4o_",
       "action_type": "VisualClick",
-      "target_description": "Correct target video thumbnail in search results or sidebar matching the intent",
+      "target_description": "Correct target video thumbnail in sidebar recommendations by expected channel",
       "parameters_template": {
-        "description": "Introducing GPT-4o video thumbnail in right sidebar by OpenAI"
+        "description": "{{expected_title_contains}} video thumbnail by {{expected_channel}}"
       },
       "parameter_slots": {},
       "visual_index": null,
@@ -1012,7 +1072,7 @@
         "reason": "source_page_route_gap_requires_live_grounding"
       },
       "coordinates": null,
-      "expected_result": "Target video page loads with correct title",
+      "expected_result": "Target video page loads with correct title and URL",
       "to_state_id": "youtube_com_state_005_tab_1_1_introducing_gpt_4o_y",
       "delay_ms": 800,
       "checkpoint": true,
@@ -1031,7 +1091,7 @@
       "role": "expand_content",
       "from_state_id": "youtube_com_state_005_tab_1_1_introducing_gpt_4o_y",
       "action_type": "VisualScroll",
-      "target_description": "Scroll down to bring video description into view",
+      "target_description": "Scroll down to position video description in viewport",
       "parameters_template": {
         "direction": "down",
         "amount": 1
@@ -1066,7 +1126,7 @@
       "action_type": "VisualClick",
       "target_description": "more button at end of truncated video description",
       "parameters_template": {
-        "description": "more button at end of video description text, below the video title and view count"
+        "description": "more button at end of video description text"
       },
       "parameter_slots": {},
       "visual_index": {
@@ -1154,9 +1214,9 @@
         373,
         212
       ],
-      "expected_result": "Full description text expanded",
+      "expected_result": "Description expands to show full text",
       "to_state_id": "youtube_com_state_007_tab_1_1_introducing_gpt_4o_y",
-      "delay_ms": 500,
+      "delay_ms": 400,
       "checkpoint": false,
       "success": true,
       "verification_status": "success",
@@ -1173,9 +1233,9 @@
       "role": "extract_answer",
       "from_state_id": "youtube_com_state_007_tab_1_1_introducing_gpt_4o_y",
       "action_type": "SaveNote",
-      "target_description": "Save the visible video description text",
+      "target_description": "Save the full video description text",
       "parameters_template": {
-        "note": "YouTube video description extracted from {{current_url}}:\n\n{{description_text}}"
+        "note": "YouTube video description for {{expected_title_contains}} ({{current_url}}):\n\n{{description_text}}"
       },
       "parameter_slots": {},
       "visual_index": null,
@@ -1188,7 +1248,7 @@
       "coordinates": null,
       "expected_result": "Note saved with full description",
       "to_state_id": "youtube_com_state_008_tab_1_1_introducing_gpt_4o_y",
-      "delay_ms": 300,
+      "delay_ms": 200,
       "checkpoint": false,
       "success": true,
       "verification_status": "no_change",
@@ -1202,17 +1262,25 @@
       "patch_id": "patch_indexer_001",
       "domain": "youtube.com",
       "applies_to_source_step": 4,
-      "failure": "Selected wrong video from search results (live demo instead of official launch)",
-      "fix": "After search results load, visually verify the target video title/channel matches intent before clicking; use sidebar recommendations as fallback if initial selection is wrong",
-      "confidence": 0.8
+      "failure": "Clicked wrong video from search results - selected demo/secondary video instead of main launch video",
+      "fix": "After search results load, verify video title contains expected main title (e.g., 'Introducing GPT-4o') and is from official channel before clicking; if uncertain, pause at checkpoint for live agent verification",
+      "confidence": 0.85
     },
     {
       "patch_id": "patch_indexer_002",
       "domain": "youtube.com",
       "applies_to_source_step": 10,
-      "failure": "Click on ...more button failed because element not in viewport",
-      "fix": "Scroll down slightly to bring description and ...more button into viewport before clicking",
+      "failure": "Failed to find '...more' button because it was not in viewport after page load",
+      "fix": "Always scroll down slightly (1-2 scroll units) to position description area in viewport before attempting to click expand button",
       "confidence": 0.9
+    },
+    {
+      "patch_id": "patch_indexer_003",
+      "domain": "youtube.com",
+      "applies_to_source_step": 7,
+      "failure": "Attempted to extract description from wrong video after already realizing it might not be correct",
+      "fix": "If wrong video is suspected, abandon extraction immediately and navigate to correct video via search refinement or sidebar recommendations rather than continuing with wrong target",
+      "confidence": 0.8
     }
   ],
   "user_preferences": []

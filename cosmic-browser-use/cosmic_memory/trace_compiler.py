@@ -156,7 +156,17 @@ class TraceCompiler:
             "success_count": success_count,
             "avg_runtime_seconds": None,
             "summary": self._summary(task, domain, compiled_steps),
+            "route_strategy": "Replay safe indexed actions until a checkpoint or mismatch, then hand back to the live browser agent.",
+            "replay_instructions": {
+                "do": ["Use stored visual indexes only when the replay policy marks them safe."],
+                "avoid": ["Do not force stale coordinates when page state differs from the indexed source state."],
+                "checkpoints": ["Pause at workflow checkpoints and after dynamic target selection."],
+                "stop_conditions": ["Stop replay if verification fails or a templated answer must be read from the current screen."],
+            },
+            "observed_success": self._observed_success(step_dicts, final),
             "source_run_dir": run_dir,
+            "discarded_steps": [],
+            "trace_evidence": self._trace_evidence(step_dicts, {"selected_steps": compiled_steps, "discarded_steps": []}),
             "page_states": page_states,
             "steps": compiled_steps,
             "failure_patches": failure_patches,
@@ -334,10 +344,12 @@ class TraceCompiler:
             "avg_runtime_seconds": None,
             "summary": workflow_meta.get("summary") or self._summary(task, domain, compiled_steps),
             "route_strategy": workflow_meta.get("route_strategy"),
+            "replay_instructions": workflow_meta.get("replay_instructions") or {},
             "generalization_level": quality.get("generalization_level"),
             "quality": quality,
             "variables": workflow_meta.get("variables") or [],
             "acceptance_criteria": workflow_meta.get("acceptance_criteria") or {},
+            "observed_success": self._observed_success(step_dicts, final_state),
             "source_run_dir": run_dir,
             "source_status": status,
             "indexer": indexer_plan.get("indexer") or {},
@@ -354,6 +366,23 @@ class TraceCompiler:
         if self.supermemory:
             self.supermemory.remember_workflow(workflow)
         return workflow
+
+    def _observed_success(self, step_dicts: List[Dict[str, Any]], final_state: Dict[str, Any]) -> Dict[str, Any]:
+        final_note = ""
+        note_step = None
+        for step in reversed(step_dicts):
+            action = step.get("action") or {}
+            if action.get("action_type") == "SaveNote" and action.get("success"):
+                params = (step.get("tool_call") or {}).get("parameters") or {}
+                final_note = params.get("note") or action.get("description") or ""
+                note_step = step.get("step")
+                break
+        return {
+            "final_url": final_state.get("url"),
+            "final_title": final_state.get("title"),
+            "final_note": final_note,
+            "note_source_step": note_step,
+        }
 
     def _trace_evidence(self, step_dicts: List[Dict[str, Any]], indexer_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         selected = {

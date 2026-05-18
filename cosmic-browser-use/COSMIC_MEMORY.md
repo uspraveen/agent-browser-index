@@ -79,7 +79,7 @@ COSMIC_INDEXER_MAX_TOKENS=4096
 
 `learn`: run normally, then compile the run into `data/cosmic_memory/workflows/*.json` and write a semantic summary to Supermemory when configured.
 
-`recall`: retrieve an existing workflow, ask the main LLM for one upfront replay plan, execute that plan without per-step LLM calls until checkpoint, then continue with the normal agent.
+`recall`: retrieve an existing workflow, build one upfront replay plan, execute that plan without per-step LLM calls until checkpoint, then continue with the normal agent. If the indexed workflow has an observed successful final URL and the current goal strongly matches that target, recall uses the deterministic observed-final-URL fast path before spending a slow planner call.
 
 `auto`: recall first, then compile the finished run back into memory.
 
@@ -108,6 +108,14 @@ Replay/adapt it:
 ```bash
 python main.py --provider fireworks_kimi --memory-mode recall --goal "Get the YouTube video description for the official Supermemory demo video"
 ```
+
+For an exact target repeat, replay can skip search/result selection entirely:
+
+```text
+recall -> observed final URL -> indexed scroll/expand actions -> checkpoint finalizer
+```
+
+For a changed target, replay falls back to the safe prefix and checkpoints at the dynamic result-selection step.
 
 Use `auto` during rehearsals when you want recall plus writeback:
 

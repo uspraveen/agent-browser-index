@@ -19,10 +19,19 @@ from cosmic_types import (
     VerificationStatus, ActionType, ActionResult
 )
 from memory_manager import MemoryManager
-from orchestrator import Orchestrator
+from orchestrator import Orchestrator, reset_fireworks_http2_preference
 from browser_controller import BrowserController
 from find_coordinates_mimo import check_mimo_health
+from cli_labels import (
+    cli_allowed_provider_labels,
+    cli_provider_help,
+    display_provider_label,
+    display_provider_model,
+    display_stat_value,
+    normalize_cli_provider_arg,
+)
 from cosmic_memory.debug_log import CosmicDebugLogger
+from cosmic_memory.demo_overlay import DemoOverlayManager
 from cosmic_memory.replay import execute_indexed_replay_plan
 from cosmic_memory.runtime import CosmicMemoryRuntime
 
@@ -198,6 +207,97 @@ def _should_try_search_results_governor(
     has_zig_zag = any("down" in d for d in directions) and any("up" in d or "top" in d for d in directions)
     return has_zig_zag or len(scroll_steps) >= window - 1
 
+
+async def _try_finalize_after_replay_checkpoint(
+    *,
+    browser: BrowserController,
+    memory: MemoryManager,
+    orchestrator: Orchestrator,
+    cosmic_log: CosmicDebugLogger,
+) -> bool:
+    """At a replay checkpoint, make one focused visible-answer save attempt."""
+    step_num = len(memory.steps) + 1
+    screenshot_path, screenshot_hash, browser_state = await browser.capture_state(
+        f"step_{step_num:03d}_replay_checkpoint"
+    )
+    context = memory.get_context_for_llm(screenshot_path)
+    with open(screenshot_path, "rb") as f:
+        screenshot_b64 = f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}"
+
+    cosmic_log.replay(
+        "checkpoint_finalizer.attempt",
+        step=step_num,
+        screenshot_path=screenshot_path,
+        browser_state=browser_state.to_dict(),
+    )
+    llm_response = await orchestrator.force_visible_answer_note(
+        context=context,
+        screenshot_base64=screenshot_b64,
+    )
+    if not llm_response:
+        cosmic_log.replay("checkpoint_finalizer.no_visible_answer", step=step_num)
+        return False
+
+    execution_start = time.time()
+    action_result = await browser.execute_tool(llm_response.tool_call, screenshot_path)
+    action_result.execution_time_ms = action_result.execution_time_ms or ((time.time() - execution_start) * 1000)
+    after_screenshot_path, after_screenshot_hash, after_state = await browser.capture_state(
+        f"step_{step_num:03d}_replay_checkpoint_after"
+    )
+    verification_status = VerificationStatus.SUCCESS if action_result.success else VerificationStatus.ERROR
+    action_result.verification_status = verification_status
+    action_result.state_change_score = 0.0
+    action_result.estimated_completion = llm_response.estimated_completion
+
+    memory.add_step(
+        screenshot_path=screenshot_path,
+        screenshot_hash=screenshot_hash,
+        browser_state=after_state,
+        action=action_result,
+        thinking=llm_response.reasoning,
+        before_browser_state=browser_state,
+        after_browser_state=after_state,
+        after_screenshot_path=after_screenshot_path,
+        after_screenshot_hash=after_screenshot_hash,
+        tool_call={
+            "action_type": llm_response.tool_call.action_type.value,
+            "parameters": llm_response.tool_call.parameters,
+            "source": "cosmic_replay_checkpoint_finalizer",
+            "verification_hint": llm_response.tool_call.verification_hint,
+        },
+        llm_response=llm_response.to_dict(),
+    )
+    cosmic_log.replay(
+        "checkpoint_finalizer.saved",
+        step=step_num,
+        llm_response=llm_response.to_dict(),
+        action_result=action_result.to_dict(),
+        after_browser_state=after_state.to_dict(),
+    )
+    return bool(action_result.success and llm_response.estimated_completion >= 0.95)
+
+
+def _should_try_replay_checkpoint_finalizer(replay_summary: dict) -> bool:
+    if not replay_summary.get("completed_replay") or not replay_summary.get("checkpoint_reached"):
+        return False
+    reason = str(replay_summary.get("checkpoint_reason") or "").lower()
+    if "answer extraction" in reason or "observed-target" in reason:
+        return True
+    executed = replay_summary.get("executed") or []
+    if not executed:
+        return False
+    last = executed[-1]
+    if last.get("action_type") in {ActionType.NAVIGATE.value, ActionType.VISUAL_TYPE.value}:
+        return False
+    if "search" in reason or "result" in reason:
+        return False
+    return last.get("action_type") in {
+        ActionType.VISUAL_CLICK.value,
+        ActionType.VISUAL_SCROLL.value,
+        ActionType.PRESS_KEY.value,
+    }
+
+
 async def run_task(
     goal: str,
     initial_url: str = None, # Optional
@@ -221,6 +321,7 @@ async def run_task(
     supermemory_enabled: bool = True,
     replay_max_actions: int = 8,
     interaction_mode: str = "hybrid",
+    demo_overlay_enabled: bool = False,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", "https://mbhl6tqhfyvdd3tu.us-east-1.aws.endpoints.huggingface.cloud/v1/")
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -240,6 +341,8 @@ async def run_task(
     All behavioral parameters are exposed as keyword arguments with sensible
     defaults from config.py, making it easy to override from an API layer.
     """
+
+    reset_fireworks_http2_preference()
 
     # Setup working directory
     working_dir = Path(f"./runs/{datetime.now().strftime('%Y%m%d_%H%M%S')}")
@@ -262,7 +365,7 @@ async def run_task(
     print(f"COSMIC BROWSER USE AGENT - Task Started")
     print(f"{'='*80}")
     print(f"Goal: {goal}")
-    print(f"Provider: {fast_model_config.provider.value}")
+    print(f"Provider: {display_provider_label(fast_model_config.provider)}")
     print(f"Initial URL: {initial_url if initial_url else 'about:blank'}")
     print(f"Max steps: {max_steps}")
     print(f"Working directory: {working_dir}")
@@ -308,7 +411,7 @@ async def run_task(
         summary_api_key=summary_api_key,
         summary_api_base=summary_api_base,
     )
-    print(f"Summary model: {memory.summary_provider}:{memory.summary_model}")
+    print(f"Summary model: {display_provider_model(memory.summary_provider, memory.summary_model)}")
     cosmic_log.event(
         "memory.summary_config",
         summary_provider=memory.summary_provider,
@@ -322,6 +425,15 @@ async def run_task(
         slow_model=slow_model_config,
     )
     
+    demo_overlay = DemoOverlayManager(enabled=demo_overlay_enabled)
+    if demo_overlay.enabled:
+        print("🎛️  Demo overlay enabled (hidden during every agent screenshot capture).")
+        cosmic_log.event("demo_overlay.enabled")
+        demo_overlay.set_state(
+            mode=("Memory Mode" if memory_mode in {"recall", "auto"} else
+                  "Learning Mode" if memory_mode == "learn" else "Live Mode"),
+        )
+
     browser = BrowserController(
         config=config,
         mimo_api_url=mimo_api_url,
@@ -329,9 +441,11 @@ async def run_task(
         working_dir=working_dir,
         large_notes_path=resolved_large_notes_path,
         headless=headless,
+        demo_overlay=demo_overlay,
     )
-    
+
     await browser.start(initial_url)
+    task_start_time = time.time()
 
     cosmic_runtime = None
     retrieved_memory = None
@@ -353,9 +467,21 @@ async def run_task(
         )
         if cosmic_runtime.supermemory.last_error:
             print(f"⚠️  COSMIC Supermemory: {cosmic_runtime.supermemory.last_error}")
+        await demo_overlay.update(
+            page=browser.page,
+            supermemory=("Connected" if cosmic_runtime.supermemory.enabled else "Local only"),
+        )
+    else:
+        await demo_overlay.update(page=browser.page, supermemory="Local only")
 
     if memory_mode in {"recall", "auto"} and cosmic_runtime:
         print("\n🧠 COSMIC Memory Recall: searching prior traversal workflows...")
+        await demo_overlay.update(
+            page=browser.page,
+            phase="Retrieving memory",
+            pulse_ms=1500,
+            timeline_append={"kind": "recall", "label": "Supermemory recall"},
+        )
         probe_screenshot_path, _, probe_state = await browser.capture_state("cosmic_memory_probe")
         cosmic_log.memory(
             "recall.probe_state",
@@ -379,6 +505,17 @@ async def run_task(
         )
         if best_workflow and best_score >= float(os.getenv("COSMIC_RECALL_MIN_SCORE", "0.18")):
             print(f"✅ COSMIC Memory matched workflow: {best_workflow.get('workflow_id')} (score={best_score:.2f})")
+            await demo_overlay.update(
+                page=browser.page,
+                workflow_id=best_workflow.get("workflow_id"),
+                recall_score=best_score,
+                phase="Matched path",
+                pulse_ms=1500,
+                timeline_append={
+                    "kind": "recall",
+                    "label": f"Matched workflow ({best_score:.2f})",
+                },
+            )
             with open(probe_screenshot_path, "rb") as f:
                 probe_screenshot_b64 = f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}"
             replay_plan = await orchestrator.plan_indexed_replay(
@@ -408,15 +545,37 @@ async def run_task(
                     workflow=best_workflow,
                     max_actions=replay_max_actions,
                     debug_logger=cosmic_log,
+                    demo_overlay=demo_overlay,
                 )
                 print(f"🧭 COSMIC Replay result: {replay_summary}")
+                if (
+                    _should_try_replay_checkpoint_finalizer(replay_summary)
+                    and not replay_summary.get("goal_completed")
+                    and _is_information_goal(goal)
+                ):
+                    print("🔎 COSMIC Replay checkpoint: trying one focused visible-answer finalizer...")
+                    finalized = await _try_finalize_after_replay_checkpoint(
+                        browser=browser,
+                        memory=memory,
+                        orchestrator=orchestrator,
+                        cosmic_log=cosmic_log,
+                    )
+                    replay_summary["checkpoint_finalizer_saved"] = finalized
+                    replay_summary["goal_completed"] = bool(finalized)
+                    if finalized:
+                        print("✅ COSMIC Replay checkpoint finalizer saved the answer.")
             else:
                 print(f"ℹ️  COSMIC planner skipped replay: {replay_plan.get('reason', 'no reason')}")
+                await demo_overlay.update(
+                    page=browser.page,
+                    phase="Live planner fallback",
+                )
         else:
             print("ℹ️  COSMIC Memory: no strong workflow match found; running normal agent.")
-    
-    # Track total task execution time
-    task_start_time = time.time()
+            await demo_overlay.update(
+                page=browser.page,
+                phase="Live planner fallback",
+            )
     
     # Main loop
     previous_confidence = 1.0
@@ -424,9 +583,33 @@ async def run_task(
     task_status = "incomplete"
     last_visible_answer_governor_step = 0
     last_search_results_governor_step = 0
+    live_llm_decisions = 0
     
     try:
-        for step_num in range(len(memory.steps) + 1, max_steps + 1):
+        if replay_summary and replay_summary.get("goal_completed"):
+            print("\n🎉 GOAL ACHIEVED via COSMIC indexed replay!")
+            task_status = "success"
+            await demo_overlay.update(
+                page=browser.page,
+                phase="Saved answer",
+                pulse_ms=2000,
+                timeline_append={"kind": "saved", "label": "Answer saved"},
+            )
+            final_notes = []
+            if memory.steps:
+                last_state = memory.steps[-1].browser_state
+                if last_state and last_state.notes:
+                    final_notes = last_state.notes
+            if final_notes:
+                print("\n" + "="*80)
+                print("📋 RESULT")
+                print("="*80)
+                for note in final_notes:
+                    print(f"  {note}")
+                print("="*80)
+
+        loop_start = max_steps + 1 if task_status == "success" else len(memory.steps) + 1
+        for step_num in range(loop_start, max_steps + 1):
             # Track step execution time
             step_start_time = time.time()
             
@@ -540,6 +723,18 @@ async def run_task(
                     previous_confidence=previous_confidence,
                 )
             llm_time_ms = (time.time() - llm_start) * 1000
+
+            # Live overlay: count this LLM-driven step. Replay-mode steps run
+            # before this loop and aren't counted here, which is exactly the
+            # "skipping exploration" story we want to show.
+            live_llm_decisions += 1
+            if demo_overlay.enabled:
+                demo_overlay.set_state(phase="Live planner active")
+                demo_overlay.update_metrics(llm_calls=live_llm_decisions)
+                try:
+                    await demo_overlay.push(browser.page)
+                except Exception:
+                    pass
             
             print(f"\n🤖 LLM Decision:")
             print(f"   Action: {llm_response.tool_call.action_type.value}")
@@ -701,6 +896,12 @@ async def run_task(
                 if action_result and action_result.success:
                     print("\n🎉 GOAL ACHIEVED - Task complete!")
                     task_status = "success"
+                    await demo_overlay.update(
+                        page=browser.page,
+                        phase="Saved answer",
+                        pulse_ms=2000,
+                        timeline_append={"kind": "saved", "label": "Answer saved"},
+                    )
                     # Print the agent's saved notes as the final answer
                     final_notes = []
                     if memory.steps:
@@ -744,8 +945,9 @@ async def run_task(
         
         print(f"\n💾 Memory Statistics:")
         mem_stats = memory.get_stats()
+        summary_provider_hint = mem_stats.get("summary_provider")
         for key, value in mem_stats.items():
-            print(f"   {key}: {value}")
+            print(f"   {key}: {display_stat_value(key, value, provider_hint=summary_provider_hint)}")
         
         print(f"\n🤖 Orchestrator Statistics:")
         orch_stats = orchestrator.get_stats()
@@ -819,7 +1021,7 @@ async def main():
     # 1. Argument Parsing
     parser = argparse.ArgumentParser(description="Cosmic Browser Use Agent")
     parser.add_argument("--goal", type=str, required=True, help="The task you want the agent to perform.")
-    parser.add_argument("--provider", type=str, choices=["openai", "anthropic", "gemini", "fireworks_kimi"], default="openai", help="LLM Provider to use.")
+    parser.add_argument("--provider", type=str, metavar="PROVIDER", default="openai", help=cli_provider_help())
     parser.add_argument("--url", type=str, default=None, help="Starting URL (optional).")
     parser.add_argument("--steps", type=int, default=1000, help="Max steps (default 1000).")
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode.")
@@ -845,8 +1047,12 @@ async def main():
     parser.add_argument("--disable-supermemory", action="store_true", help="Use only local workflow memory; skip Supermemory reads/writes.")
     parser.add_argument("--replay-max-actions", type=int, default=int(os.getenv("COSMIC_REPLAY_MAX_ACTIONS", "8")), help="Maximum indexed replay actions before returning to the normal agent loop.")
     parser.add_argument("--interaction-mode", type=str, choices=["hybrid", "vision"], default=os.getenv("COSMIC_INTERACTION_MODE", "hybrid"), help="Tool surface mode. 'vision' removes DOM tools/prompts; 'hybrid' keeps DOM fallback/extraction.")
+    parser.add_argument("--demo-overlay", action="store_true", help="Demo-only: render a glassy COSMIC memory overlay inside the browser. Hidden during every agent/MiMo screenshot. Off by default.")
 
     args = parser.parse_args()
+    args.provider = normalize_cli_provider_arg(args.provider)
+    if args.provider not in {"openai", "anthropic", "gemini", "fireworks_kimi"}:
+        parser.error(f"unsupported provider '{args.provider}'. Choose one of: {cli_allowed_provider_labels()}")
 
     print("\n" + "="*80)
     print("COSMIC BROWSER USE AGENT")
@@ -928,8 +1134,8 @@ async def main():
         api_key = api_key.strip() if api_key else ""
         if not api_key:
             print(
-                "\n❌ FIREWORKS_API_KEY is required for --provider fireworks_kimi "
-                "(or pass --api-key, or set SLIDE_AGENT_FIREWORKS_API_KEY)."
+                "\n❌ Provider credentials are required for --provider google_gemini "
+                "(pass --api-key or set the configured provider API key env var)."
             )
             sys.exit(1)
         base_url = (os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1").rstrip("/")
@@ -992,6 +1198,7 @@ async def main():
             supermemory_enabled=not args.disable_supermemory,
             replay_max_actions=args.replay_max_actions,
             interaction_mode=args.interaction_mode,
+            demo_overlay_enabled=args.demo_overlay,
         )
     except Exception as e:
         print(f"\n❌ Execution Failed: {e}")

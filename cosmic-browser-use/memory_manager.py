@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from collections import deque
 from openai import OpenAI
+from cli_labels import display_provider_model
 
 from cosmic_types import Step, BrowserState, ActionResult, TaskConfig
 from cosmic_memory.coordinates import build_visual_index
@@ -245,7 +246,7 @@ class MemoryManager:
             self.last_summarized_idx += len(steps_to_summarize)
             
             print(f"\n🧠 [Context Compression] Summary Updated (Saved ~{saved} chars)")
-            print(f"   Summary model: {self.summary_provider}:{self.summary_model}")
+            print(f"   Summary model: {display_provider_model(self.summary_provider, self.summary_model)}")
             print(f"   Consumed Range: Steps {steps_to_summarize[0].step_number}-{steps_to_summarize[-1].step_number}")
             print(f"   New Summary: {new_summary[:100]}...")
             

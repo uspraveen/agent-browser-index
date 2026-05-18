@@ -183,6 +183,8 @@ class SupermemoryMemoryClient:
             f"Task signature: {workflow.get('task_signature')}\n"
             f"Summary: {workflow.get('summary')}\n"
             f"Route strategy: {workflow.get('route_strategy')}\n"
+            f"Replay instructions: {json.dumps(workflow.get('replay_instructions', {}), ensure_ascii=False)}\n"
+            f"Observed success: {json.dumps(workflow.get('observed_success', {}), ensure_ascii=False)}\n"
             f"Generalization: {workflow.get('generalization_level')}\n"
             f"Quality: {json.dumps(workflow.get('quality', {}), ensure_ascii=False)}\n"
             f"Variables: {json.dumps(workflow.get('variables', []), ensure_ascii=False)}\n"

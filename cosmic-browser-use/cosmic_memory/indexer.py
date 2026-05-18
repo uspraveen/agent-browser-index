@@ -16,7 +16,7 @@ from .coordinates import VISUAL_ACTIONS
 from .workflow_store import infer_domain, intent_tokens
 
 
-INDEXER_VERSION = "cosmic_run_indexer_v1"
+INDEXER_VERSION = "cosmic_run_indexer_v2"
 
 
 def _strip_reasoning_markers(text: str) -> str:
@@ -230,6 +230,12 @@ Return ONLY one JSON object. No prose, no markdown.
     "domain": "domain",
     "summary": "what this workflow does and why it is reusable",
     "route_strategy": "how replay should use this",
+    "replay_instructions": {
+      "do": ["specific positive instructions for the replay planner"],
+      "avoid": ["mistakes from discarded trace steps that replay must not repeat"],
+      "checkpoints": ["states where replay should pause or verify"],
+      "stop_conditions": ["conditions that mean replay should hand back to the live agent"]
+    },
     "variables": [
       {"name": "search_query", "default": "...", "source": "goal", "applies_to_source_steps": [3]}
     ],
@@ -267,7 +273,8 @@ Rules:
 - Prefer gold-path steps that move toward final success. Discard wrong pages, retries, waits, failed clicks, and detours.
 - If the run found the right final page only through a detour, create a partial/template workflow with a checkpoint where the dynamic choice must be re-decided.
 - For dynamic web search results, keep search-box typing and checkpoint after results unless the trace contains a reliable correct-result click.
-- SaveNote can be selected as the terminal extract_answer step.
+- Put anti-detour guidance in workflow.replay_instructions.avoid and failure_patches so replay does not repeat the wrong path.
+- SaveNote can be selected as the terminal extract_answer step, but use a parameterized note template if the answer text must be read live.
 - Mark usable=false only if there is no successful final answer and no reusable route segment.
 """
         payload = {
@@ -400,6 +407,7 @@ Rules:
                 "domain": trace.get("domain"),
                 "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
                 "route_strategy": "Use indexed actions until checkpoint; dynamic result choices may require normal planner repair.",
+                "replay_instructions": self._fallback_replay_instructions(trace, discarded),
                 "variables": self._fallback_variables(trace),
                 "acceptance_criteria": {
                     "must_match": intent_tokens(trace.get("task", ""))[:8],
@@ -445,9 +453,77 @@ Rules:
         quality["usable"] = bool(cleaned) and bool(quality.get("usable", True))
         plan.setdefault("discarded_steps", [])
         plan.setdefault("failure_patches", [])
-        plan.setdefault("workflow", {})
+        workflow = plan.setdefault("workflow", {})
+        workflow["replay_instructions"] = self._normalize_replay_instructions(
+            workflow.get("replay_instructions"),
+            plan.get("discarded_steps") or [],
+            plan.get("failure_patches") or [],
+            trace,
+        )
         plan.setdefault("indexer", {"source": "unknown", "version": INDEXER_VERSION})
         return plan
+
+    def _normalize_replay_instructions(
+        self,
+        raw: Any,
+        discarded_steps: List[Dict[str, Any]],
+        failure_patches: List[Dict[str, Any]],
+        trace: Dict[str, Any],
+    ) -> Dict[str, List[str]]:
+        if isinstance(raw, dict):
+            instructions = {
+                "do": list(raw.get("do") or []),
+                "avoid": list(raw.get("avoid") or []),
+                "checkpoints": list(raw.get("checkpoints") or []),
+                "stop_conditions": list(raw.get("stop_conditions") or []),
+            }
+        else:
+            instructions = {"do": [], "avoid": [], "checkpoints": [], "stop_conditions": []}
+
+        final = trace.get("final") or {}
+        task_tokens = intent_tokens(trace.get("task", ""))[:8]
+        if task_tokens:
+            instructions["do"].append(f"Preserve goal-specific target hints: {', '.join(task_tokens)}.")
+        if final.get("url"):
+            instructions["do"].append(f"Prefer the observed successful final URL when it still matches the goal: {final['url']}.")
+        if final.get("title"):
+            instructions["checkpoints"].append(f"Target page title should resemble: {final['title']}.")
+
+        for row in discarded_steps:
+            reason = str(row.get("reason") or "").strip()
+            source_step = row.get("source_step")
+            if reason:
+                instructions["avoid"].append(f"Do not replay source step {source_step}: {reason}.")
+        for patch in failure_patches:
+            failure = str(patch.get("failure") or "").strip()
+            fix = str(patch.get("fix") or "").strip()
+            if failure and fix:
+                instructions["avoid"].append(f"Avoid failure: {failure}.")
+                instructions["do"].append(f"Patch: {fix}.")
+
+        instructions["checkpoints"].append("Pause after dynamic search/result-selection states unless the next action is replay-safe.")
+        instructions["stop_conditions"].append("If the current page no longer matches the workflow state, stop replay and hand back to the live planner.")
+        instructions["stop_conditions"].append("If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it.")
+
+        normalized: Dict[str, List[str]] = {}
+        for key, values in instructions.items():
+            seen = set()
+            cleaned = []
+            for value in values:
+                text = _short(value, 260).strip()
+                if text and text not in seen:
+                    cleaned.append(text)
+                    seen.add(text)
+            normalized[key] = cleaned[:12]
+        return normalized
+
+    def _fallback_replay_instructions(self, trace: Dict[str, Any], discarded_steps: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+        return self._normalize_replay_instructions(
+            None,
+            discarded_steps,
+            self._fallback_failure_patches(trace),
+            trace,
+        )
 
     def _directive_from_trace_row(self, row: Dict[str, Any], *, role: str, checkpoint: bool) -> Dict[str, Any]:
         return {

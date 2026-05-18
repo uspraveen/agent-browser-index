@@ -31,6 +31,7 @@ except Exception:
 
 from cosmic_types import ActionType, ActionResult, BrowserState, TabInfo, ToolCall, VerificationStatus, TaskConfig
 from cosmic_memory.coordinates import replay_coordinates
+from cosmic_memory.demo_overlay import DemoOverlayManager
 import os
 from dotenv import load_dotenv
 
@@ -122,6 +123,7 @@ class BrowserController:
         mimo_api_key: Optional[str] = None,
         large_notes_path: Optional[Path] = None,
         headless: bool = False,
+        demo_overlay: Optional[DemoOverlayManager] = None,
     ):
         self.config = config
         self.mimo_api_url = mimo_api_url
@@ -131,6 +133,8 @@ class BrowserController:
         self.large_notes_path = Path(large_notes_path) if large_notes_path else (working_dir / "large_notes.jsonl")
         self.large_notes_index_path = self.large_notes_path.parent / "large_notes_index.json"
         self.headless = headless
+        # Demo-only visual overlay (presentation layer; never affects agent decisions).
+        self.demo_overlay: Optional[DemoOverlayManager] = demo_overlay
         
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -479,7 +483,12 @@ class BrowserController:
                 get: () => undefined
             });
         """)
-        
+
+        # Demo overlay init script (no-op if overlay disabled). Installed
+        # before the first page so navigation reinstalls automatically.
+        if self.demo_overlay and self.demo_overlay.enabled:
+            await self.demo_overlay.install(self.context)
+
         # Create first page
         self.page = await self.context.new_page()
         self._register_dialog_handler(self.page)
@@ -490,14 +499,31 @@ class BrowserController:
         if initial_url:
             await self.page.goto(initial_url, wait_until="domcontentloaded")
     
+    async def _safe_page_screenshot(self, **screenshot_kwargs):
+        """Take a page screenshot while the demo overlay is hidden.
+
+        This is the single chokepoint that protects every agent / MiMo
+        consumer of screenshot bytes from ever seeing the overlay.
+        Behavior is identical to `page.screenshot()` when the overlay is off.
+        """
+        page = self.page
+        overlay = self.demo_overlay
+        if overlay and overlay.enabled:
+            await overlay.hide_for_agent_capture(page)
+            try:
+                return await page.screenshot(**screenshot_kwargs)
+            finally:
+                await overlay.restore_after_agent_capture(page)
+        return await page.screenshot(**screenshot_kwargs)
+
     async def capture_state(self, screenshot_name: str) -> Tuple[str, str, BrowserState]:
         """Capture current browser state."""
         # Ensure we use the active page
         self.page = self.pages[self.active_tab_index]
         await self.page.bring_to_front()
-        
+
         screenshot_path = self.working_dir / "screenshots" / f"{screenshot_name}.webp"
-        await self.page.screenshot(path=screenshot_path, type="jpeg", quality=self.config.screenshot_quality)
+        await self._safe_page_screenshot(path=screenshot_path, type="jpeg", quality=self.config.screenshot_quality)
         
         with Image.open(screenshot_path) as img:
             img_hash = str(imagehash.average_hash(img))
@@ -559,6 +585,20 @@ class BrowserController:
             tabs = tabs_info,
             dialogs = recent_dialogs,
         )
+
+        # Refresh overlay state on the live page (no-op if overlay disabled).
+        # The screenshot was already taken with the overlay hidden, so this
+        # only affects what a human spectator sees in the live browser.
+        if self.demo_overlay and self.demo_overlay.enabled:
+            self.demo_overlay.update_metrics(
+                mimo_calls=self.mimo_calls,
+                dom_calls=self.dom_calls,
+            )
+            try:
+                await self.demo_overlay.push(self.page)
+            except Exception:
+                pass
+
         return str(screenshot_path), img_hash, state
     
     async def execute_tool(self, tool_call: ToolCall, screenshot_path: str) -> ActionResult:
@@ -1713,7 +1753,7 @@ class BrowserController:
             
             # We use a cheaper buffer-based screenshot for speed
             try:
-                screenshot_bytes = await self.page.screenshot(type="jpeg", quality=40)
+                screenshot_bytes = await self._safe_page_screenshot(type="jpeg", quality=40)
                 with Image.open(BytesIO(screenshot_bytes)) as img:
                     current_hash = imagehash.average_hash(img)
             except Exception as e:
@@ -1768,7 +1808,7 @@ class BrowserController:
             prefix = safe_name if safe_name else "manual"
             screenshot_path = screenshots_dir / f"{prefix}_{ts}.jpg"
 
-            await self.page.screenshot(path=screenshot_path, type="jpeg", quality=self.config.screenshot_quality)
+            await self._safe_page_screenshot(path=screenshot_path, type="jpeg", quality=self.config.screenshot_quality)
             return ActionResult(
                 success=True,
                 action_type=ActionType.SCREENSHOT,

@@ -2,6 +2,7 @@
 
 from .coordinates import build_visual_index, replay_coordinates
 from .debug_log import CosmicDebugLogger
+from .demo_overlay import DemoOverlayManager
 from .indexer import WorkflowRunIndexer
 from .retriever import MemoryRetriever
 from .runtime import CosmicMemoryRuntime
@@ -14,6 +15,7 @@ __all__ = [
     "replay_coordinates",
     "CosmicDebugLogger",
     "CosmicMemoryRuntime",
+    "DemoOverlayManager",
     "MemoryRetriever",
     "SupermemoryMemoryClient",
     "TraceCompiler",

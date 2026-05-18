@@ -291,6 +291,8 @@ python main.py --help
 
 Uses the OpenAI Python SDK against Fireworks’ OpenAI-compatible base URL (same pattern as Cosmic-OS Backend).
 
+On each **task run**, the first Fireworks request tries **HTTP/2** (via `httpx` + `h2`). If the transport fails, the run **falls back to HTTP/1.1** automatically; API errors after a connection (4xx/5xx) still count as HTTP/2 having worked.
+
 - **CLI:** `--provider fireworks_kimi`
 - **Auth:** `FIREWORKS_API_KEY` (or `--api-key`, or `SLIDE_AGENT_FIREWORKS_API_KEY`)
 - **Base URL:** `FIREWORKS_BASE_URL` (default `https://api.fireworks.ai/inference/v1`)
