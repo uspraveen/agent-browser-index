@@ -30,7 +30,7 @@ from cosmic_types import (
     LLMResponse, ToolCall, ActionType,
     LLMProvider, LLMTier, LLMConfig
 )
-from cli_labels import GOOGLE_GEMINI_LABEL
+from cli_labels import FIREWORKS_KIMI_LABEL
 from cosmic_memory.replay import build_default_replay_plan
 import os
 from dotenv import load_dotenv
@@ -419,7 +419,7 @@ class FireworksKimiProvider(BaseLLMProvider):
                 self._client_uses_http2 = False
                 _fireworks_http2_preference = False
                 print(
-                    f"\n⚠️  [{GOOGLE_GEMINI_LABEL}] HTTP/2 optional dependency missing (`h2`); using HTTP/1.1 for this run."
+                    f"\n⚠️  [{FIREWORKS_KIMI_LABEL}] HTTP/2 optional dependency missing (`h2`); using HTTP/1.1 for this run."
                 )
 
     def _normalize_openai_message_content(self, content: Any) -> str:
@@ -530,7 +530,7 @@ class FireworksKimiProvider(BaseLLMProvider):
                 async with _fireworks_h2_fallback_lock:
                     if _fireworks_http2_preference is not False:
                         print(
-                            f"\n⚠️  [{GOOGLE_GEMINI_LABEL}] HTTP/2 transport failed on first call; "
+                            f"\n⚠️  [{FIREWORKS_KIMI_LABEL}] HTTP/2 transport failed on first call; "
                             "falling back to HTTP/1.1 for this run."
                         )
                     if self._openai is not None:
@@ -1258,7 +1258,7 @@ Recent search-result loop steps:
         if dom_enabled:
             available_tools_definitions[4:4] = [
                 "- DOMClick(selector) - Click via CSS selector (fallback)",
-                "- DOMExtract(query) - Extract text/data from DOM. Limit 100k chars. Use specific selectors (e.g. '.product-list') instead of 'body' for cleaner data.",
+                "- DOMExtract(query) - Extract text/data from DOM. Limit 100k chars. Prefer semantic selectors: 'main', 'article', '[role=\"main\"]', '.readme', '.model-card', '#content', '.post-body' etc. Only use 'body' if no semantic container exists.",
             ]
             save_note_idx = available_tools_definitions.index("- SaveNote(note) - Save important information to memory. NOTE MUST NOT BE EMPTY.")
             available_tools_definitions[save_note_idx + 1:save_note_idx + 1] = [
@@ -1282,7 +1282,7 @@ Recent search-result loop steps:
         
         if dom_enabled:
             extraction_rule = """2.  **DOM for Extraction**: Use `DOMExtract` PROACTIVELY when you need to extract text/lists that are likely present on the page. Do NOT scroll repeatedly to "read" long text visually.
-    -   *Rule*: If the goal is "Get list of X" and you are on the page, try `DOMExtract(query='body')` or specific selector BEFORE scrolling.
+    -   *Rule*: If the goal is "Get list of X" and you are on the page, try `DOMExtract` with the most specific semantic selector you can identify (e.g. 'main', 'article', '.content') BEFORE scrolling. Avoid 'body' unless no semantic container exists.
     -   *Stop Rule*: If a successful `DOMExtract` output contains a plausible answer to a get/find/extract/report goal, your next action should be `SaveNote` with that answer and `estimated_completion=1.0`. Do not run another extraction just to verify.
     -   *Selector Loop Rule*: Do not run more than 2 DOMExtract attempts for the same information when prior outputs are non-empty. Save the best answer you have, or save that the page only exposes partial text."""
             visible_answer_rule = """## VISIBLE TEXT COMPLETION

@@ -35,14 +35,17 @@ import re
 import sys
 from typing import Tuple, Dict, Any, Optional, List
 
-import requests
+import httpx
 from PIL import Image, ImageDraw
 
 # Configuration - can be overridden via environment variables or args
-DEFAULT_VLLM_URL = os.environ.get("MIMO_API_URL", "http://cosmos-9.ddns.ualr.edu:8098/v1/chat/completions")
+DEFAULT_VLLM_URL = os.environ.get("MIMO_API_URL", "https://uspraveenraj--mimo-vl-7b-rl-serve.modal.run/v1/chat/completions")
 DEFAULT_MODEL_ID = os.environ.get("MIMO_MODEL_ID", "XiaomiMiMo/MiMo-VL-7B-RL")
 DEFAULT_TIMEOUT = int(os.environ.get("MIMO_TIMEOUT", "180"))  # Longer timeout for reasoning
 DEFAULT_API_KEY = os.environ.get("MIMO_API_KEY", "")
+
+# Persistent HTTP/2 client — one TLS handshake amortised across all calls in a process.
+_http = httpx.Client(http2=True)
 
 # =============================================================================
 # MiMo-VL Prompts for GUI Grounding
@@ -152,7 +155,7 @@ Output the center coordinates as [x, y] in pixels."""
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    r = requests.post(api_url, json=payload, headers=headers, timeout=timeout)
+    r = _http.post(api_url, json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
@@ -215,46 +218,56 @@ Task: {task}"""
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    r = requests.post(api_url, json=payload, headers=headers, timeout=timeout)
+    r = _http.post(api_url, json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
 
-def check_mimo_health(api_url: str = DEFAULT_VLLM_URL, timeout: int = 5, api_key: str = DEFAULT_API_KEY) -> bool:
+def check_mimo_health(
+    api_url: str = DEFAULT_VLLM_URL,
+    timeout: int = 15,
+    api_key: str = DEFAULT_API_KEY,
+    total_wait: int = 120,
+) -> bool:
+    """Check if MiMo API is reachable, retrying until total_wait seconds have elapsed.
+
+    Modal cold-starts close the connection instead of holding it, so a single
+    request with a long timeout is not enough — we need to retry until the
+    container wakes up (typically ~12s after the first request hits it).
     """
-    Check if MiMo API is reachable and healthy.
-    
-    Tries to hit the /v1/models endpoint to verify connectivity.
-    """
-    try:
-        # Construct models endpoint from chat endpoint or base URL
-        # Typical url: http://host:port/v1/chat/completions
-        # Target url: http://host:port/v1/models
-        
-        base_url = api_url
-        if "/chat/completions" in base_url:
-            base_url = base_url.replace("/chat/completions", "/models")
-        elif "/v1" not in base_url:
-            base_url = f"{base_url.rstrip('/')}/v1/models"
-        else:
-            # Assume it might be just base, try appending /models if not present
-            if not base_url.endswith("/models"):
-                 base_url = f"{base_url.rstrip('/')}/models"
-                 
-        # fallback: just try the base url if simple logic failed
-        print(f"   (Pinging MiMo at: {base_url})")
-            
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-            
-        response = requests.get(base_url, headers=headers, timeout=timeout)
-        if response.status_code == 200:
-            return True
-        return False
-    except Exception as e:
-        print(f"   (Ping failed: {e})")
-        return False
+    base_url = api_url
+    if "/chat/completions" in base_url:
+        base_url = base_url.replace("/chat/completions", "/models")
+    elif "/v1" not in base_url:
+        base_url = f"{base_url.rstrip('/')}/v1/models"
+    else:
+        if not base_url.endswith("/models"):
+            base_url = f"{base_url.rstrip('/')}/models"
+
+    print(f"   (Pinging MiMo at: {base_url})")
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    import time as _time
+    deadline = _time.monotonic() + total_wait
+    attempt = 0
+    while _time.monotonic() < deadline:
+        attempt += 1
+        try:
+            response = _http.get(base_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                if attempt > 1:
+                    print(f"   (Warm after {attempt} attempt(s))")
+                return True
+        except Exception as e:
+            remaining = int(deadline - _time.monotonic())
+            if remaining <= 0:
+                print(f"   (Ping failed: {e})")
+                return False
+            print(f"   (Attempt {attempt} failed: {e} — retrying, {remaining}s left)")
+            _time.sleep(3)
+    return False
 
 
 def extract_thinking(raw: str) -> Tuple[Optional[str], str]:
@@ -266,12 +279,51 @@ def extract_thinking(raw: str) -> Tuple[Optional[str], str]:
     Returns:
         (thinking_content, remaining_output)
     """
-    think_match = re.search(r'<think>(.*?)</think>', raw, re.DOTALL)
-    if think_match:
-        thinking = think_match.group(1).strip()
-        remaining = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+    think_matches = re.findall(r'<think\b[^>]*>(.*?)</think>', raw, re.DOTALL | re.IGNORECASE)
+    if think_matches:
+        thinking = "\n\n".join(part.strip() for part in think_matches if part.strip()) or None
+        remaining = re.sub(r'<think\b[^>]*>.*?</think>', '', raw, flags=re.DOTALL | re.IGNORECASE).strip()
         return thinking, remaining
+
+    # Truncated thinking blocks are unsafe to parse. Without this, prose like
+    # "image size is 1280x720" can be mistaken for a coordinate pair.
+    open_think = re.search(r'<think\b[^>]*>', raw, re.IGNORECASE)
+    if open_think:
+        return raw[open_think.end():].strip() or None, raw[:open_think.start()].strip()
     return None, raw
+
+
+def _strip_markdown_fences(text: str) -> str:
+    text = re.sub(r'```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+    return text.replace('```', '').strip()
+
+
+def _coordinate_pair(x_raw: float, y_raw: float, image_size: Tuple[int, int]) -> Tuple[int, int, bool]:
+    w, h = image_size
+    x, y = float(x_raw), float(y_raw)
+    if 0 <= x <= 1.0 and 0 <= y <= 1.0:
+        return int(round(x * w)), int(round(y * h)), True
+    if 0 <= x <= w and 0 <= y <= h:
+        return int(round(x)), int(round(y)), False
+    raise ValueError(f"Coordinate pair out of bounds: [{x_raw}, {y_raw}] for image {w}x{h}")
+
+
+def _json_coordinate_pair(value: Any, image_size: Tuple[int, int]) -> Optional[Tuple[int, int, bool]]:
+    if isinstance(value, dict):
+        for key in ("position", "coordinates", "coordinate", "point", "center"):
+            nested = _json_coordinate_pair(value.get(key), image_size)
+            if nested is not None:
+                return nested
+        if "x" in value and "y" in value and isinstance(value["x"], (int, float)) and isinstance(value["y"], (int, float)):
+            return _coordinate_pair(float(value["x"]), float(value["y"]), image_size)
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], (int, float)) and isinstance(value[1], (int, float)):
+            return _coordinate_pair(float(value[0]), float(value[1]), image_size)
+        for item in value:
+            nested = _json_coordinate_pair(item, image_size)
+            if nested is not None:
+                return nested
+    return None
 
 
 def parse_coordinates(raw: str, image_size: Tuple[int, int]) -> Tuple[int, int, bool]:
@@ -279,7 +331,11 @@ def parse_coordinates(raw: str, image_size: Tuple[int, int]) -> Tuple[int, int, 
     Parse coordinates from model output.
     
     MiMo-VL typically outputs pixel coordinates directly.
-    Also handles normalized coordinates (0-1 range) as fallback.
+    Also handles normalized coordinates (0-1 range).
+
+    Deliberately refuses arbitrary prose-number fallback. If MiMo returns
+    reasoning text without an explicit coordinate-shaped answer, the caller
+    should retry in strict output mode.
     
     Args:
         raw: Model output string
@@ -291,58 +347,48 @@ def parse_coordinates(raw: str, image_size: Tuple[int, int]) -> Tuple[int, int, 
     Raises:
         ValueError if parsing fails
     """
-    w, h = image_size
-    
-    # Remove thinking tags if present
     _, clean = extract_thinking(raw)
-    
+    clean = _strip_markdown_fences(clean)
+
+    if not clean:
+        raise ValueError(f"Could not parse explicit coordinates from: {raw!r}")
+
+    try:
+        decoded = json.loads(clean)
+        coords = _json_coordinate_pair(decoded, image_size)
+        if coords is not None:
+            return coords
+    except Exception:
+        pass
+
+    num = r'-?\d+(?:\.\d+)?'
+
     # Try to find [x, y] pattern (most common)
-    list_match = re.search(r'\[(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\]', clean)
+    list_match = re.search(rf'\[\s*({num})\s*,\s*({num})\s*\]', clean)
     if list_match:
-        x, y = float(list_match.group(1)), float(list_match.group(2))
-        # Check if normalized (0-1 range) or pixel coordinates
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0:
-            # Could be normalized - check if it makes sense as pixels
-            if x < 2 and y < 2:  # Almost certainly normalized
-                return int(round(x * w)), int(round(y * h)), True
-        # Pixel coordinates
-        return int(round(x)), int(round(y)), False
+        return _coordinate_pair(float(list_match.group(1)), float(list_match.group(2)), image_size)
+
+    # Try JSON-ish {"x": 123, "y": 456} even when the model's JSON is malformed.
+    json_xy_match = re.search(rf'["\']x["\']\s*:\s*({num}).*?["\']y["\']\s*:\s*({num})', clean, re.I | re.DOTALL)
+    if json_xy_match:
+        return _coordinate_pair(float(json_xy_match.group(1)), float(json_xy_match.group(2)), image_size)
     
     # Try (x, y) pattern
-    tuple_match = re.search(r'\((\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\)', clean)
+    tuple_match = re.search(rf'\(\s*({num})\s*,\s*({num})\s*\)', clean)
     if tuple_match:
-        x, y = float(tuple_match.group(1)), float(tuple_match.group(2))
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h)), True
-        return int(round(x)), int(round(y)), False
+        return _coordinate_pair(float(tuple_match.group(1)), float(tuple_match.group(2)), image_size)
     
     # Try x=... y=... pattern
-    xy_match = re.search(r'x\s*[=:]\s*(\d+(?:\.\d+)?)[,\s]+y\s*[=:]\s*(\d+(?:\.\d+)?)', clean, re.I)
+    xy_match = re.search(rf'\bx\s*[=:]\s*({num})[,\s]+y\s*[=:]\s*({num})', clean, re.I)
     if xy_match:
-        x, y = float(xy_match.group(1)), float(xy_match.group(2))
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h)), True
-        return int(round(x)), int(round(y)), False
+        return _coordinate_pair(float(xy_match.group(1)), float(xy_match.group(2)), image_size)
     
     # Try JSON with position field
-    json_match = re.search(r'"position"\s*:\s*\[(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\]', clean)
+    json_match = re.search(rf'["\'](?:position|coordinates|coordinate|point|center)["\']\s*:\s*\[\s*({num})\s*,\s*({num})\s*\]', clean, re.I)
     if json_match:
-        x, y = float(json_match.group(1)), float(json_match.group(2))
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h)), True
-        return int(round(x)), int(round(y)), False
-    
-    # Try to find any two numbers that could be coordinates
-    numbers = re.findall(r'(\d+(?:\.\d+)?)', clean)
-    if len(numbers) >= 2:
-        x, y = float(numbers[0]), float(numbers[1])
-        # Sanity check - coordinates should be within image bounds (with some margin)
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h)), True
-        elif 0 <= x <= w * 1.1 and 0 <= y <= h * 1.1:
-            return int(round(min(x, w))), int(round(min(y, h))), False
-    
-    raise ValueError(f"Could not parse coordinates from: {raw!r}")
+        return _coordinate_pair(float(json_match.group(1)), float(json_match.group(2)), image_size)
+
+    raise ValueError(f"Could not parse explicit coordinates from: {raw!r}")
 
 
 def parse_navigation_output(raw: str, image_size: Tuple[int, int]) -> Dict[str, Any]:
@@ -505,7 +551,7 @@ def find_coordinates(
             api_url, model_id, timeout=timeout,
             no_think=no_think, temperature=temperature, top_p=top_p, api_key=api_key
         )
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {"status": "error", "error": f"API request failed: {e}"}
     except Exception as e:
         return {"status": "error", "error": f"Unexpected error during inference: {e}"}
@@ -609,7 +655,7 @@ def navigate(
             api_url=api_url, model_id=model_id, timeout=timeout,
             no_think=no_think, temperature=temperature, top_p=top_p, api_key=api_key
         )
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {"status": "error", "error": f"API request failed: {e}"}
     except Exception as e:
         return {"status": "error", "error": f"Unexpected error during inference: {e}"}

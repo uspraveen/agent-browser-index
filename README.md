@@ -110,7 +110,7 @@ Playwright = browser hands
 cd "C:\Users\Praveen Raj U S\Downloads\agent-browser-index\cosmic-browser-use"
 
 python main.py `
-  --provider google_gemini `
+  --provider fireworks_kimi `
   --interaction-mode vision `
   --memory-mode learn `
   --goal "Get the YouTube video description for the official OpenAI GPT-4o launch video" `
@@ -123,7 +123,7 @@ The agent explores normally, records the route, compiles the successful run into
 
 ```powershell
 python main.py `
-  --provider google_gemini `
+  --provider fireworks_kimi `
   --interaction-mode vision `
   --memory-mode recall `
   --goal "Get the YouTube video description for the official Claude Code launch video" `
@@ -136,7 +136,7 @@ COSMIC retrieves the related YouTube description workflow, adapts the search que
 
 ```powershell
 python main.py `
-  --provider google_gemini `
+  --provider fireworks_kimi `
   --interaction-mode vision `
   --memory-mode off `
   --goal "Get the YouTube video description for the official Claude Code launch video"
@@ -273,7 +273,7 @@ COSMIC_MEMORY_MODE=off
 COSMIC_INTERACTION_MODE=vision
 ```
 
-The demo CLI uses `--provider google_gemini` as the public-facing provider label while preserving the existing internal provider wiring and environment variables.
+Use `--provider fireworks_kimi` for the Fireworks-hosted Kimi path.
 
 ---
 

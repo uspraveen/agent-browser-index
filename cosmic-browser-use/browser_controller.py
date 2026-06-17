@@ -15,7 +15,7 @@ import time
 import re
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable
 from datetime import datetime
 from urllib.parse import urlparse
 from PIL import Image
@@ -43,69 +43,107 @@ load_dotenv()
 
 def extract_thinking(raw: str) -> Tuple[Optional[str], str]:
     """Extract thinking/reasoning content from model output."""
-    think_match = re.search(r'<think>(.*?)</think>', raw, re.DOTALL)
-    if think_match:
-        thinking = think_match.group(1).strip()
-        remaining = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+    think_matches = re.findall(r'<think\b[^>]*>(.*?)</think>', raw, re.DOTALL | re.IGNORECASE)
+    if think_matches:
+        thinking = "\n\n".join(part.strip() for part in think_matches if part.strip()) or None
+        remaining = re.sub(r'<think\b[^>]*>.*?</think>', '', raw, flags=re.DOTALL | re.IGNORECASE).strip()
         return thinking, remaining
+
+    # If the model starts a thinking block and gets truncated before </think>,
+    # do not parse numbers from that prose. This prevents "image size 1280x720"
+    # from becoming a fake coordinate.
+    open_think = re.search(r'<think\b[^>]*>', raw, re.IGNORECASE)
+    if open_think:
+        return raw[open_think.end():].strip() or None, raw[:open_think.start()].strip()
     return None, raw
+
+
+def _strip_markdown_fences(text: str) -> str:
+    text = re.sub(r'```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+    return text.replace('```', '').strip()
+
+
+def _coordinate_pair(x_raw: float, y_raw: float, image_size: Tuple[int, int]) -> Tuple[int, int]:
+    w, h = image_size
+    x, y = float(x_raw), float(y_raw)
+    if 0 <= x <= 1.0 and 0 <= y <= 1.0:
+        return int(round(x * w)), int(round(y * h))
+    if 0 <= x <= w and 0 <= y <= h:
+        return int(round(x)), int(round(y))
+    raise ValueError(f"Coordinate pair out of bounds: [{x_raw}, {y_raw}] for image {w}x{h}")
+
+
+def _json_coordinate_pair(value: Any, image_size: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+    if isinstance(value, dict):
+        for key in ("position", "coordinates", "coordinate", "point", "center"):
+            nested = _json_coordinate_pair(value.get(key), image_size)
+            if nested is not None:
+                return nested
+        if "x" in value and "y" in value and isinstance(value["x"], (int, float)) and isinstance(value["y"], (int, float)):
+            return _coordinate_pair(float(value["x"]), float(value["y"]), image_size)
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], (int, float)) and isinstance(value[1], (int, float)):
+            return _coordinate_pair(float(value[0]), float(value[1]), image_size)
+        for item in value:
+            nested = _json_coordinate_pair(item, image_size)
+            if nested is not None:
+                return nested
+    return None
+
 
 def parse_coordinates(raw: str, image_size: Tuple[int, int]) -> Tuple[int, int]:
     """
     Parse coordinates from model output.
     
     MiMo-VL typically outputs pixel coordinates directly.
-    Also handles normalized coordinates (0-1 range) as fallback.
+    Also handles normalized coordinates (0-1 range).
+
+    Deliberately refuses arbitrary prose-number fallback. If MiMo returns
+    reasoning text without an explicit coordinate-shaped answer, the caller
+    should retry in strict output mode.
     """
-    w, h = image_size
-    
-    # Remove thinking tags if present
     _, clean = extract_thinking(raw)
-    
-    # Try to find [x, y] pattern (most common)
-    list_match = re.search(r'\[(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\]', clean)
+    clean = _strip_markdown_fences(clean)
+
+    if not clean:
+        raise ValueError(f"Could not parse explicit coordinates from: {raw!r}")
+
+    try:
+        decoded = json.loads(clean)
+        coords = _json_coordinate_pair(decoded, image_size)
+        if coords is not None:
+            return coords
+    except Exception:
+        pass
+
+    num = r'-?\d+(?:\.\d+)?'
+
+    # Try [x, y] pattern (most common).
+    list_match = re.search(rf'\[\s*({num})\s*,\s*({num})\s*\]', clean)
     if list_match:
-        x, y = float(list_match.group(1)), float(list_match.group(2))
-        # Check if normalized (0-1 range) or pixel coordinates
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0:
-            if x < 2 and y < 2:  # Almost certainly normalized
-                return int(round(x * w)), int(round(y * h))
-        return int(round(x)), int(round(y))
+        return _coordinate_pair(float(list_match.group(1)), float(list_match.group(2)), image_size)
+
+    # Try JSON-ish {"x": 123, "y": 456} even when the model's JSON is malformed.
+    json_xy_match = re.search(rf'["\']x["\']\s*:\s*({num}).*?["\']y["\']\s*:\s*({num})', clean, re.I | re.DOTALL)
+    if json_xy_match:
+        return _coordinate_pair(float(json_xy_match.group(1)), float(json_xy_match.group(2)), image_size)
     
     # Try (x, y) pattern
-    tuple_match = re.search(r'\((\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\)', clean)
+    tuple_match = re.search(rf'\(\s*({num})\s*,\s*({num})\s*\)', clean)
     if tuple_match:
-        x, y = float(tuple_match.group(1)), float(tuple_match.group(2))
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h))
-        return int(round(x)), int(round(y))
+        return _coordinate_pair(float(tuple_match.group(1)), float(tuple_match.group(2)), image_size)
         
     # Try x=... y=... pattern
-    xy_match = re.search(r'x\s*[=:]\s*(\d+(?:\.\d+)?)[,\s]+y\s*[=:]\s*(\d+(?:\.\d+)?)', clean, re.I)
+    xy_match = re.search(rf'\bx\s*[=:]\s*({num})[,\s]+y\s*[=:]\s*({num})', clean, re.I)
     if xy_match:
-        x, y = float(xy_match.group(1)), float(xy_match.group(2))
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h))
-        return int(round(x)), int(round(y))
+        return _coordinate_pair(float(xy_match.group(1)), float(xy_match.group(2)), image_size)
     
     # Try JSON with position field
-    json_match = re.search(r'"position"\s*:\s*\[(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\]', clean)
+    json_match = re.search(rf'["\'](?:position|coordinates|coordinate|point|center)["\']\s*:\s*\[\s*({num})\s*,\s*({num})\s*\]', clean, re.I)
     if json_match:
-        x, y = float(json_match.group(1)), float(json_match.group(2))
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h))
-        return int(round(x)), int(round(y))
-    
-    # Fallback: Try regex finding any two numbers
-    numbers = re.findall(r'(\d+(?:\.\d+)?)', clean)
-    if len(numbers) >= 2:
-        x, y = float(numbers[0]), float(numbers[1])
-        if x <= 1.0 and y <= 1.0 and x >= 0 and y >= 0 and x < 2 and y < 2:
-            return int(round(x * w)), int(round(y * h))
-        elif 0 <= x <= w * 1.1 and 0 <= y <= h * 1.1:
-             return int(round(min(x, w))), int(round(min(y, h)))
-    
-    raise ValueError(f"Could not parse coordinates from: {raw!r}")
+        return _coordinate_pair(float(json_match.group(1)), float(json_match.group(2)), image_size)
+
+    raise ValueError(f"Could not parse explicit coordinates from: {raw!r}")
 
 
 # ==============================================================================
@@ -124,6 +162,7 @@ class BrowserController:
         large_notes_path: Optional[Path] = None,
         headless: bool = False,
         demo_overlay: Optional[DemoOverlayManager] = None,
+        ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = None,
     ):
         self.config = config
         self.mimo_api_url = mimo_api_url
@@ -135,6 +174,10 @@ class BrowserController:
         self.headless = headless
         # Demo-only visual overlay (presentation layer; never affects agent decisions).
         self.demo_overlay: Optional[DemoOverlayManager] = demo_overlay
+        # Optional async hook for AskUser. When provided, _ask_user() delegates here
+        # (e.g. for voice-driven Q&A during a call) instead of stdin input().
+        # Receives the question, returns the user's reply text (or raises on timeout).
+        self.ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = ask_user_handler
         
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -1340,14 +1383,83 @@ class BrowserController:
             return ActionResult(success=False, action_type=ActionType.EDIT_NOTE, description=f"Edit note {index}", error=str(e))
 
     async def _ask_user(self, question: str) -> ActionResult:
-        """Ask the user a question via CLI input.
+        """Ask the user a question.
 
-        Handles:
-        - Headless mode: returns graceful error (no terminal available)
-        - Timeout: configurable via config.ask_user_timeout (default 120s)
-        - Non-blocking: runs input() in executor to avoid blocking event loop
+        Routing:
+        - If `ask_user_handler` was injected (e.g. by `call_to_browse.py`), delegate
+          to it. Used for voice-driven Q&A while on a live call.
+        - Else: prompt via CLI stdin (the default for `python main.py`).
+
+        In both paths we also annotate the demo overlay so reviewers see exactly
+        when the agent asked and what the user said.
         """
-        # In headless mode, no interactive terminal is available
+        question_text = (question or "").strip()
+        truncated_q = question_text if len(question_text) <= 60 else question_text[:57] + "..."
+
+        # Always reflect the ask in the overlay (no-op when overlay is disabled).
+        if self.demo_overlay is not None:
+            try:
+                await self.demo_overlay.update(
+                    page=self.page,
+                    pulse_ms=1500,
+                    timeline_append={"kind": "live", "label": f"Asking user: {truncated_q}"},
+                )
+            except Exception:
+                pass
+
+        # --- Path 1: injected handler (voice / network) ------------------------
+        if self.ask_user_handler is not None:
+            try:
+                print(f"\n❓ [Agent Asks]: {question}", flush=True)
+                response = await asyncio.wait_for(
+                    self.ask_user_handler(question),
+                    timeout=self.config.ask_user_timeout,
+                )
+            except asyncio.TimeoutError:
+                print(f"\n⏰ [AskUser] No response after {self.config.ask_user_timeout}s - moving on.", flush=True)
+                if self.demo_overlay is not None:
+                    try:
+                        await self.demo_overlay.update(
+                            page=self.page,
+                            timeline_append={"kind": "checkpoint", "label": "User replied: (timed out)"},
+                        )
+                    except Exception:
+                        pass
+                return ActionResult(
+                    success=False,
+                    action_type=ActionType.ASK_USER,
+                    description=f"Asked: {question}",
+                    error=f"User did not respond within {self.config.ask_user_timeout}s timeout.",
+                )
+            except Exception as e:  # noqa: BLE001 — surface handler errors as ActionResult, never raise
+                return ActionResult(
+                    success=False,
+                    action_type=ActionType.ASK_USER,
+                    description=f"Asked: {question}",
+                    error=f"ask_user_handler failed: {e}",
+                )
+
+            reply_str = (response or "").strip()
+            display_reply = reply_str if reply_str else "(empty response)"
+            truncated_r = display_reply if len(display_reply) <= 60 else display_reply[:57] + "..."
+            print(f"💬 [User Replied]: {display_reply}", flush=True)
+            if self.demo_overlay is not None:
+                try:
+                    await self.demo_overlay.update(
+                        page=self.page,
+                        pulse_ms=1500,
+                        timeline_append={"kind": "saved", "label": f"User replied: {truncated_r}"},
+                    )
+                except Exception:
+                    pass
+            return ActionResult(
+                success=True,
+                action_type=ActionType.ASK_USER,
+                description=f"Asked: {question}",
+                output=f"User Answer: {display_reply}",
+            )
+
+        # --- Path 2: CLI stdin (original behavior) -----------------------------
         if self.headless:
             return ActionResult(
                 success=False,
@@ -1373,11 +1485,23 @@ class BrowserController:
                     error=f"User did not respond within {self.config.ask_user_timeout}s timeout.",
                 )
 
+            reply_str = response.strip() if response.strip() else "(empty response)"
+            truncated_r = reply_str if len(reply_str) <= 60 else reply_str[:57] + "..."
+            if self.demo_overlay is not None:
+                try:
+                    await self.demo_overlay.update(
+                        page=self.page,
+                        pulse_ms=1500,
+                        timeline_append={"kind": "saved", "label": f"User replied: {truncated_r}"},
+                    )
+                except Exception:
+                    pass
+
             return ActionResult(
                 success=True,
                 action_type=ActionType.ASK_USER,
                 description=f"Asked: {question}",
-                output=f"User Answer: {response.strip() if response.strip() else '(empty response)'}",
+                output=f"User Answer: {reply_str}",
             )
         except EOFError:
             return ActionResult(

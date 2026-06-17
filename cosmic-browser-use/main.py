@@ -41,6 +41,8 @@ from dotenv import load_dotenv
 load_dotenv()
 # ==============================================================================
 
+MIMO_DEFAULT_URL = "https://uspraveenraj--mimo-vl-7b-rl-serve.modal.run"
+
 
 def _env_bool(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
@@ -277,6 +279,43 @@ async def _try_finalize_after_replay_checkpoint(
     return bool(action_result.success and llm_response.estimated_completion >= 0.95)
 
 
+def _build_replay_handoff_note(replay_summary: dict) -> str:
+    """Build a compact handoff note to prepend to cumulative_summary after indexed replay.
+
+    Caps failure output to 3 items, 200 chars each, so a pathological replay never
+    floods the LLM context. In practice replay breaks on the first failure so there
+    is at most one item.
+    """
+    executed = replay_summary.get("executed") or []
+    failures = replay_summary.get("failures") or []
+    checkpoint_reason = replay_summary.get("checkpoint_reason") or ""
+
+    n = len(executed)
+    if not n:
+        return "COSMIC indexed replay ran but executed no actions."
+
+    if not failures:
+        # Clean run or checkpoint
+        parts = [f"COSMIC indexed replay completed {n} action(s) successfully."]
+        if checkpoint_reason:
+            parts.append(f"Checkpoint: {checkpoint_reason}")
+        return " ".join(parts)
+
+    # Failure path — cap at 3, truncate each to 200 chars
+    capped = failures[-3:]
+    failure_lines = []
+    for f in capped:
+        action = f.get("action") or {}
+        err = str(f.get("error") or "unknown error")[:200]
+        step_id = action.get("workflow_step_id") or action.get("action_type") or "unknown step"
+        failure_lines.append(f"  - {step_id}: {err}")
+    failure_block = "\n".join(failure_lines)
+    return (
+        f"COSMIC indexed replay ran {n} action(s) then failed. "
+        f"Continue from the current page state.\nFailure(s):\n{failure_block}"
+    )
+
+
 def _should_try_replay_checkpoint_finalizer(replay_summary: dict) -> bool:
     if not replay_summary.get("completed_replay") or not replay_summary.get("checkpoint_reached"):
         return False
@@ -322,8 +361,9 @@ async def run_task(
     replay_max_actions: int = 8,
     interaction_mode: str = "hybrid",
     demo_overlay_enabled: bool = False,
+    ask_user_handler=None,
 ):
-    mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", "https://mbhl6tqhfyvdd3tu.us-east-1.aws.endpoints.huggingface.cloud/v1/")
+    mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
     headless = headless if headless is not None else os.getenv("HEADLESS", "False").lower() == "true"
     summary_interval = summary_interval if summary_interval is not None else int(os.getenv("SUMMARY_INTERVAL_STEPS", "10"))
@@ -442,6 +482,7 @@ async def run_task(
         large_notes_path=resolved_large_notes_path,
         headless=headless,
         demo_overlay=demo_overlay,
+        ask_user_handler=ask_user_handler,
     )
 
     await browser.start(initial_url)
@@ -607,6 +648,10 @@ async def run_task(
                 for note in final_notes:
                     print(f"  {note}")
                 print("="*80)
+
+        if replay_summary and not replay_summary.get("goal_completed"):
+            handoff_note = _build_replay_handoff_note(replay_summary)
+            memory.cumulative_summary = handoff_note + " " + memory.cumulative_summary
 
         loop_start = max_steps + 1 if task_status == "success" else len(memory.steps) + 1
         for step_num in range(loop_start, max_steps + 1):
@@ -1027,7 +1072,7 @@ async def main():
     parser.add_argument("--url", type=str, default=None, help="Starting URL (optional).")
     parser.add_argument("--steps", type=int, default=1000, help="Max steps (default 1000).")
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode.")
-    parser.add_argument("--mimo-url", type=str, default=os.getenv("MIMO_API_URL", "https://mbhl6tqhfyvdd3tu.us-east-1.aws.endpoints.huggingface.cloud/v1/"), help="MiMo API URL.")
+    parser.add_argument("--mimo-url", type=str, default=os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL), help="MiMo API URL.")
     parser.add_argument("--mimo-api-key", type=str, default=os.getenv("MIMO_API_KEY"), help="MiMo API Key for authentication.")
 
     # Model overrides (override defaults for the selected provider)
@@ -1050,6 +1095,16 @@ async def main():
     parser.add_argument("--replay-max-actions", type=int, default=int(os.getenv("COSMIC_REPLAY_MAX_ACTIONS", "8")), help="Maximum indexed replay actions before returning to the normal agent loop.")
     parser.add_argument("--interaction-mode", type=str, choices=["hybrid", "vision"], default=os.getenv("COSMIC_INTERACTION_MODE", "hybrid"), help="Tool surface mode. 'vision' removes DOM tools/prompts; 'hybrid' keeps DOM fallback/extraction.")
     parser.add_argument("--demo-overlay", action="store_true", help="Demo-only: render a glassy COSMIC memory overlay inside the browser. Hidden during every agent/MiMo screenshot. Off by default.")
+    parser.add_argument(
+        "--ask-user-bridge-url",
+        type=str,
+        default=None,
+        help=(
+            "Route AskUser through an HTTP bridge instead of CLI input. "
+            "Used by AgentPhone/call_to_browse.py: POSTs the question to <url>/ask and "
+            "long-polls <url>/next_reply for the caller's spoken reply."
+        ),
+    )
 
     args = parser.parse_args()
     args.provider = normalize_cli_provider_arg(args.provider)
@@ -1063,6 +1118,7 @@ async def main():
 
     # 2. Setup Config based on Provider selection
     #    CLI flags --fast-model, --slow-model, --api-key, --temperature override defaults
+    medium_config = None
     if args.provider == "openai":
         api_key = args.api_key or os.getenv("OPENAI_API_KEY")
         fast_model = args.fast_model or os.getenv("OPENAI_FAST_MODEL", "gpt-4o")
@@ -1107,15 +1163,25 @@ async def main():
         )
     elif args.provider == "gemini":
         api_key = args.api_key or os.getenv("GEMINI_API_KEY")
-        fast_model = args.fast_model or os.getenv("GEMINI_FAST_MODEL", "gemini-3-pro-preview")
-        slow_model = args.slow_model or os.getenv("GEMINI_SLOW_MODEL", "gemini-3-pro-preview")
-        default_temp = 1.0  # Gemini 3 default - DO NOT change unless user explicitly overrides
+        default_gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        fast_model = args.fast_model or os.getenv("GEMINI_FAST_MODEL") or default_gemini_model
+        medium_model = os.getenv("GEMINI_MEDIUM_MODEL") or fast_model
+        slow_model = args.slow_model or os.getenv("GEMINI_SLOW_MODEL") or default_gemini_model
+        default_temp = 1.0  # Gemini default - DO NOT change unless user explicitly overrides
         fast_config = LLMConfig(
             provider=LLMProvider.GEMINI,
             model_id=fast_model,
             api_key=api_key,
             tier=LLMTier.FAST,
             timeout_ms=15000,
+            temperature=args.temperature if args.temperature is not None else default_temp,
+        )
+        medium_config = LLMConfig(
+            provider=LLMProvider.GEMINI,
+            model_id=medium_model,
+            api_key=api_key,
+            tier=LLMTier.MEDIUM,
+            timeout_ms=45000,
             temperature=args.temperature if args.temperature is not None else default_temp,
         )
         slow_config = LLMConfig(
@@ -1136,7 +1202,7 @@ async def main():
         api_key = api_key.strip() if api_key else ""
         if not api_key:
             print(
-                "\n❌ Provider credentials are required for --provider google_gemini "
+                "\n❌ Provider credentials are required for --provider fireworks_kimi "
                 "(pass --api-key or set the configured provider API key env var)."
             )
             sys.exit(1)
@@ -1169,13 +1235,50 @@ async def main():
         )
 
     # 3. Pre-check MiMo Availability
+    mimo_health_timeout = int(os.getenv("MIMO_HEALTH_TIMEOUT", "8"))
     print("\n[PRE-CHECK] verifying MiMo vision server...")
-    if not check_mimo_health(args.mimo_url, api_key=args.mimo_api_key):
+    if not check_mimo_health(
+        args.mimo_url,
+        timeout=mimo_health_timeout,
+        api_key=args.mimo_api_key,
+    ):
         print(f"\n❌ CRITICAL ERROR: MiMo Vision Server is unreachable at: {args.mimo_url}")
         print("   This is a vision-dominant system and cannot function without MiMo.")
         print("   Please ensure the server is running and accessible.")
         sys.exit(1)
     print("✅ MiMo-VL Server is online and ready.")
+
+    ask_user_handler = None
+    if args.ask_user_bridge_url:
+        bridge_url = args.ask_user_bridge_url.rstrip("/")
+        import httpx as _httpx  # local import keeps the default path dependency-free
+
+        async def _bridge_ask_user(question: str) -> str:
+            poll_timeout = max(15.0, float(args.ask_user_timeout))
+            async with _httpx.AsyncClient(timeout=poll_timeout + 5.0) as http:
+                ask_resp = await http.post(f"{bridge_url}/ask", json={"question": question})
+                ask_resp.raise_for_status()
+                while True:
+                    try:
+                        reply_resp = await http.get(
+                            f"{bridge_url}/next_reply",
+                            params={"timeout": poll_timeout},
+                        )
+                    except _httpx.ReadTimeout:
+                        continue
+                    if reply_resp.status_code == 204:
+                        continue
+                    reply_resp.raise_for_status()
+                    payload = reply_resp.json() or {}
+                    if payload.get("timeout"):
+                        continue
+                    reply_text = payload.get("reply")
+                    if reply_text is None:
+                        continue
+                    return str(reply_text)
+
+        ask_user_handler = _bridge_ask_user
+        print(f"🎙️  AskUser bridge: {bridge_url} (questions will be spoken on a live call)")
 
     # 4. RunTask
     try:
@@ -1184,6 +1287,7 @@ async def main():
             initial_url=args.url,
             max_steps=args.steps,
             fast_model_config=fast_config,
+            medium_model_config=medium_config,
             slow_model_config=slow_config,
             mimo_api_url=args.mimo_url,
             mimo_api_key=args.mimo_api_key,
@@ -1201,6 +1305,7 @@ async def main():
             replay_max_actions=args.replay_max_actions,
             interaction_mode=args.interaction_mode,
             demo_overlay_enabled=args.demo_overlay,
+            ask_user_handler=ask_user_handler,
         )
     except Exception as e:
         print(f"\n❌ Execution Failed: {e}")

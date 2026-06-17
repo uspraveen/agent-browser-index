@@ -270,14 +270,14 @@ Prompt exposure note:
 ### Quick Start
 
 ```powershell
-python main.py --provider google_gemini --goal "Find top 3 ergonomic keyboards under $120 and save a concise comparison note"
+python main.py --provider fireworks_kimi --goal "Find top 3 ergonomic keyboards under $120 and save a concise comparison note"
 ```
 
 ### Run with COSMIC recall
 
 ```powershell
 python main.py `
-  --provider google_gemini `
+  --provider fireworks_kimi `
   --interaction-mode vision `
   --memory-mode recall `
   --goal "Get the YouTube video description for the official Claude Code launch video" `
@@ -295,7 +295,7 @@ python main.py --help
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--goal` | str | required | Task objective. |
-| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`, `google_gemini`. |
+| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`, `fireworks_kimi`. |
 | `--url` | str | `None` | Optional starting URL. |
 | `--steps` | int | `1000` | Max steps. |
 | `--headless` | bool flag | `False` | Run browser headless. |
@@ -310,12 +310,12 @@ python main.py --help
 | `--ask-user-timeout` | int | `120` | Seconds to wait for `AskUser`. |
 | `--large-notes-path` | str | `<run_dir>/large_notes.jsonl` | External large-notes storage path. |
 
-### Demo Provider Label
+### Fireworks Kimi Provider
 
-The CLI advertises `--provider google_gemini` as the demo-facing provider label. Internally, the existing provider wiring and environment variable names are preserved so the working hackathon path stays stable.
+Use `--provider fireworks_kimi` for the Fireworks-hosted Kimi K2.6 path.
 
 ```powershell
-python main.py --provider google_gemini --goal "..."
+python main.py --provider fireworks_kimi --goal "..."
 ```
 
 ### MiMo-7B-RL Vision Grounding

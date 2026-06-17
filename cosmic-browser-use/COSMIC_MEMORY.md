@@ -19,7 +19,7 @@ Every successful run becomes reusable intelligence for future tasks.
 The normal agent still works with:
 
 ```powershell
-python main.py --provider google_gemini --goal "Get the YouTube video description for <video or query>"
+python main.py --provider fireworks_kimi --goal "Get the YouTube video description for <video or query>"
 ```
 
 ## What Gets Stored
@@ -32,7 +32,7 @@ Find the element: <instruction>
 Output the center coordinates as [x, y] in pixels.
 ```
 
-`browser_controller.parse_coordinates(...)` accepts MiMo outputs like `[x, y]`, `(x, y)`, `x=... y=...`, JSON `position`, or fallback numbers. If the model returns 0-1 coordinates, the parser converts them to pixels.
+`browser_controller.parse_coordinates(...)` accepts explicit MiMo coordinate outputs like `[x, y]`, `(x, y)`, `x=... y=...`, JSON `{"x": ..., "y": ...}`, or JSON `position`/`coordinates` fields. If the model returns 0-1 coordinates, the parser converts them to pixels. It deliberately refuses arbitrary numbers from prose or truncated `<think>` blocks, so malformed reasoning triggers strict retry instead of clicking a fake coordinate.
 
 COSMIC then stores a visual index for replay:
 
@@ -102,7 +102,7 @@ COSMIC_INDEXER_MAX_TOKENS=4096
 Index a workflow:
 
 ```powershell
-python main.py --provider google_gemini --memory-mode learn --goal "Get the YouTube video description for the official OpenAI GPT-4o launch video" --demo-overlay
+python main.py --provider fireworks_kimi --memory-mode learn --goal "Get the YouTube video description for the official OpenAI GPT-4o launch video" --demo-overlay
 ```
 
 Index an already-completed run:
@@ -120,7 +120,7 @@ python scripts/index_run.py --run-dir runs/20260517_155250 --disable-supermemory
 Replay/adapt it:
 
 ```powershell
-python main.py --provider google_gemini --memory-mode recall --goal "Get the YouTube video description for the official Claude Code launch video" --demo-overlay
+python main.py --provider fireworks_kimi --memory-mode recall --goal "Get the YouTube video description for the official Claude Code launch video" --demo-overlay
 ```
 
 For an exact target repeat, replay can skip search/result selection entirely:
@@ -134,7 +134,7 @@ For a changed target, replay falls back to the safe prefix and checkpoints at th
 Use `auto` during rehearsals when you want recall plus writeback:
 
 ```powershell
-python main.py --provider google_gemini --memory-mode auto --goal "Get the YouTube video description for <new video>" --demo-overlay
+python main.py --provider fireworks_kimi --memory-mode auto --goal "Get the YouTube video description for <new video>" --demo-overlay
 ```
 
 ## Supermemory
