@@ -1,14 +1,12 @@
 <div align="center">
-  <img src="assets/cosmic-ball-logo-v1.1.png" alt="COSMIC Browser Memory" width="180" />
+  <img src="assets/cosmic-ball-logo-v1.1.png" alt="Cosmic Browser Agent" width="120" />
+  <h1>Cosmic Browser Agent</h1>
+  <p><strong>Vision-dominant browser automation for real websites — with optional traversal memory.</strong></p>
 </div>
 
-# COSMIC Browser Memory
+Cosmic Browser Agent is an autonomous web task runner that sees and operates real sites through Playwright, MiMo-VL visual grounding, and an LLM orchestrator. **COSMIC Browser Memory** is the optional layer on top: it records how the agent moves through websites and replays successful routes on future runs.
 
-**Traversal memory for browser agents — learn a route once, replay it on future runs.**
-
-COSMIC Browser Memory records how an agent moves through real websites: page states, screenshots, visual anchors, actions, coordinates, failures, fixes, and successful workflows. Every successful run can become reusable intelligence instead of starting from scratch.
-
-Search engines indexed pages for humans. COSMIC indexes **how agents traverse sites**.
+Search engines indexed pages for humans. Cosmic indexes **how agents traverse sites**.
 
 ---
 
@@ -16,22 +14,22 @@ Search engines indexed pages for humans. COSMIC indexes **how agents traverse si
 
 Most browser agents are stateless. Each run rediscovers the same UI: where the search bar is, which button opens the result, what failed last time, and where the successful path was.
 
-COSMIC changes that:
+Cosmic Browser Agent solves the execution problem with vision-grounded actions. COSMIC memory solves the repetition problem:
 
 1. **Learn** — complete a task while COSMIC records the traversal path.
 2. **Index** — distill the successful run into a replayable workflow stored locally.
 3. **Recall** — retrieve a prior workflow, replay safe known actions, and use live vision only where the site changed or confidence drops.
 
-```text
+```plaintext
 First run:   explore → complete task → index route
 Future run:  recall route → replay known actions → live vision only where needed
 ```
 
 ---
 
-## What COSMIC Stores
+## What COSMIC Memory Stores
 
-COSMIC stores executable traversal intelligence, not just text summaries.
+COSMIC memory stores executable traversal intelligence, not just text summaries.
 
 | Memory type | What gets stored |
 |---|---|
@@ -68,7 +66,7 @@ COSMIC stores executable traversal intelligence, not just text summaries.
 
 ## Architecture
 
-COSMIC runs on top of **`cosmic-browser-use`**, a vision-dominant browser automation agent.
+Cosmic Browser Agent runs from **`cosmic-browser-use`**, with COSMIC memory as an optional subsystem.
 
 | Component | Role |
 |---|---|
@@ -78,7 +76,7 @@ COSMIC runs on top of **`cosmic-browser-use`**, a vision-dominant browser automa
 | **Local workflow store** | Deterministic replay from JSON workflows |
 | **Supermemory** *(optional)* | Semantic recall across workflows when `SUPERMEMORY_API_KEY` is set |
 
-```text
+```plaintext
 User task
     │
     ▼
@@ -105,7 +103,7 @@ Optional: Supermemory semantic recall (when SUPERMEMORY_API_KEY is set)
 
 **Mental model:**
 
-```text
+```plaintext
 Local COSMIC store  = executable traversal map (source of truth)
 MiMo-VL             = visual grounding model
 Playwright / Chrome = browser hands
@@ -133,9 +131,9 @@ cp .env.example .env
 
 Edit `.env` with at least:
 
-```bash
+```env
 FIREWORKS_API_KEY=your_key_here
-MIMO_API_URL=https://your-mimo-server.modal.run   # or self-hosted vLLM endpoint
+MIMO_API_URL=https://your-mimo-server.modal.run
 ```
 
 ### Run a task (no memory)
@@ -179,7 +177,7 @@ python main.py \
 
 ---
 
-## Memory Modes
+## COSMIC Memory Modes
 
 | Mode | Behavior |
 |---|---|
@@ -196,7 +194,7 @@ Local workflows are stored under `./data/cosmic_memory/` by default (`--memory-d
 
 ## Chrome Profile Support
 
-For sites that require existing logins (LinkedIn, Google accounts, etc.), COSMIC can launch your real Chrome binary against a **dedicated agent copy** of a profile — your live Chrome windows are never touched.
+For sites that require existing logins (LinkedIn, Google accounts, etc.), the agent can launch your real Chrome binary against a **dedicated agent copy** of a profile — your live Chrome windows are never touched.
 
 ```bash
 # List available profiles
@@ -223,7 +221,7 @@ Agent profile data is stored under `%LOCALAPPDATA%\CosmicBrowserUse\chrome\` on 
 
 Visual tools (`VisualClick`, `VisualType`, `VisualHover`) send a screenshot plus target description to **MiMo-VL-7B-RL** and expect a center pixel coordinate back.
 
-```text
+```plaintext
 Screenshot + "YouTube search bar at top center" → [596, 28]
 ```
 
@@ -270,7 +268,7 @@ python scripts/index_run.py --run-dir runs/20260517_155250 --disable-supermemory
 
 ## Supermemory (Optional)
 
-COSMIC works fully with **local workflow storage only**. Supermemory is an optional semantic recall layer for finding related workflows across large memory sets.
+COSMIC memory works fully with **local workflow storage only**. Supermemory is an optional semantic recall layer for finding related workflows across large memory sets.
 
 Enable by setting `SUPERMEMORY_API_KEY` in `.env`. Disable explicitly with `--disable-supermemory`.
 
@@ -285,7 +283,7 @@ python scripts/smoke_supermemory.py
 
 ## Repository Layout
 
-```text
+```plaintext
 agent-browser-index/
   deploy_modal.py                   # Modal deployment for MiMo-VL vLLM server
   cosmic-browser-use/
