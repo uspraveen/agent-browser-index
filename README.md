@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="docs/assets/cosmic-ball-logo-v1.1.png" alt="COSMIC Browser Memory" width="160" />
-</p>
+<div align="center">
+  <img src="assets/cosmic-ball-logo-v1.1.png" alt="COSMIC Browser Memory" width="180" />
+</div>
 
 # COSMIC Browser Memory
 
@@ -78,19 +78,29 @@ COSMIC runs on top of **`cosmic-browser-use`**, a vision-dominant browser automa
 | **Local workflow store** | Deterministic replay from JSON workflows |
 | **Supermemory** *(optional)* | Semantic recall across workflows when `SUPERMEMORY_API_KEY` is set |
 
-```mermaid
-flowchart TD
-    U[User task] --> R[Workflow retriever]
-    R --> W[Local COSMIC workflow store]
-    W --> P[Replay planner]
-    P --> B[cosmic-browser-use]
-    B --> V[MiMo-VL visual grounding]
-    B --> PW[Playwright / Chrome via CDP]
-    B --> A[Action recorder]
-    A --> C[Workflow indexer]
-    C --> W
-    C -.->|optional| SM[Supermemory semantic recall]
-    R -.->|optional| SM
+```text
+User task
+    │
+    ▼
+Workflow retriever ──► Local COSMIC workflow store
+    │                           │
+    │                           ▼
+    │                    Replay planner
+    │                           │
+    │                           ▼
+    └──────────────► cosmic-browser-use
+                           │
+           ┌───────────────┼───────────────┐
+           ▼               ▼               ▼
+    MiMo-VL grounding   Playwright/Chrome   Action recorder
+                                               │
+                                               ▼
+                                        Workflow indexer
+                                               │
+                                               ▼
+                                    Local COSMIC workflow store
+
+Optional: Supermemory semantic recall (when SUPERMEMORY_API_KEY is set)
 ```
 
 **Mental model:**
