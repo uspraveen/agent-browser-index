@@ -8,7 +8,7 @@ Search engines indexed web pages for humans. COSMIC indexes how agents move thro
 
 It runs on top of `cosmic-browser-use`, a vision-dominant browser automation agent that can see and operate real websites. The vision grounding model is **MiMo-7B-RL / MiMo-VL-7B-RL**.
 
-On the first run, the agent completes a task normally while COSMIC records the traversal path. After the task succeeds, COSMIC compresses that run into a reusable workflow, stores the executable route locally, and writes semantic workflow memory to Supermemory.
+On the first run, the agent completes a task normally while COSMIC records the traversal path. After the task succeeds, COSMIC compresses that run into a reusable workflow and stores the executable route locally. An optional Supermemory upload provides semantic recall when `SUPERMEMORY_API_KEY` is configured.
 
 On future runs, the agent retrieves relevant prior workflows, loads the executable route, adapts task-specific values, replays safe known actions, and hands control back to live vision whenever the website has changed or confidence drops.
 
@@ -68,7 +68,7 @@ The indexer is forbidden to invent coordinates. Visual replay coordinates always
 come from the original MiMo-grounded source step:
 
 ```text
-run log -> LLM distiller -> workflow JSON -> local store + Supermemory summary
+run log -> LLM distiller -> workflow JSON -> local store (+ optional Supermemory summary)
 ```
 
 If the LLM indexer is unavailable, COSMIC falls back to a deterministic compiler
@@ -91,7 +91,7 @@ COSMIC_INDEXER_MAX_TOKENS=4096
 
 `off`: original browser agent behavior.
 
-`learn`: run normally, then compile the run into `data/cosmic_memory/workflows/*.json` and write a semantic summary to Supermemory when configured.
+`learn`: run normally, then compile the run into `data/cosmic_memory/workflows/*.json`. Writes a semantic summary to Supermemory only when `SUPERMEMORY_API_KEY` is set.
 
 `recall`: retrieve an existing workflow, build one upfront replay plan, execute that plan without per-step LLM calls until checkpoint, then continue with the normal agent. If the indexed workflow has an observed successful final URL and the current goal strongly matches that target, recall uses the deterministic observed-final-URL fast path before spending a slow planner call.
 
@@ -137,9 +137,11 @@ Use `auto` during rehearsals when you want recall plus writeback:
 python main.py --provider fireworks_kimi --memory-mode auto --goal "Get the YouTube video description for <new video>" --demo-overlay
 ```
 
-## Supermemory
+## Supermemory (Optional)
 
-Set `SUPERMEMORY_API_KEY` in `.env`. The Python SDK uses:
+Supermemory is **not required**. COSMIC's local workflow store is the source of truth for replay. Enable Supermemory only when you want semantic recall across a large workflow library.
+
+Set `SUPERMEMORY_API_KEY` in `.env`, or pass `--disable-supermemory` to skip reads/writes entirely. The Python SDK uses:
 
 ```python
 from supermemory import Supermemory
@@ -153,19 +155,18 @@ COSMIC keeps exact executable route memory in local JSON and uses Supermemory fo
 
 We explicitly use `task_type="memory"` for workflow summaries and retrieve with `search.memories(..., search_mode="hybrid")`. Supermemory documents `memory` as the full memory/context layer with SuperRAG built in, while `superrag` is the document/RAG-only mode. Browser traversal memory needs temporal context, user preferences, failure patches, and relationship-aware recall, so `memory` plus hybrid memory search is the right fit.
 
-## AgentPhone and AgentMail Ingress
+## Human-Driven Recording
 
-COSMIC can be invoked from more than the CLI.
+Record a workflow without agent exploration:
 
-`AgentPhone/` provides a live call/SMS integration path. A user can call the agent, speak a browser task, and route that task into COSMIC.
-
-AgentMail follows the same task-ingress pattern for email. A user can email a task such as:
-
-```text
-Get me the latest 1040NR tax form.
+```powershell
+python scripts/record_workflow.py `
+  --workflow-name "LinkedIn job search" `
+  --goal "Search LinkedIn for software engineer roles" `
+  --chrome-profile "Profile 9"
 ```
 
-The agent browses, completes the task, and replies with the result or attachment through the email layer.
+Requires `--chrome-profile`. MiMo is not called during recording — actions are captured from real DOM events.
 
 ## Debug Logs
 

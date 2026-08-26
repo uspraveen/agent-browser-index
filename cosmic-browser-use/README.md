@@ -1,18 +1,18 @@
 # cosmic-browser-use
 
-Vision-dominant browser automation for real websites, powered by Playwright, MiMo-7B-RL visual grounding, and COSMIC Browser Memory.
+Vision-dominant browser automation for real websites, powered by Playwright, MiMo-VL-7B-RL visual grounding, and COSMIC Browser Memory.
 
-This is the browser execution layer behind **COSMIC Browser Memory: Indexing the Web for Agents**. It can run as a normal autonomous browser agent, or it can run with traversal memory enabled so successful workflows become reusable executable routes.
+This is the browser execution layer behind **COSMIC Browser Memory**. It runs as a standalone autonomous browser agent, or with traversal memory enabled so successful workflows become reusable executable routes.
 
 > Search engines indexed web pages for humans. COSMIC indexes how agents move through websites.
 
 ## What This Project Is
 
 Cosmic Browser Use Agent is an autonomous web task runner that:
-- Decides actions with an LLM orchestrator.
-- Grounds visual targets on screenshots using **MiMo-7B-RL / MiMo-VL-7B-RL**.
-- Executes atomic actions through Playwright.
-- Maintains layered memory for long-running tasks.
+- Decides actions with an LLM orchestrator (Fireworks Kimi by default).
+- Grounds visual targets on screenshots using **MiMo-VL-7B-RL**.
+- Executes atomic actions through Playwright (bundled Chromium or real Chrome via CDP).
+- Maintains layered in-run memory for long-running tasks.
 - Records successful runs into replayable COSMIC workflow memory.
 
 It is designed for real browsing environments where DOM-only automation is brittle.
@@ -20,17 +20,19 @@ It is designed for real browsing environments where DOM-only automation is britt
 ## Highlights
 
 - Vision-first control loop with screenshot-grounded actions.
-- MiMo-7B-RL visual grounding: screenshot + target description -> pixel coordinate.
+- MiMo-VL-7B-RL visual grounding: screenshot + target description → pixel coordinate.
 - COSMIC traversal memory: page states, actions, visual indexes, failures, fixes, and replay checkpoints.
-- Supermemory-backed semantic recall for prior workflows.
-- Indexed replay that can execute known actions without spending a fresh LLM/MiMo call per step.
-- Multi-provider orchestration (OpenAI, Anthropic, Gemini; plus provider abstraction for vLLM in code).
+- Indexed replay that can execute known actions without a fresh LLM/MiMo call per step.
+- Chrome profile support via CDP — seed logins from your real profile into a dedicated agent browser.
+- Human-driven workflow recording (`scripts/record_workflow.py`).
+- Multi-provider orchestration (OpenAI, Anthropic, Gemini, Fireworks Kimi).
+- Optional Supermemory semantic recall (local workflow store is the source of truth).
 - Atomic tool model with robust recovery behavior.
 - Memory compression + rolling context window to keep long tasks stable.
 - Two-level notes architecture:
-`SaveNote` for concise memory and `SaveLargeNote` for large extracts with searchable pointers.
+  `SaveNote` for concise memory and `SaveLargeNote` for large extracts with searchable pointers.
 - Production guardrails:
-tab limits, loop detection, dialog auto-accept, anti-automation hardening, retry/escalation paths.
+  tab limits, loop detection, dialog auto-accept, anti-automation hardening, retry/escalation paths.
 
 ## Architecture
 
@@ -45,8 +47,8 @@ flowchart TD
     B -->|Playwright actions| PW[Chromium via Playwright]
     B -->|Grounding API call| MIMO[MiMo-7B-RL / MiMo-VL API]
     M --> COSMIC[COSMIC traversal memory]
-    COSMIC --> SM[Supermemory semantic recall]
     COSMIC --> WF[Local executable workflow JSON]
+    COSMIC -.->|optional| SM[Supermemory semantic recall]
 
     MEM -->|Context payload| O
     MEM -->|Append step records| LOG[log.json]
@@ -99,6 +101,10 @@ Enums/dataclasses for tool actions, action results, task config, LLM config, ste
 Standalone MiMo grounding/navigation utility + health check helper used by `main.py`.
 - `config.py`
 Central defaults for keys/models/limits/timing.
+- `cosmic_memory/`
+COSMIC traversal memory: replay, indexing, recording, optional Supermemory bridge. See `COSMIC_MEMORY.md`.
+- `scripts/`
+`record_workflow.py` (human-driven recording), `index_run.py` (post-run indexing), `smoke_supermemory.py`.
 
 ## Memory Architecture
 
@@ -269,24 +275,52 @@ Prompt exposure note:
 
 ### Quick Start
 
-```powershell
-python main.py --provider fireworks_kimi --goal "Find top 3 ergonomic keyboards under $120 and save a concise comparison note"
+```bash
+cp .env.example .env   # set FIREWORKS_API_KEY and MIMO_API_URL
+pip install -r requirements.txt
+playwright install chromium
+
+python main.py --provider fireworks_kimi --goal "Find top 3 ergonomic keyboards under $120"
 ```
 
 ### Run with COSMIC recall
 
-```powershell
-python main.py `
-  --provider fireworks_kimi `
-  --interaction-mode vision `
-  --memory-mode recall `
-  --goal "Get the YouTube video description for the official Claude Code launch video" `
-  --demo-overlay
+```bash
+python main.py \
+  --provider fireworks_kimi \
+  --interaction-mode vision \
+  --memory-mode recall \
+  --goal "Get the YouTube video description for the official Claude Code launch video"
+```
+
+### Run with an existing Chrome profile
+
+For sites that need your logins, launch real Chrome via CDP against a seeded copy of your profile:
+
+```bash
+python main.py --list-chrome-profiles
+
+python main.py \
+  --provider fireworks_kimi \
+  --chrome-profile "Default" \
+  --refresh-chrome-profile \
+  --goal "Search LinkedIn for software engineer roles in San Francisco"
+```
+
+Your live Chrome windows are never touched. The agent uses a persistent copy under `%LOCALAPPDATA%\CosmicBrowserUse\chrome\` (override with `COSMIC_AGENT_DATA_DIR`).
+
+### Record a human-driven workflow
+
+```bash
+python scripts/record_workflow.py \
+  --workflow-name "LinkedIn job search" \
+  --goal "Search LinkedIn for software engineer roles" \
+  --chrome-profile "Profile 9"
 ```
 
 ### Help
 
-```powershell
+```bash
 python main.py --help
 ```
 
@@ -295,11 +329,12 @@ python main.py --help
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--goal` | str | required | Task objective. |
-| `--provider` | enum | `openai` | `openai`, `anthropic`, `gemini`, `fireworks_kimi`. |
+| `--provider` | enum | `fireworks_kimi` | `openai`, `anthropic`, `gemini`, `fireworks_kimi`. |
 | `--url` | str | `None` | Optional starting URL. |
 | `--steps` | int | `1000` | Max steps. |
 | `--headless` | bool flag | `False` | Run browser headless. |
-| `--mimo-url` | str | `$MIMO_API_URL` | MiMo base URL (controller normalizes to chat completions endpoint). |
+| `--mimo-url` | str | `$MIMO_API_URL` | MiMo base URL (normalized to chat completions endpoint). |
+| `--mimo-api-key` | str | `$MIMO_API_KEY` | MiMo API key if your server requires auth. |
 | `--fast-model` | str | provider default | Override fast tier model ID. |
 | `--slow-model` | str | provider default | Override slow tier model ID. |
 | `--api-key` | str | config value | Override provider API key. |
@@ -309,6 +344,19 @@ python main.py --help
 | `--screenshot-quality` | int | `50` | JPEG quality for screenshots. |
 | `--ask-user-timeout` | int | `120` | Seconds to wait for `AskUser`. |
 | `--large-notes-path` | str | `<run_dir>/large_notes.jsonl` | External large-notes storage path. |
+| `--memory-mode` | enum | `off` | COSMIC mode: `off`, `learn`, `recall`, `auto`. |
+| `--memory-dir` | str | `./data/cosmic_memory` | Local workflow store directory. |
+| `--cosmic-user-id` | str | `demo_user` | User identity for COSMIC memory partitioning. |
+| `--cosmic-container-tag` | str | `cosmic-hackathon-demo` | Container tag (used by optional Supermemory). |
+| `--disable-supermemory` | flag | off | Local workflow only; skip Supermemory reads/writes. |
+| `--replay-max-actions` | int | `8` | Max indexed replay actions before returning to agent loop. |
+| `--interaction-mode` | enum | `hybrid` | `hybrid` (DOM + vision) or `vision` (vision tools only). |
+| `--demo-overlay` | flag | off | In-browser COSMIC status overlay (hidden during MiMo screenshots). |
+| `--chrome-profile` | str | `None` | Chrome profile dir name or path for CDP mode. |
+| `--list-chrome-profiles` | flag | — | List local Chrome profiles and exit. |
+| `--refresh-chrome-profile` | flag | off | Re-seed agent Chrome dir from your real profile. |
+| `--restore-tabs` | flag | off | Best-effort reopen URLs from your live profile's session. |
+| `--ask-user-bridge-url` | str | `None` | HTTP bridge for `AskUser` in non-interactive environments. |
 
 ### Fireworks Kimi Provider
 
@@ -318,13 +366,21 @@ Use `--provider fireworks_kimi` for the Fireworks-hosted Kimi K2.6 path.
 python main.py --provider fireworks_kimi --goal "..."
 ```
 
-### MiMo-7B-RL Vision Grounding
+### MiMo-VL-7B-RL Vision Grounding
 
-MiMo-7B-RL is the vision grounding model. For visual tools, the controller sends a screenshot plus a target description and expects the center pixel coordinate.
+MiMo-VL-7B-RL is the vision grounding model. For visual tools, the controller sends a screenshot plus a target description and expects the center pixel coordinate.
 
 ```text
 Screenshot + "YouTube search bar at top center" -> [596, 28]
 ```
+
+`main.py` runs a health pre-check against the MiMo server before each task. The default endpoint is a Modal-hosted vLLM deployment — deploy your own from the repo root:
+
+```bash
+modal deploy deploy_modal.py
+```
+
+Set `MIMO_API_URL` to your server base URL. The controller accepts base URL, `/v1`, or full `/v1/chat/completions` and normalizes automatically.
 
 COSMIC stores both raw pixel coordinates and normalized viewport coordinates for replay:
 
@@ -411,34 +467,43 @@ runs/20260208_153000/
 ```bash
 pip install -r requirements.txt
 playwright install chromium
+cp .env.example .env
 ```
+
+Configure at minimum `FIREWORKS_API_KEY` and `MIMO_API_URL` in `.env`. See `.env.example` for the full variable list.
 
 ## Production Behavior Notes
 
 - MiMo URL normalization:
-controller accepts base URL, `/v1`, `/v1/models`, or full chat endpoint and resolves correctly.
+  controller accepts base URL, `/v1`, `/v1/models`, or full chat endpoint and resolves correctly.
+- Chrome CDP mode:
+  launches your real `chrome.exe` against a persistent agent user-data dir seeded from `--chrome-profile`. Your live Chrome is never attached or modified.
 - Navigation tools (`GoBack`, `GoForward`, `Reload`) are implemented and dispatched.
 - `Screenshot` tool is implemented and returns saved file path.
 - Tab hygiene:
-max tabs enforced, inactive `about:blank` tabs auto-cleaned.
+  max tabs enforced, inactive `about:blank` tabs auto-cleaned.
 - Dialog safety:
-native browser dialogs are auto-accepted and surfaced back into context.
+  native browser dialogs are auto-accepted and surfaced back into context.
 - Ask-user:
-works only when interactive terminal exists; returns controlled error in headless mode.
+  works when an interactive terminal exists; use `--ask-user-bridge-url` for HTTP-based reply bridging.
 
-## Current Gaps / Practical Caveats
+## Current Gaps
 
-- No automated tests are currently present (`pytest` reports no tests).
-- `ruff`/`pyflakes` are not installed by default in this environment.
-- `verify_action` currently validates by screenshot hash change only (no deep semantic verification yet).
-- `config.py` currently contains literal key values in repository form; use secrets management before public/production deployment.
+- No automated test suite (`pytest` reports no tests).
+- `verify_action` validates by screenshot hash change only (no deep semantic verification yet).
+- Replay is best-effort — sites change; COSMIC checkpoints and falls back to live vision when confidence drops.
 
-## Recommended Next Hardening Steps
+## Recommended Next Steps
 
-1. Move all API keys to environment variables or secret manager.
-2. Add smoke + regression tests for tool dispatch and memory-policy reroutes.
-3. Add semantic verification layer (URL/title/selectors) on top of screenshot hash checks.
-4. Pin and clean `requirements.txt` to a single coherent dependency set.
+1. Keep all API keys in environment variables or a secret manager.
+2. Add smoke + regression tests for tool dispatch, memory policy, and replay.
+3. Add semantic verification (URL/title/selectors) on top of screenshot hash checks.
+4. Pin `requirements.txt` to tested version ranges.
+
+## Further Reading
+
+- [`COSMIC_MEMORY.md`](COSMIC_MEMORY.md) — memory modes, indexing pipeline, debug logs, replay behavior
+- [`../README.md`](../README.md) — project overview and quick start
 
 ## License
 
