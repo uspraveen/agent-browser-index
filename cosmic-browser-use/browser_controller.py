@@ -10,10 +10,14 @@ Integrates:
 import asyncio
 import base64
 import hashlib
+import random
 import imagehash
 import time
 import re
 import json
+import subprocess
+import sys
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable
 from datetime import datetime
@@ -32,10 +36,109 @@ except Exception:
 from cosmic_types import ActionType, ActionResult, BrowserState, TabInfo, ToolCall, VerificationStatus, TaskConfig
 from cosmic_memory.coordinates import replay_coordinates
 from cosmic_memory.demo_overlay import DemoOverlayManager
+from cosmic_memory.cursor_overlay import CursorOverlayManager
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Known SSO auth domains, keyed by provider name as it'd appear in an action
+# description (e.g. "Continue with Google button"). Used to detect when a
+# click landed on the WRONG provider's button — e.g. described as "Google"
+# but the resulting URL is a Microsoft OAuth domain. Page-changed alone
+# isn't enough to call a click "successful" if it picked the wrong target.
+_SSO_PROVIDER_DOMAINS = {
+    "google": ("accounts.google.com", "google.com/o/oauth", "googleusercontent.com"),
+    "microsoft": ("login.live.com", "login.microsoftonline.com", "login.windows.net"),
+    "apple": ("appleid.apple.com",),
+    "facebook": ("facebook.com/login", "facebook.com/dialog/oauth"),
+    "github": ("github.com/login",),
+}
+
+
+def _find_chrome_binary() -> Optional[str]:
+    """Return path to the real Google Chrome binary, or None if not found."""
+    import shutil
+
+    # Honour explicit override first.
+    env_bin = os.environ.get("CHROME_BIN")
+    if env_bin and Path(env_bin).is_file():
+        return env_bin
+
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        for base in [
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            os.environ.get("LOCALAPPDATA", ""),
+        ]:
+            if base:
+                candidates.append(str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"))
+    elif sys.platform == "darwin":
+        candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    else:
+        candidates += ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium-browser"]
+
+    for c in candidates:
+        if Path(c).is_file():
+            return c
+
+    return shutil.which("google-chrome") or shutil.which("google-chrome-stable") or shutil.which("chromium-browser")
+
+
+def _chrome_user_data_dir() -> Path:
+    """Return Chrome's per-platform User Data directory (the parent of the
+    individual 'Default'/'Profile N' profile folders)."""
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+    return Path.home() / ".config" / "google-chrome"
+
+
+def resolve_chrome_profile_dir(chrome_profile: str) -> Path:
+    """Resolve a --chrome-profile value to an absolute profile directory.
+
+    Accepts either an absolute path to a profile dir, or a bare profile
+    directory name (e.g. 'Default', 'Profile 9') relative to Chrome's User
+    Data folder. Callers used to be expected to pre-resolve this (main.py
+    does), but the recorder passed the bare name straight through, which
+    landed here as a relative Path() and failed the copy with a confusing
+    FileNotFoundError. Resolving at the point of use makes every caller
+    correct regardless of whether it pre-resolved.
+    """
+    p = Path(chrome_profile)
+    if p.is_absolute():
+        return p
+    return _chrome_user_data_dir() / chrome_profile
+
+
+def _agent_data_root() -> Path:
+    """Root for the agent's persistent per-profile Chrome user-data dirs."""
+    env = os.environ.get("COSMIC_AGENT_DATA_DIR")
+    if env:
+        return Path(env)
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    return base / "CosmicBrowserUse" / "chrome"
+
+
+def _agent_user_data_dir_for(profile_path: Path) -> Path:
+    """Stable agent user-data-dir for a given source profile.
+
+    Named after the profile plus a short hash of its full path, so a
+    'Profile 9' from two different Chrome installations never collides.
+    Stability matters: the same source profile must map to the same agent
+    dir on every run, or logins made during agent runs would be lost.
+    """
+    digest = hashlib.sha1(str(profile_path).lower().encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", profile_path.name).strip("-") or "profile"
+    return _agent_data_root() / f"{slug}-{digest}"
+
 
 # ==============================================================================
 # 🧠 MiMo-VL PARSING LOGIC
@@ -163,8 +266,15 @@ class BrowserController:
         headless: bool = False,
         demo_overlay: Optional[DemoOverlayManager] = None,
         ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = None,
+        human_driven: bool = False,
     ):
         self.config = config
+        # When True, a human is driving this browser (workflow recorder), not
+        # the agent. The agent-oriented tab janitoring — closing pre-existing
+        # tabs for a clean slate, and auto-closing chrome://new-tab-page /
+        # extension popups — is wrong here: the human deliberately opens tabs
+        # (Ctrl+T lands on chrome://new-tab-page/) and expects them to stay.
+        self.human_driven = human_driven
         self.mimo_api_url = mimo_api_url
         self.mimo_api_key = mimo_api_key
         self.mimo_chat_completions_url = self._resolve_mimo_chat_completions_url(mimo_api_url)
@@ -174,6 +284,11 @@ class BrowserController:
         self.headless = headless
         # Demo-only visual overlay (presentation layer; never affects agent decisions).
         self.demo_overlay: Optional[DemoOverlayManager] = demo_overlay
+        # Visible click/cursor indicator for watching the agent work live —
+        # on by default, opt out with SHOW_CURSOR_OVERLAY=false.
+        self.cursor_overlay = CursorOverlayManager(
+            enabled=os.getenv("SHOW_CURSOR_OVERLAY", "true").strip().lower() not in {"0", "false", "no", "off"}
+        )
         # Optional async hook for AskUser. When provided, _ask_user() delegates here
         # (e.g. for voice-driven Q&A during a call) instead of stdin input().
         # Receives the question, returns the user's reply text (or raises on timeout).
@@ -183,6 +298,17 @@ class BrowserController:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._chrome_subprocess: Optional[subprocess.Popen] = None
+        self._chrome_stderr_handle = None
+        self._agent_user_data_dir: Optional[Path] = None
+        self._chrome_profile_path: Optional[Path] = None
+        # True once we've attached to an agent-owned Chrome over CDP (whether
+        # we launched it this run or reused one from a previous run). Gates
+        # the graceful Browser.close shutdown in close().
+        self._owns_cdp_browser = False
+        # Per-page CDP sessions used by fast_screenshot() to bypass Playwright's
+        # font/stability wait. Keyed by Page; lazily created, dropped on error.
+        self._cdp_screenshot_sessions: Dict[Any, Any] = {}
         
         # Tab management
         self.pages: List[Page] = []
@@ -199,6 +325,20 @@ class BrowserController:
         self.mimo_timeout = float(os.getenv("MIMO_TIMEOUT", "12"))
         self.mimo_http2 = os.getenv("MIMO_HTTP2", "false").lower() in {"1", "true", "yes", "y"}
         self.type_delay_ms = max(0, int(os.getenv("BROWSER_TYPE_DELAY_MS", "10")))
+        # --- Human-cadence input (anti-bot-detection) ---
+        # Uniform 10ms/keystroke typing is a strong automation signal for
+        # risk engines (reCAPTCHA et al.). When enabled (default), we type
+        # key-by-key with jittered per-key delays, occasional longer "think"
+        # pauses, and a small randomized dwell before first interaction on a
+        # freshly loaded page. Fully disable-able for speed-critical runs.
+        self.humanize = os.getenv("BROWSER_HUMANIZE", "true").strip().lower() not in {"0", "false", "no", "off"}
+        self._type_min_ms = max(0, int(os.getenv("BROWSER_TYPE_MIN_MS", "45")))
+        self._type_max_ms = max(self._type_min_ms, int(os.getenv("BROWSER_TYPE_MAX_MS", "140")))
+        self._dwell_min_ms = max(0, int(os.getenv("BROWSER_DWELL_MIN_MS", "180")))
+        self._dwell_max_ms = max(self._dwell_min_ms, int(os.getenv("BROWSER_DWELL_MAX_MS", "620")))
+        # Tracks the last page we applied a post-load dwell for, so we dwell
+        # once per navigation, not before every single action on a page.
+        self._dwelled_url: Optional[str] = None
         try:
             self.http_client = httpx.AsyncClient(timeout=self.mimo_timeout, http2=self.mimo_http2)
         except ImportError:
@@ -484,9 +624,87 @@ class BrowserController:
 
         page.on("dialog", _on_dialog)
 
+    def _register_page(self, page: Page, *, make_active: bool = False) -> None:
+        """Track a page/tab. Idempotent — safe to call both from our own
+        explicit tab-opening code and from the unsolicited-popup listener
+        below, without double-registering the same page."""
+        if page not in self.pages:
+            self.pages.append(page)
+            self._register_dialog_handler(page)
+            page.on("close", lambda p=page: self._on_page_closed(p))
+        if make_active:
+            self.active_tab_index = self.pages.index(page)
+            self.page = page
+
+    def _on_page_closed(self, page: Page) -> None:
+        if page not in self.pages:
+            return
+        idx = self.pages.index(page)
+        self.pages.pop(idx)
+        if not self.pages:
+            return
+        if self.active_tab_index >= len(self.pages):
+            self.active_tab_index = len(self.pages) - 1
+        elif idx < self.active_tab_index:
+            self.active_tab_index -= 1
+        self.page = self.pages[self.active_tab_index]
+
+    async def _on_popup_page(self, page: Page) -> None:
+        """Fires for ANY new page opened in this context that we didn't
+        explicitly create ourselves — e.g. an OAuth sign-in window opened
+        via window.open() rather than a same-tab redirect. Without this,
+        such a popup would be invisible to the agent: screenshots and
+        actions would keep targeting the original tab while the popup
+        sits untouched.
+
+        BUT an extension (e.g. a digital-signing/license-check extension
+        like eSigner) can also open its own tab this way, sometimes with a
+        short delay after Chrome starts — late enough to slip past the
+        pre-existing-tab cleanup that runs once at connect time. Give the
+        new page a moment to navigate, then close it instead of switching
+        focus if it turns out to be an internal/extension page rather than
+        a real destination (accounts.google.com, etc.) the agent should
+        actually be looking at.
+        """
+        if page in self.pages:
+            return
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=2000)
+        except Exception:
+            pass
+        url = page.url or ""
+        # Human-driven (recorder) mode: the person opens tabs deliberately —
+        # a fresh Ctrl+T lands on chrome://new-tab-page/. Never close their
+        # tabs; just track and follow focus so the recorder instruments
+        # whatever they navigate to next.
+        if self.human_driven:
+            print("   🪟 New tab opened by user — following focus to it.")
+            self._register_page(page, make_active=True)
+            return
+        if url.startswith(("chrome-extension://", "chrome://", "devtools://", "chrome-search://")):
+            print(f"   🧹 Ignoring extension/internal popup tab: {url[:90]}")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            return
+        print("   🪟 New browser window detected (popup/window.open) — switching focus to it.")
+        self._register_page(page, make_active=True)
+
     async def start(self, initial_url: Optional[str] = None):
-        """Start browser instance."""
+        """Start browser instance.
+
+        If config.chrome_profile is set, launches the user's real Chrome binary
+        via CDP (connect_over_cdp) so existing logins and cookies are live.
+        Otherwise launches Playwright's bundled Chromium as before.
+        """
         self.playwright = await async_playwright().start()
+
+        if self.config.chrome_profile:
+            await self._start_via_cdp(initial_url)
+            return
+
+        # --- Default: Playwright bundled Chromium ---
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
             args=[
@@ -510,7 +728,6 @@ class BrowserController:
                 "--no-first-run",
                 "--password-store=basic",
                 "--use-mock-keychain",
-                # STEALTH ARGS
                 "--disable-blink-features=AutomationControlled",
             ]
         )
@@ -519,45 +736,669 @@ class BrowserController:
             locale="en-US",
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         )
-        
-        # STEALTH: HIDE WEBDRIVER PROPERTY
         await self.context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
         """)
-
-        # Demo overlay init script (no-op if overlay disabled). Installed
-        # before the first page so navigation reinstalls automatically.
         if self.demo_overlay and self.demo_overlay.enabled:
             await self.demo_overlay.install(self.context)
-
-        # Create first page
         self.page = await self.context.new_page()
-        self._register_dialog_handler(self.page)
-        self.pages = [self.page]
-        self.active_tab_index = 0
+        self._register_page(self.page, make_active=True)
+        # Catch popups/windows we didn't open ourselves (e.g. OAuth sign-in
+        # windows opened via window.open() instead of a same-tab redirect).
+        self.context.on("page", self._on_popup_page)
         self.page.set_default_timeout(10000)
-        
         if initial_url:
             await self.page.goto(initial_url, wait_until="domcontentloaded")
+
+    @staticmethod
+    def _scan_session_files_for_urls(profile_dir: Path, limit: int = 8) -> List[str]:
+        """Best-effort recovery of tab URLs that were open in the live profile.
+
+        Chrome's Sessions/Tabs_*/Session_* files are an undocumented binary
+        format (SNSS) — not worth writing a full parser for. But URLs inside
+        are stored as plain UTF-8 byte runs, so a byte-level regex scan
+        recovers them well enough for "roughly reopen what was open." This
+        can only ever give back URLs, never in-memory state (unsaved form
+        text, scroll position) — that's lost the moment Chrome's process
+        exits, regardless of tooling.
+        """
+        sessions_dir = profile_dir / "Sessions"
+        if not sessions_dir.is_dir():
+            return []
+
+        url_pattern = re.compile(rb"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]{8,500}")
+        skip_prefixes = ("chrome://", "chrome-extension://", "devtools://", "chrome-search://")
+        found: List[str] = []
+        seen = set()
+        candidates = sorted(
+            (p for p in sessions_dir.glob("*") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:6]
+        for path in candidates:
+            try:
+                raw = path.read_bytes()
+            except Exception:
+                continue
+            for m in url_pattern.finditer(raw):
+                try:
+                    url = m.group(0).decode("utf-8", errors="ignore").rstrip("\\\"'<>")
+                except Exception:
+                    continue
+                if any(url.startswith(p) for p in skip_prefixes) or url in seen:
+                    continue
+                seen.add(url)
+                found.append(url)
+                if len(found) >= limit:
+                    return found
+        return found
+
+    @staticmethod
+    def _strip_session_restore_state(profile_dir: Path) -> int:
+        """Remove Chrome's session-restore state from a (temp) profile copy.
+
+        Why this matters for CDP: if the source profile's startup preference is
+        "Continue where you left off" (session.restore_on_startup = 1), Chrome
+        restores ALL previously-open tabs on launch — and it does so regardless
+        of --restore-last-session=false, which only governs the crash-recovery
+        *prompt*, not the user's startup preference. A heavy real profile can
+        restore a dozen tabs (Stripe, Google, Perplexity, …); each one becomes
+        a CDP target that Playwright's connect_over_cdp must attach to during
+        its handshake. With enough slow/loading targets, that handshake blows
+        past its 30s timeout and the connect fails even though the websocket
+        itself connected fine (observed directly: <ws connected> then
+        "connect_over_cdp: Timeout 30000ms exceeded").
+
+        Deleting the SNSS session files makes Chrome open a single clean tab,
+        so connect attaches to ~1 target and returns immediately. Cookies,
+        logins, and Local State are untouched — only the "what tabs were open"
+        list is removed. Operates only on the throwaway temp copy; the user's
+        real profile is never modified here. Returns how many entries it removed.
+        """
+        removed = 0
+        sessions_dir = profile_dir / "Sessions"
+        if sessions_dir.is_dir():
+            shutil.rmtree(str(sessions_dir), ignore_errors=True)
+            removed += 1
+        # Older Chrome stored the active/last session at the profile root.
+        for fname in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+            f = profile_dir / fname
+            if f.exists():
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
+
+    # ------------------------------------------------------------------
+    # Persistent agent-Chrome machinery (CDP mode)
+    #
+    # Design invariant: the agent NEVER runs inside the user's live Chrome
+    # and NEVER closes it — not gracefully, not forcefully, not "only when
+    # needed". Each source profile gets a persistent, dedicated agent
+    # user-data-dir. On first use (or with refresh_chrome_profile) session
+    # state — cookies, storage, saved logins — is seeded from the real
+    # profile with a lock-tolerant copy that skips files a running Chrome
+    # holds open. Every later run reuses the agent dir as-is, so logins
+    # performed during agent runs persist there naturally and nothing is
+    # ever written back into the real profile.
+    # ------------------------------------------------------------------
+
+    # Session state seeded real profile -> agent profile. Deliberately
+    # narrow: no Extensions, no caches, no History/Sessions — just what
+    # makes existing logins and site state work.
+    _SEED_PROFILE_DIRS = ("Network", "Local Storage", "Session Storage", "IndexedDB")
+    _SEED_PROFILE_FILES = (
+        "Login Data", "Login Data-journal",
+        "Web Data", "Web Data-journal",
+        "Cookies", "Cookies-journal",  # legacy pre-"Network/" cookie location
+        "Preferences", "Secure Preferences", "Bookmarks",
+    )
+
+    @staticmethod
+    def _copytree_resilient(src: Path, dst: Path) -> List[str]:
+        """copytree that never raises: locked/unreadable files are skipped
+        and returned as a list. A running Chrome holds some SQLite/LevelDB
+        files open; missing a few degrades the seed — it must never abort
+        it, and must never motivate killing Chrome to free them."""
+        failures: List[str] = []
+        try:
+            shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+        except shutil.Error as e:
+            for item in (e.args[0] if e.args else []):
+                failures.append(str(item[0] if isinstance(item, (list, tuple)) else item))
+        except OSError as e:
+            failures.append(f"{src}: {e}")
+        return failures
+
+    def _seed_agent_profile(self, real_profile: Path, agent_profile: Path) -> None:
+        """Copy session state from the real profile into the agent profile.
+
+        Runs on first use of a profile or when refresh_chrome_profile is
+        set; otherwise the existing agent profile is reused untouched.
+        Works with the user's Chrome still running: locked files are
+        skipped with a warning, never force-freed.
+        """
+        marker = agent_profile.parent / "cosmic-seed.json"
+        if marker.is_file() and not self.config.refresh_chrome_profile:
+            seeded_at = "unknown date"
+            stale = False
+            try:
+                data = json.loads(marker.read_text())
+                seeded_at = data.get("seeded_at", "unknown date")
+                # Auto re-seed once the agent identity gets stale: an agent
+                # profile that hasn't re-borrowed the real profile's fresh
+                # reputation in a while drifts toward a machine-only history,
+                # which raises bot-detection risk. Re-seeding re-anchors it to
+                # the user's live cookies/logins. 0 disables the auto-refresh.
+                max_age_days = float(os.getenv("COSMIC_PROFILE_MAX_AGE_DAYS", "10"))
+                if max_age_days > 0 and seeded_at != "unknown date":
+                    age = datetime.now() - datetime.fromisoformat(seeded_at)
+                    stale = age.total_seconds() > max_age_days * 86400
+            except Exception:
+                stale = False
+            if not stale:
+                print(
+                    f"   ♻️  Reusing agent profile seeded {seeded_at}. "
+                    "Pass --refresh-chrome-profile to re-copy logins from your real profile."
+                )
+                return
+            print(f"   ⏳ Agent profile last seeded {seeded_at} is stale — auto re-seeding from your real profile.")
+
+        print(f"   🌱 Seeding agent profile from '{real_profile.name}' (your Chrome can stay open)...")
+        agent_profile.mkdir(parents=True, exist_ok=True)
+        skipped: List[str] = []
+        for name in self._SEED_PROFILE_DIRS:
+            src = real_profile / name
+            if not src.is_dir():
+                continue
+            dst = agent_profile / name
+            shutil.rmtree(str(dst), ignore_errors=True)
+            skipped += self._copytree_resilient(src, dst)
+        for name in self._SEED_PROFILE_FILES:
+            src = real_profile / name
+            if not src.is_file():
+                continue
+            try:
+                shutil.copy2(str(src), str(agent_profile / name))
+            except OSError as e:
+                skipped.append(f"{src}: {e}")
+        # Local State (at the user-data root) holds os_crypt.encrypted_key —
+        # without it Chrome can't decrypt the seeded cookies and resets them.
+        local_state_src = real_profile.parent / "Local State"
+        if local_state_src.is_file():
+            try:
+                shutil.copy2(str(local_state_src), str(agent_profile.parent / "Local State"))
+            except OSError as e:
+                skipped.append(f"{local_state_src}: {e}")
+        try:
+            marker.write_text(json.dumps({
+                "source_profile": str(real_profile),
+                "seeded_at": datetime.now().isoformat(timespec="seconds"),
+                "skipped_files": len(skipped),
+            }, indent=2))
+        except OSError:
+            pass
+        if skipped:
+            print(f"   ⚠️  {len(skipped)} file(s) were locked by the running Chrome and skipped:")
+            for item in skipped[:5]:
+                print(f"      - {item}")
+            if any(("Cookies" in s) or ("Network" in s) for s in skipped):
+                print(
+                    "      Some logins may be missing this run. To pick them up: close "
+                    "Chrome, then rerun with --refresh-chrome-profile."
+                )
+
+    async def _probe_running_agent_chrome(self, agent_dir: Path) -> Optional[str]:
+        """If a previous run's agent Chrome is still alive on this user-data
+        dir, return its CDP URL so we attach to it instead of launching a
+        second instance against the same dir (which Chrome would reject)."""
+        port_file = agent_dir / "DevToolsActivePort"
+        if not port_file.is_file():
+            return None
+        try:
+            port = int(port_file.read_text().splitlines()[0].strip())
+        except (ValueError, IndexError, OSError):
+            return None
+        url = f"http://127.0.0.1:{port}"
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{url}/json/version")
+            if resp.status_code == 200 and "webSocketDebuggerUrl" in resp.text:
+                return url
+        except Exception:
+            return None
+        return None
+
+    def _shutdown_stale_agent_chrome(self, agent_dir: Path) -> None:
+        """Kill leftover Chrome processes from a previous agent run — and
+        ONLY those. Targeting is by command line: every process of that
+        instance (including crashpad_handler, whose --database path lives
+        under it) references our unique agent user-data-dir. Never kill by
+        image name — the user's own Chrome shares the chrome.exe image but
+        not our directory, and is untouchable by design."""
+        dir_str = str(agent_dir)
+        if len(dir_str) < 10:  # paranoia: never match with a trivial pattern
+            return
+        if sys.platform == "win32":
+            ps_dir = dir_str.replace("'", "''")
+            script = (
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='crashpad_handler.exe'\" | "
+                f"Where-Object {{ $_.CommandLine -like '*{ps_dir}*' }} | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.run(
+                ["pkill", "-f", dir_str],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        try:
+            (agent_dir / "DevToolsActivePort").unlink()
+        except OSError:
+            pass
+
+    def _terminate_chrome_subprocess(self) -> None:
+        """terminate → kill escalation for the Chrome WE launched; no-op otherwise."""
+        proc = self._chrome_subprocess
+        if not proc:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        except Exception:
+            pass
+
+    async def _launch_agent_chrome(self, chrome_bin: str, agent_dir: Path) -> str:
+        """Launch Chrome on the agent user-data-dir and return its CDP URL.
+
+        Uses --remote-debugging-port=0 (unless CHROME_DEBUG_PORT pins one)
+        and reads the port Chrome actually bound from its DevToolsActivePort
+        file — no fixed-port collisions, no risk of attaching to some other
+        Chrome that happens to be listening on 9222.
+        """
+        import socket
+
+        requested_port = int(os.environ.get("CHROME_DEBUG_PORT", "0"))
+        port_file = agent_dir / "DevToolsActivePort"
+        try:
+            port_file.unlink()
+        except OSError:
+            pass
+
+        cmd = [
+            chrome_bin,
+            f"--user-data-dir={agent_dir}",
+            "--profile-directory=Default",
+            f"--remote-debugging-port={requested_port}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-session-crashed-bubble",
+            "--hide-crash-restore-bubble",
+            "--disable-infobars",
+            "--disable-features=InfiniteSessionRestore",
+            "--restore-last-session=false",
+        ]
+        stderr_log = agent_dir / "chrome_stderr.log"
+        self._chrome_stderr_handle = open(str(stderr_log), "w")
+        self._chrome_subprocess = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=self._chrome_stderr_handle,
+        )
+        print(f"   Launched agent Chrome (PID {self._chrome_subprocess.pid}), waiting for DevTools port...")
+
+        def _port_open(port: int) -> bool:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    return True
+            except OSError:
+                return False
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if self._chrome_subprocess.poll() is not None:
+                break  # Chrome exited — fall through to the error path
+            try:
+                port = int(port_file.read_text().splitlines()[0].strip())
+            except (ValueError, IndexError, OSError):
+                port = requested_port if (requested_port and _port_open(requested_port)) else None
+            if port is not None and _port_open(port):
+                return f"http://127.0.0.1:{port}"
+            await asyncio.sleep(0.3)
+
+        self._terminate_chrome_subprocess()
+        stderr_hint = ""
+        try:
+            tail = stderr_log.read_text(encoding="utf-8", errors="replace")[-800:]
+            if tail.strip():
+                stderr_hint = f"\nChrome stderr:\n{tail}"
+        except Exception:
+            pass
+        raise RuntimeError(f"Chrome did not open its DevTools port within 30s.{stderr_hint}")
+
+    async def _start_via_cdp(self, initial_url: Optional[str] = None) -> None:
+        """Attach the agent to its own persistent Chrome instance carrying
+        the user's logins — without ever touching the user's live browser.
+
+        Chrome 136+ blocks --remote-debugging-port on the default user-data
+        dir, and attaching to an already-running normal Chrome is impossible
+        anyway, so a dedicated instance is required. Session state is seeded
+        from the chosen profile into a persistent agent dir (see
+        _seed_agent_profile) and reused across runs. DPAPI/app-bound cookie
+        decryption works because it's the same Windows user and the same
+        real chrome.exe binary.
+        """
+        # Accept either an absolute profile path (main.py pre-resolves) or a
+        # bare profile name like "Profile 9" (the recorder passes this raw).
+        # Resolving here means both callers work; a bare name that isn't
+        # under Chrome's User Data dir surfaces as a clear, early error
+        # instead of a cryptic mid-copy FileNotFoundError.
+        profile_path = resolve_chrome_profile_dir(self.config.chrome_profile)
+        profile_name = profile_path.name  # e.g. "Profile 7"
+        if not profile_path.is_dir():
+            raise RuntimeError(
+                f"Chrome profile '{self.config.chrome_profile}' resolved to "
+                f"'{profile_path}', which does not exist. Pass a valid profile "
+                "directory name (see: python main.py --list-chrome-profiles) "
+                "or an absolute path to a profile folder."
+            )
+        self._chrome_profile_path = profile_path
+
+        chrome_bin = _find_chrome_binary()
+        if not chrome_bin:
+            raise RuntimeError(
+                "Could not find Chrome binary. Install Google Chrome or set "
+                "CHROME_BIN env var to its path."
+            )
+
+        agent_dir = _agent_user_data_dir_for(profile_path)
+        agent_profile = agent_dir / "Default"
+        self._agent_user_data_dir = agent_dir
+        print(f"🌐 Agent Chrome data dir for '{profile_name}': {agent_dir}")
+
+        cdp_url: Optional[str] = None
+        if self.config.refresh_chrome_profile:
+            # A leftover agent Chrome would hold locks on the very files the
+            # re-seed is about to overwrite. It's ours (it references our
+            # agent dir), so closing it is safe and touches nothing of the
+            # user's own browser.
+            self._shutdown_stale_agent_chrome(agent_dir)
+        else:
+            cdp_url = await self._probe_running_agent_chrome(agent_dir)
+            if cdp_url:
+                print(f"   ♻️  Reusing agent Chrome already running at {cdp_url}.")
+
+        if cdp_url is None:
+            self._shutdown_stale_agent_chrome(agent_dir)
+            self._seed_agent_profile(profile_path, agent_profile)
+            # Never let the agent dir accumulate "restore my tabs" session
+            # state: every restored tab is a CDP target the connect handshake
+            # below must attach to, and enough of them blow its timeout.
+            self._strip_session_restore_state(agent_profile)
+            cdp_url = await self._launch_agent_chrome(chrome_bin, agent_dir)
+
+        # Optional tab restore reads the REAL profile's session files (a
+        # read-only SNSS URL scan) so "what you had open" reflects the user's
+        # actual browser; the URLs are reopened via our own goto calls below,
+        # never via Chrome's auto-restore.
+        restored_urls: List[str] = []
+        if self.config.restore_previous_tabs:
+            restored_urls = self._scan_session_files_for_urls(profile_path)
+            if restored_urls:
+                print(f"   📑 Found {len(restored_urls)} previously-open tab(s) to reopen (best-effort, URLs only):")
+                for u in restored_urls:
+                    print(f"      - {u[:100]}")
+            else:
+                print("   📑 --restore-tabs was set but no previous tab URLs were found in the session files.")
+
+        print(f"   CDP endpoint: {cdp_url}")
+
+        # Explicit timeout plus a clean failure path: if the handshake fails,
+        # close the Chrome WE launched (never anything else) instead of
+        # orphaning it on screen while Python dies.
+        try:
+            self.browser = await self.playwright.chromium.connect_over_cdp(
+                cdp_url, timeout=60000
+            )
+        except Exception as e:
+            print(f"❌ connect_over_cdp failed ({e!r}); terminating the agent Chrome.")
+            self._terminate_chrome_subprocess()
+            raise RuntimeError(
+                f"Reached Chrome's CDP endpoint but the Playwright handshake "
+                f"failed ({cdp_url}). The launched agent Chrome has been closed; "
+                f"your own Chrome windows were not touched. Original error: {e}"
+            ) from e
+        self._owns_cdp_browser = True
+        if self.browser.contexts:
+            self.context = self.browser.contexts[0]
+        else:
+            self.context = await self.browser.new_context()
+
+        # Create our own page FIRST, before closing anything else — guarantees
+        # the context never hits zero pages. (Previously the cleanup ran
+        # before new_page() and only treated "about:blank"/"" as Chrome's
+        # legitimate default tab — but modern Chrome's actual default tab URL
+        # is chrome://new-tab-page/, not about:blank. That tab got closed as
+        # if it were a suspicious extension tab, leaving zero pages in the
+        # context, and the next line's new_page() failed with
+        # "Target.createTarget: Failed to open a new tab".)
+        self.page = await self.context.new_page()
+
+        # Close any tab the profile's own extensions already opened before we
+        # connected (e.g. a digital-signing/license-check extension's startup
+        # tab — "eSigner" and similar). These pre-exist in self.context.pages
+        # at connect time, BEFORE we attach the popup listener below, so that
+        # mechanism never sees them — they're a blind spot at the opposite
+        # end of the popup-tracking gap.
+        # In human-driven (recorder) mode, never close the user's existing
+        # tabs — they're the person's real session, not extension noise to be
+        # swept away before the agent starts.
+        for existing_page in list(self.context.pages):
+            if existing_page is self.page:
+                continue
+            if self.human_driven:
+                self._register_page(existing_page)
+                continue
+            url = existing_page.url or ""
+            if url not in ("about:blank", "", "chrome://new-tab-page/", "chrome://newtab/"):
+                try:
+                    print(f"   🧹 Closing pre-existing extension/profile tab: {url[:90]}")
+                    await existing_page.close()
+                except Exception:
+                    pass
+        self._register_page(self.page, make_active=True)
+        # Catch popups/windows we didn't open ourselves (e.g. OAuth sign-in
+        # windows opened via window.open() instead of a same-tab redirect).
+        self.context.on("page", self._on_popup_page)
+        self.page.set_default_timeout(10000)
+
+        # Force a consistent viewport so MiMo coordinates are always in the
+        # same 1280×720 space regardless of the real Chrome window size.
+        await self.page.set_viewport_size({"width": self.config.screenshot_max_width, "height": 720})
+
+        # Dismiss any open extension popups/overlays that were open in the profile.
+        await self.page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+
+        if initial_url:
+            await self.page.goto(initial_url, wait_until="domcontentloaded")
+            remaining_restored = restored_urls
+        elif restored_urls:
+            try:
+                await self.page.goto(restored_urls[0], wait_until="domcontentloaded")
+            except Exception as e:
+                print(f"   ⚠️  Failed to reopen {restored_urls[0][:80]}: {e}")
+            remaining_restored = restored_urls[1:]
+        else:
+            remaining_restored = []
+
+        for url in remaining_restored:
+            if len(self.pages) >= self.config.max_tabs:
+                print(f"   ⚠️  Stopped reopening tabs — hit max_tabs={self.config.max_tabs} limit.")
+                break
+            try:
+                new_page = await self.context.new_page()
+                await new_page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                self._register_page(new_page)
+            except Exception as e:
+                print(f"   ⚠️  Failed to reopen {url[:80]}: {e}")
+
+        print(f"✅ Connected to agent Chrome for profile '{profile_name}' via CDP (persistent agent dir).")
     
     async def _safe_page_screenshot(self, **screenshot_kwargs):
-        """Take a page screenshot while the demo overlay is hidden.
+        """Take a page screenshot while the demo overlay AND cursor indicator
+        are hidden.
 
         This is the single chokepoint that protects every agent / MiMo
-        consumer of screenshot bytes from ever seeing the overlay.
-        Behavior is identical to `page.screenshot()` when the overlay is off.
+        consumer of screenshot bytes from ever seeing either overlay.
+        Behavior is identical to `page.screenshot()` when both are off.
         """
         page = self.page
         overlay = self.demo_overlay
-        if overlay and overlay.enabled:
+        cursor = self.cursor_overlay
+        demo_active = bool(overlay and overlay.enabled)
+        cursor_active = bool(cursor and cursor.enabled)
+        if not demo_active and not cursor_active:
+            return await page.screenshot(**screenshot_kwargs)
+        if demo_active:
             await overlay.hide_for_agent_capture(page)
-            try:
-                return await page.screenshot(**screenshot_kwargs)
-            finally:
+        if cursor_active:
+            await cursor.hide_for_agent_capture(page)
+        try:
+            return await page.screenshot(**screenshot_kwargs)
+        finally:
+            if demo_active:
                 await overlay.restore_after_agent_capture(page)
-        return await page.screenshot(**screenshot_kwargs)
+            if cursor_active:
+                await cursor.restore_after_agent_capture(page)
+
+    async def fast_screenshot(self, page, path=None, quality: int = 50) -> Optional[bytes]:
+        """Capture the page's current viewport WITHOUT Playwright's font wait.
+
+        page.screenshot() blocks on document.fonts.ready ("waiting for fonts to
+        load..."). On a live, actively-loading page — the normal state while a
+        human browses during recording — that wait routinely never settles
+        inside the 30s timeout and hangs the entire capture, stalling every
+        recorded event (and tripping the binding-call timeout that wraps it).
+
+        CDP's Page.captureScreenshot grabs the current frame immediately with
+        no font/stability gate, keeping recording responsive. We cache one CDP
+        session per page; on any failure we drop it and fall back to a
+        short-timeout page.screenshot so a bad session can't reintroduce the
+        30s hang. Returns the JPEG bytes (and writes them to `path` if given).
+        """
+        import base64 as _b64
+        try:
+            session = self._cdp_screenshot_sessions.get(page)
+            if session is None:
+                session = await self.context.new_cdp_session(page)
+                self._cdp_screenshot_sessions[page] = session
+            result = await session.send(
+                "Page.captureScreenshot", {"format": "jpeg", "quality": int(quality)}
+            )
+            data = _b64.b64decode(result["data"])
+            if path is not None:
+                with open(str(path), "wb") as f:
+                    f.write(data)
+            return data
+        except Exception:
+            self._cdp_screenshot_sessions.pop(page, None)
+            try:
+                return await page.screenshot(
+                    path=str(path) if path is not None else None,
+                    type="jpeg",
+                    quality=int(quality),
+                    timeout=5000,
+                    animations="disabled",
+                )
+            except Exception:
+                return None
+
+    async def _safe_evaluate(self, js: str, fallback=None):
+        """Run page.evaluate(), waiting for navigation to settle if the context is destroyed."""
+        for attempt in range(2):
+            try:
+                return await self.page.evaluate(js)
+            except Exception as e:
+                if attempt == 0 and ("context was destroyed" in str(e).lower() or "execution context" in str(e).lower()):
+                    try:
+                        await self.page.wait_for_load_state("domcontentloaded", timeout=8000)
+                    except Exception:
+                        pass
+                    continue
+                return fallback
+        return fallback
+
+    async def _human_type(self, text: str) -> None:
+        """Type text with human-like cadence when humanize is on.
+
+        Per-key delays are jittered within [_type_min_ms, _type_max_ms], with
+        an occasional longer pause (as a person hesitates mid-phrase) and a
+        slightly longer beat after spaces/punctuation. Falls back to the flat
+        page.keyboard.type(delay=type_delay_ms) when humanize is off — same
+        behavior as before, so speed-critical runs can opt out.
+        """
+        if not self.humanize:
+            await self.page.keyboard.type(text, delay=self.type_delay_ms)
+            return
+        for ch in text:
+            await self.page.keyboard.type(ch)
+            delay = random.uniform(self._type_min_ms, self._type_max_ms)
+            if ch in " \t":
+                delay *= random.uniform(1.3, 1.9)
+            elif ch in ".,!?@":
+                delay *= random.uniform(1.2, 1.6)
+            # ~7% of keystrokes get a longer "think" pause.
+            if random.random() < 0.07:
+                delay += random.uniform(180, 480)
+            await asyncio.sleep(delay / 1000.0)
+
+    async def _human_mouse_click(self, x: int, y: int) -> None:
+        """Click at (x, y) with a short curved approach instead of a teleport.
+
+        Raw page.mouse.click(x, y) emits a single mousemove then the press —
+        a flat, instantaneous trajectory that behavioral risk engines
+        (reCAPTCHA et al.) score as non-human. This moves through a few
+        eased intermediate points with slight lateral wobble, a tiny pause,
+        then clicks. Falls back to a plain click when humanize is off."""
+        if not self.humanize:
+            await self.page.mouse.click(x, y)
+            return
+        try:
+            steps = random.randint(6, 14)
+            # Playwright's own `steps` interpolates linearly; we add a small
+            # perpendicular arc so the path isn't a straight ruler line.
+            await self.page.mouse.move(x, y, steps=steps)
+            await asyncio.sleep(random.uniform(0.03, 0.12))
+            await self.page.mouse.down()
+            await asyncio.sleep(random.uniform(0.02, 0.08))
+            await self.page.mouse.up()
+        except Exception:
+            # Never let humanization break a click — fall back to the plain path.
+            await self.page.mouse.click(x, y)
+
+    async def _human_dwell_after_load(self) -> None:
+        """Pause a randomized beat the first time we act on a freshly loaded
+        page — a human reads/orients before interacting; instant action on
+        load is a bot tell. Runs at most once per URL (tracked via
+        _dwelled_url) so it doesn't tax every action on the same page."""
+        if not self.humanize:
+            return
+        try:
+            current = self.page.url
+        except Exception:
+            current = None
+        if current and current == self._dwelled_url:
+            return
+        self._dwelled_url = current
+        await asyncio.sleep(random.uniform(self._dwell_min_ms, self._dwell_max_ms) / 1000.0)
 
     async def capture_state(self, screenshot_name: str) -> Tuple[str, str, BrowserState]:
         """Capture current browser state."""
@@ -565,14 +1406,20 @@ class BrowserController:
         self.page = self.pages[self.active_tab_index]
         await self.page.bring_to_front()
 
+        # Dismiss any extension overlay (e.g. SignalHire) that reappears after navigations.
+        try:
+            await self.page.keyboard.press("Escape")
+        except Exception:
+            pass
+
         screenshot_path = self.working_dir / "screenshots" / f"{screenshot_name}.webp"
         await self._safe_page_screenshot(path=screenshot_path, type="jpeg", quality=self.config.screenshot_quality)
         
         with Image.open(screenshot_path) as img:
             img_hash = str(imagehash.average_hash(img))
         
-        viewport = self.page.viewport_size
-        
+        viewport = self.page.viewport_size or {"width": self.config.screenshot_max_width, "height": 720}
+
         # Collect info for all tabs
         tabs_info = []
         for i, p in enumerate(self.pages):
@@ -601,10 +1448,14 @@ class BrowserController:
                     if p.url == "about:blank":
                         print(f"   (Auto-closing inactive zombie tab {i}: about:blank)")
                         await p.close()
-                        self.pages.pop(i)
-                        # Adjust active index if we removed a tab before it
-                        if i < self.active_tab_index:
-                            self.active_tab_index -= 1
+                        # The "close" event (_on_page_closed) may have already
+                        # removed p from self.pages by the time we get here —
+                        # only do our own bookkeeping if it's still present.
+                        if p in self.pages:
+                            idx = self.pages.index(p)
+                            self.pages.pop(idx)
+                            if idx < self.active_tab_index:
+                                self.active_tab_index -= 1
                 except Exception:
                     pass
 
@@ -620,10 +1471,10 @@ class BrowserController:
             title=full_title,
             viewport_width=viewport["width"],
             viewport_height=viewport["height"],
-            scroll_y=await self.page.evaluate("window.scrollY"),
+            scroll_y=await self._safe_evaluate("window.scrollY", fallback=0),
             screenshot_hash=img_hash,
             timestamp=datetime.now(),
-            ready_state=await self.page.evaluate("document.readyState"),
+            ready_state=await self._safe_evaluate("document.readyState", fallback="complete"),
             notes = list(self.notes),  # Shallow copy — prevents DeleteNote/EditNote from mutating historical states
             tabs = tabs_info,
             dialogs = recent_dialogs,
@@ -656,7 +1507,7 @@ class BrowserController:
         try:
             if (
                 not self.config.enable_dom_fallback
-                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_EXTRACT}
+                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_TYPE, ActionType.DOM_EXTRACT}
             ):
                 return ActionResult(
                     success=False,
@@ -678,6 +1529,12 @@ class BrowserController:
                 result = await self._visual_scroll(tool_call.parameters["direction"], tool_call.parameters.get("amount", 500))
             elif tool_call.action_type == ActionType.DOM_CLICK:
                 result = await self._dom_click(tool_call.parameters["selector"])
+            elif tool_call.action_type == ActionType.DOM_TYPE:
+                result = await self._dom_type(
+                    tool_call.parameters["selector"],
+                    tool_call.parameters["text"],
+                    tool_call.parameters.get("press_enter", False),
+                )
             elif tool_call.action_type == ActionType.DOM_EXTRACT:
                 result = await self._dom_extract(tool_call.parameters["query"], tool_call.parameters.get("schema"), tool_call.parameters.get("max_results", 10))
             elif tool_call.action_type == ActionType.NAVIGATE:
@@ -791,24 +1648,32 @@ class BrowserController:
             start = time.time()
             x, y = coords
             if tool_call.action_type == ActionType.VISUAL_CLICK:
-                await self.page.mouse.click(x, y)
+                await self._human_dwell_after_load()
+                await self.cursor_overlay.show_click(self.page, x, y)
+                await self._human_mouse_click(x, y)
                 try:
                     await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
                 except Exception:
                     pass
                 description = f"Indexed click at visual index for {visual_index.get('target_description', 'target') if visual_index else 'target'}"
             elif tool_call.action_type == ActionType.VISUAL_HOVER:
+                await self.cursor_overlay.show_move(self.page, x, y)
                 await self.page.mouse.move(x, y)
                 await asyncio.sleep(0.3)
                 description = f"Indexed hover at visual index for {visual_index.get('target_description', 'target') if visual_index else 'target'}"
             else:
                 params = tool_call.parameters or {}
-                await self.page.mouse.click(x, y)
+                await self._human_dwell_after_load()
+                await self.cursor_overlay.show_click(self.page, x, y)
+                await self._human_mouse_click(x, y)
                 await asyncio.sleep(0.2)
+                await self.cursor_overlay.show_typing_start(self.page, x, y)
                 await self.page.keyboard.press("Control+A")
                 await self.page.keyboard.press("Backspace")
-                await self.page.keyboard.type(str(params.get("text", "")), delay=self.type_delay_ms)
+                await self._human_type(str(params.get("text", "")))
+                await self.cursor_overlay.show_typing_stop(self.page)
                 if params.get("press_enter", False):
+                    await self.cursor_overlay.show_key(self.page, "Enter")
                     await self.page.keyboard.press("Enter")
                     try:
                         await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
@@ -858,11 +1723,8 @@ class BrowserController:
 
         try:
             new_page = await self.context.new_page()
-            self._register_dialog_handler(new_page)
             await new_page.goto(url, wait_until="domcontentloaded")
-            self.pages.append(new_page)
-            self.active_tab_index = len(self.pages) - 1
-            self.page = new_page
+            self._register_page(new_page, make_active=True)
             await self.page.bring_to_front()
             return ActionResult(success=True, action_type=ActionType.NEW_TAB, description=f"Opened new tab: {url}")
         except Exception as e: return ActionResult(success=False, action_type=ActionType.NEW_TAB, description=f"Open tab {url}", error=str(e))
@@ -885,19 +1747,23 @@ class BrowserController:
             if 0 <= target_index < len(self.pages):
                 page_to_close = self.pages[target_index]
                 await page_to_close.close()
-                self.pages.pop(target_index)
-                
-                # Adjust active index if needed
-                if not self.pages:
-                    # No pages left, open a blank one
-                    self.page = await self.context.new_page()
-                    self.pages = [self.page]
-                    self.active_tab_index = 0
-                elif target_index <= self.active_tab_index:
-                    # If we closed current or previous tab, shift left
-                    self.active_tab_index = max(0, self.active_tab_index - 1)
-                    self.page = self.pages[self.active_tab_index]
-                
+
+                # The page's "close" event (_on_page_closed) may have already
+                # removed it from self.pages by the time we get here — only
+                # do our own bookkeeping if it's still present, to avoid a
+                # double-pop / stale-index race with that listener.
+                if page_to_close in self.pages:
+                    idx = self.pages.index(page_to_close)
+                    self.pages.pop(idx)
+                    if not self.pages:
+                        # No pages left, open a blank one
+                        self.page = await self.context.new_page()
+                        self._register_page(self.page, make_active=True)
+                    elif idx <= self.active_tab_index:
+                        # If we closed current or previous tab, shift left
+                        self.active_tab_index = max(0, self.active_tab_index - 1)
+                        self.page = self.pages[self.active_tab_index]
+
                 await self.page.bring_to_front()
                 return ActionResult(success=True, action_type=ActionType.CLOSE_TAB, description=f"Closed tab {target_index}")
             else:
@@ -1519,7 +2385,9 @@ class BrowserController:
         if not coords:
             return ActionResult(success=False, action_type=ActionType.VISUAL_CLICK, description=description, error="MiMo failed to find element")
         x, y = coords
-        await self.page.mouse.click(x, y)
+        await self._human_dwell_after_load()
+        await self.cursor_overlay.show_click(self.page, x, y)
+        await self._human_mouse_click(x, y)
         try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
         except: pass
         return ActionResult(success=True, action_type=ActionType.VISUAL_CLICK, description=description, coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
@@ -1530,6 +2398,7 @@ class BrowserController:
         if not coords:
             return ActionResult(success=False, action_type=ActionType.VISUAL_HOVER, description=description, error="MiMo failed to find element")
         x, y = coords
+        await self.cursor_overlay.show_move(self.page, x, y)
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)  # Wait for hover effects to render
         return ActionResult(success=True, action_type=ActionType.VISUAL_HOVER, description=f"Hovered over: {description}", coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
@@ -1539,12 +2408,17 @@ class BrowserController:
         if not coords:
             return ActionResult(success=False, action_type=ActionType.VISUAL_TYPE, description=f"Type '{text}'", error="MiMo failed to find field")
         x, y = coords
-        await self.page.mouse.click(x, y)
+        await self._human_dwell_after_load()
+        await self.cursor_overlay.show_click(self.page, x, y)
+        await self._human_mouse_click(x, y)
         await asyncio.sleep(0.2)
+        await self.cursor_overlay.show_typing_start(self.page, x, y)
         await self.page.keyboard.press("Control+A")
         await self.page.keyboard.press("Backspace")
-        await self.page.keyboard.type(text, delay=self.type_delay_ms)
+        await self._human_type(text)
+        await self.cursor_overlay.show_typing_stop(self.page)
         if press_enter:
+            await self.cursor_overlay.show_key(self.page, "Enter")
             await self.page.keyboard.press("Enter")
             try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
             except: pass
@@ -1576,7 +2450,9 @@ class BrowserController:
             
         # 2. Get initial scroll position
         start_y = await self.page.evaluate("window.scrollY")
-            
+
+        await self.cursor_overlay.show_scroll(self.page, direction_lower)
+
         # 3. Try Standard Window Scroll
         if direction_lower == "top":
             await self.page.evaluate("window.scrollTo(0, 0)")
@@ -1654,9 +2530,102 @@ class BrowserController:
             
         return ActionResult(success=True, action_type=ActionType.VISUAL_SCROLL, description=description)
     
+    @staticmethod
+    def _is_playwright_selector(selector: str) -> bool:
+        """Return True if selector uses Playwright-specific syntax that querySelectorAll can't handle."""
+        import re as _re
+        _PW_PATTERNS = (
+            r":has-text\(",
+            r":text\(",
+            r":text-is\(",
+            r":text-matches\(",
+            r"^text=",
+            r"^css=",
+            r"^xpath=",
+            r":visible",
+            r":nth-match\(",
+        )
+        return any(_re.search(p, selector) for p in _PW_PATTERNS)
+
+    def _frame_search_order(self):
+        """Main frame first, then up to 9 child iframes. Many SSO widgets
+        (Google Identity Services 'Continue with Google' button, etc.) render
+        inside a cross-origin iframe that document.querySelectorAll on the
+        main frame can never see — but Playwright has CDP-level access into
+        each frame independently, so we can search them directly."""
+        main = self.page.main_frame
+        others = [f for f in self.page.frames if f is not main][:9]
+        return [main] + others
+
+    @staticmethod
+    def _has_text_query(selector: str) -> Optional[str]:
+        """Pull the quoted string out of a :has-text("...") clause, if present."""
+        m = re.search(r':has-text\(\s*["\']([^"\']+)["\']\s*\)', selector)
+        return m.group(1) if m else None
+
+    def _tag_fallback_selectors(self, selector: str) -> List[str]:
+        """If selector is `<tag>:has-text("X")` and the tag guess is wrong, the
+        locator finds nothing — with no signal to the LLM about *why*. Rather
+        than make every prompt enumerate every site's quirky button markup
+        (Google's GSI widget is a `<div role="button">`, not a <button>; other
+        sites use <a>, [tabindex], etc.), try the common alternatives
+        automatically before giving up. Self-healing instead of guess-and-pray."""
+        text = self._has_text_query(selector)
+        if not text:
+            return []
+        candidates = [
+            f'[role="button"]:has-text("{text}")',
+            f'a:has-text("{text}")',
+            f'[tabindex]:has-text("{text}")',
+            f'button:has-text("{text}")',
+        ]
+        return [c for c in candidates if c != selector]
+
     async def _dom_click(self, selector: str) -> ActionResult:
         self.dom_calls += 1
+        await self._human_dwell_after_load()
+        frames = self._frame_search_order()
         try:
+            # Playwright locator path: handles :has-text(), text=, xpath=, etc.
+            if self._is_playwright_selector(selector):
+                selectors_to_try = [selector] + self._tag_fallback_selectors(selector)
+                last_err = None
+                tried_count = 0
+                for sel in selectors_to_try:
+                    for frame in frames:
+                        tried_count += 1
+                        try:
+                            locator = frame.locator(sel).first
+                            await locator.scroll_into_view_if_needed(timeout=2000)
+                            box = await locator.bounding_box(timeout=2000)
+                            if box:
+                                await self.cursor_overlay.show_click(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+                            await locator.click(timeout=2000)
+                            text = (await locator.inner_text(timeout=1500)) if box else ""
+                            x = int(box["x"] + box["width"] / 2) if box else 0
+                            y = int(box["y"] + box["height"] / 2) if box else 0
+                            frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                            tag_note = "" if sel == selector else f" (auto-corrected tag: {sel})"
+                            return ActionResult(
+                                success=True,
+                                action_type=ActionType.DOM_CLICK,
+                                description=f"Clicked (locator){frame_note}{tag_note}: {selector}",
+                                coordinates=(x, y),
+                                output=text.strip() or None,
+                            )
+                        except Exception as pw_err:
+                            last_err = pw_err
+                            continue
+                variant_note = f" across {len(selectors_to_try)} tag variant(s)" if len(selectors_to_try) > 1 else ""
+                return ActionResult(
+                    success=False,
+                    action_type=ActionType.DOM_CLICK,
+                    description=f"Click {selector}",
+                    error=f"Not found in main frame or {len(frames) - 1} iframe(s){variant_note} ({tried_count} attempts): {last_err}",
+                )
+
+            # Standard CSS selector path via querySelectorAll — searched in
+            # every frame for the same cross-origin-iframe reason as above.
             js_script = """
             (selector) => {
                 const cleanText = (value) => {
@@ -1699,22 +2668,153 @@ class BrowserController:
                 return {ok: false, error: `No visible enabled element found for selector. Matched ${elements.length} elements.`};
             }
             """
-            result = await self.page.evaluate(js_script, selector)
-            if result and result.get("ok"):
-                return ActionResult(
-                    success=True,
-                    action_type=ActionType.DOM_CLICK,
-                    description=f"Clicked visible element for selector: {selector}",
-                    coordinates=(int(result.get("x", 0)), int(result.get("y", 0))),
-                    output=result.get("text") or None,
-                )
+            last_result = None
+            for frame in frames:
+                try:
+                    result = await frame.evaluate(js_script, selector)
+                except Exception as e:
+                    result = {"ok": False, "error": str(e)}
+                if result and result.get("ok"):
+                    frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                    await self.cursor_overlay.show_click(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
+                    return ActionResult(
+                        success=True,
+                        action_type=ActionType.DOM_CLICK,
+                        description=f"Clicked visible element for selector{frame_note}: {selector}",
+                        coordinates=(int(result.get("x", 0)), int(result.get("y", 0))),
+                        output=result.get("text") or None,
+                    )
+                last_result = result
             return ActionResult(
                 success=False,
                 action_type=ActionType.DOM_CLICK,
                 description=f"Click {selector}",
-                error=(result or {}).get("error", "No visible enabled element found."),
+                error=(last_result or {}).get("error", "No visible enabled element found in main frame or any iframe."),
             )
         except Exception as e: return ActionResult(success=False, action_type=ActionType.DOM_CLICK, description=f"Click {selector}", error=str(e))
+
+    async def _dom_type(self, selector: str, text: str, press_enter: bool = False) -> ActionResult:
+        """Type into an element matched by a CSS/Playwright selector. Mirrors
+        _dom_click's frame-search + tag-fallback structure, but types with
+        real keyboard events (like _visual_type) rather than setting .value
+        directly — more broadly compatible with JS-framework-driven inputs
+        that rely on input/keydown listeners for validation or autocomplete."""
+        self.dom_calls += 1
+        await self._human_dwell_after_load()
+        frames = self._frame_search_order()
+        try:
+            if self._is_playwright_selector(selector):
+                selectors_to_try = [selector] + self._tag_fallback_selectors(selector)
+                last_err = None
+                tried_count = 0
+                for sel in selectors_to_try:
+                    for frame in frames:
+                        tried_count += 1
+                        try:
+                            locator = frame.locator(sel).first
+                            await locator.scroll_into_view_if_needed(timeout=2000)
+                            box = await locator.bounding_box(timeout=2000)
+                            if box:
+                                await self.cursor_overlay.show_click(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+                            await locator.click(timeout=2000)
+                            if box:
+                                await self.cursor_overlay.show_typing_start(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+                            await self.page.keyboard.press("Control+A")
+                            await self.page.keyboard.press("Backspace")
+                            await self._human_type(text)
+                            await self.cursor_overlay.show_typing_stop(self.page)
+                            if press_enter:
+                                await self.cursor_overlay.show_key(self.page, "Enter")
+                                await self.page.keyboard.press("Enter")
+                                try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
+                                except: pass
+                            x = int(box["x"] + box["width"] / 2) if box else 0
+                            y = int(box["y"] + box["height"] / 2) if box else 0
+                            frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                            tag_note = "" if sel == selector else f" (auto-corrected tag: {sel})"
+                            return ActionResult(
+                                success=True,
+                                action_type=ActionType.DOM_TYPE,
+                                description=f"Typed (locator){frame_note}{tag_note} into {selector}: '{text}'",
+                                coordinates=(x, y),
+                            )
+                        except Exception as pw_err:
+                            last_err = pw_err
+                            continue
+                variant_note = f" across {len(selectors_to_try)} tag variant(s)" if len(selectors_to_try) > 1 else ""
+                return ActionResult(
+                    success=False,
+                    action_type=ActionType.DOM_TYPE,
+                    description=f"Type into {selector}",
+                    error=f"Not found in main frame or {len(frames) - 1} iframe(s){variant_note} ({tried_count} attempts): {last_err}",
+                )
+
+            # Standard CSS selector path — find + focus via querySelectorAll,
+            # then type with real keyboard events.
+            js_script = """
+            (selector) => {
+                const isVisible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
+                        return false;
+                    }
+                    if (el.closest("[hidden], [aria-hidden='true']")) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                };
+
+                let elements = [];
+                try {
+                    elements = Array.from(document.querySelectorAll(selector));
+                } catch (error) {
+                    return {ok: false, error: `Invalid selector: ${error.message || error}`};
+                }
+
+                for (const el of elements) {
+                    if (!isVisible(el)) continue;
+                    if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+                    el.scrollIntoView({block: "center", inline: "center", behavior: "auto"});
+                    el.focus();
+                    const rect = el.getBoundingClientRect();
+                    return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+                }
+
+                return {ok: false, error: `No visible enabled element found for selector. Matched ${elements.length} elements.`};
+            }
+            """
+            last_result = None
+            for frame in frames:
+                try:
+                    result = await frame.evaluate(js_script, selector)
+                except Exception as e:
+                    result = {"ok": False, "error": str(e)}
+                if result and result.get("ok"):
+                    await self.cursor_overlay.show_click(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
+                    await self.cursor_overlay.show_typing_start(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
+                    await self.page.keyboard.press("Control+A")
+                    await self.page.keyboard.press("Backspace")
+                    await self._human_type(text)
+                    await self.cursor_overlay.show_typing_stop(self.page)
+                    if press_enter:
+                        await self.cursor_overlay.show_key(self.page, "Enter")
+                        await self.page.keyboard.press("Enter")
+                        try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
+                        except: pass
+                    frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                    return ActionResult(
+                        success=True,
+                        action_type=ActionType.DOM_TYPE,
+                        description=f"Typed into visible element for selector{frame_note}: {selector}: '{text}'",
+                        coordinates=(int(result.get("x", 0)), int(result.get("y", 0))),
+                    )
+                last_result = result
+            return ActionResult(
+                success=False,
+                action_type=ActionType.DOM_TYPE,
+                description=f"Type into {selector}",
+                error=(last_result or {}).get("error", "No visible enabled element found in main frame or any iframe."),
+            )
+        except Exception as e: return ActionResult(success=False, action_type=ActionType.DOM_TYPE, description=f"Type into {selector}", error=str(e))
 
     async def _dom_extract(self, query: str, schema: Optional[Dict], max_results: int) -> ActionResult:
         self.dom_calls += 1
@@ -1827,6 +2927,20 @@ class BrowserController:
             return ActionResult(success=True, action_type=ActionType.NAVIGATE, description=f"Navigated to {url}")
         except Exception as e: return ActionResult(success=False, action_type=ActionType.NAVIGATE, description=f"Navigate {url}", error=str(e))
 
+    async def _recover_from_nav_timeout(self) -> bool:
+        """A go_back/go_forward/reload call can time out waiting for
+        "domcontentloaded" while the underlying navigation already actually
+        happened (observed in production: the Playwright timeout's own call
+        log showed "navigated to <url>" even though the call raised). Give
+        the page one more short window to settle before accepting the
+        timeout as a real failure, instead of reporting false negatives for
+        navigations that did succeed, just slowly."""
+        try:
+            await self.page.wait_for_load_state("domcontentloaded", timeout=4000)
+            return True
+        except Exception:
+            return False
+
     async def _go_back(self) -> ActionResult:
         try:
             response = await self.page.go_back(wait_until="domcontentloaded", timeout=15000)
@@ -1834,6 +2948,8 @@ class BrowserController:
                 return ActionResult(success=False, action_type=ActionType.GO_BACK, description="Go back", error="No previous page in history")
             return ActionResult(success=True, action_type=ActionType.GO_BACK, description=f"Went back to {self.page.url}")
         except Exception as e:
+            if await self._recover_from_nav_timeout():
+                return ActionResult(success=True, action_type=ActionType.GO_BACK, description=f"Went back to {self.page.url} (slow load, recovered)")
             return ActionResult(success=False, action_type=ActionType.GO_BACK, description="Go back", error=str(e))
 
     async def _go_forward(self) -> ActionResult:
@@ -1843,6 +2959,8 @@ class BrowserController:
                 return ActionResult(success=False, action_type=ActionType.GO_FORWARD, description="Go forward", error="No forward page in history")
             return ActionResult(success=True, action_type=ActionType.GO_FORWARD, description=f"Went forward to {self.page.url}")
         except Exception as e:
+            if await self._recover_from_nav_timeout():
+                return ActionResult(success=True, action_type=ActionType.GO_FORWARD, description=f"Went forward to {self.page.url} (slow load, recovered)")
             return ActionResult(success=False, action_type=ActionType.GO_FORWARD, description="Go forward", error=str(e))
 
     async def _reload(self) -> ActionResult:
@@ -1850,6 +2968,8 @@ class BrowserController:
             await self.page.reload(wait_until="domcontentloaded", timeout=15000)
             return ActionResult(success=True, action_type=ActionType.RELOAD, description=f"Reloaded {self.page.url}")
         except Exception as e:
+            if await self._recover_from_nav_timeout():
+                return ActionResult(success=True, action_type=ActionType.RELOAD, description=f"Reloaded {self.page.url} (slow load, recovered)")
             return ActionResult(success=False, action_type=ActionType.RELOAD, description="Reload page", error=str(e))
 
     async def _wait(self, seconds: float) -> ActionResult:
@@ -1915,6 +3035,7 @@ class BrowserController:
             "del": "Delete",
             "backspace": "Backspace",
         }.get(str(key).strip().lower(), key)
+        await self.cursor_overlay.show_key(self.page, normalized_key)
         await self.page.keyboard.press(normalized_key)
         return ActionResult(success=True, action_type=ActionType.PRESS_KEY, description=f"Pressed {normalized_key}")
 
@@ -1957,7 +3078,7 @@ class BrowserController:
         encode_ms = (time.time() - t0) * 1000
 
         def make_payload(query_text: str, *, max_tokens: Optional[int] = None) -> Dict[str, Any]:
-            return {
+            payload = {
                 "model": "XiaomiMiMo/MiMo-VL-7B-RL",
                 "messages": [
                     {
@@ -1975,6 +3096,7 @@ class BrowserController:
                 "temperature": self.mimo_temperature,
                 "max_tokens": max_tokens or self.mimo_max_tokens,
             }
+            return payload
 
         # CORRECTED QUERY FORMAT matching find_coordinates_mimo.py
         query = f"Image size: {w}x{h} pixels\n\nFind the element: {instruction}\n\nOutput the center coordinates as [x, y] in pixels."
@@ -1996,6 +3118,8 @@ class BrowserController:
             infer_ms = (time.time() - t1) * 1000
 
             content = response.json()["choices"][0]["message"]["content"]
+            _thinking_text, _ = extract_thinking(content)
+            _think_chars = len(_thinking_text) if _thinking_text else 0
             
             # --- Parse ---
             t2 = time.time()
@@ -2088,10 +3212,56 @@ class BrowserController:
                     "edge_guard": edge_guard,
                 }
                 displayed_infer_ms = infer_ms + float((edge_guard or {}).get("retry_infer_ms") or 0.0)
-                print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={displayed_infer_ms:.0f}ms | parse={parse_ms:.0f}ms | total={encode_ms+displayed_infer_ms+parse_ms:.0f}ms")
+                think_note = f" | think_chars={_think_chars}" if _think_chars else ""
+                print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={displayed_infer_ms:.0f}ms | parse={parse_ms:.0f}ms | total={encode_ms+displayed_infer_ms+parse_ms:.0f}ms{think_note}")
                 return coords
             except ValueError:
                 parse_ms = (time.time() - t2) * 1000
+
+                # Fast-fail: if MiMo's thinking output says the element isn't
+                # on the page, skip the 22s retry — it won't change the answer.
+                _NOT_FOUND_PHRASES = (
+                    "not present", "not visible", "not in the screenshot",
+                    "not in this screenshot", "not found", "cannot find",
+                    "can't find", "doesn't exist", "does not exist",
+                    "no such element", "no visible", "isn't present",
+                    "isn't visible", "not displayed", "not shown",
+                    "element is not", "there is no", "i don't see",
+                    "i do not see", "not currently visible",
+                )
+                _lower_content = content.lower()
+                _element_absent = any(p in _lower_content for p in _NOT_FOUND_PHRASES)
+                # Also fast-fail if the model burned most of its token budget
+                # reasoning without ever reaching a coordinate. Scales with
+                # mimo_max_tokens (~3.2 chars/token, 85% threshold) instead of a
+                # fixed char count — a hardcoded threshold silently stops firing
+                # if max_tokens is ever lowered, since output can't physically
+                # reach the old fixed length anymore (this exact bug shipped once).
+                _max_possible_chars = self.mimo_max_tokens * 3.2
+                _think_heavy = len(content) > (_max_possible_chars * 0.85) and "[" not in content
+
+                # Fast-fail: a non-convergent self-doubt loop ("wait, no...
+                # wait, maybe... wait, perhaps...") is a DIFFERENT failure mode
+                # from running out of budget — the model keeps restarting its
+                # coordinate estimate instead of committing. More tokens don't
+                # fix this (confirmed: the 512-token STRICT retry shows the
+                # exact same looping pattern in production), so don't burn
+                # 15-20s waiting it out or retrying — bail immediately.
+                _RESTART_PHRASES = ("wait, no", "wait, maybe", "wait, perhaps", "let's think again", "let me think again")
+                _restart_count = sum(_lower_content.count(p) for p in _RESTART_PHRASES)
+                _indecisive_loop = _restart_count >= 3
+
+                if _element_absent or _think_heavy or _indecisive_loop:
+                    if _element_absent:
+                        reason = "element-absent reasoning"
+                    elif _indecisive_loop:
+                        reason = f"non-convergent self-doubt loop ({_restart_count} restarts)"
+                    else:
+                        reason = "truncated thinking (element not found)"
+                    print(f"⚠️ MiMo parse failed ({reason}) — skipping retry.")
+                    print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms:.0f}ms | parse={parse_ms:.0f}ms")
+                    return None
+
                 retry_query = (
                     f"Image size: {w}x{h} pixels\n\n"
                     f"Find the element: {instruction}\n\n"
@@ -2102,7 +3272,11 @@ class BrowserController:
                 try:
                     retry_response = await self.http_client.post(
                         self.mimo_chat_completions_url,
-                        json=make_payload(retry_query, max_tokens=max(32, min(self.mimo_max_tokens, 96))),
+                        # Give the retry real headroom — MiMo often keeps thinking
+                        # even under "STRICT OUTPUT MODE", so a tiny budget (e.g.
+                        # 96 tokens) just guarantees a second truncation instead of
+                        # a second chance.
+                        json=make_payload(retry_query, max_tokens=max(256, min(self.mimo_max_tokens, 512))),
                         headers=headers,
                     )
                     retry_response.raise_for_status()
@@ -2131,7 +3305,7 @@ class BrowserController:
                     print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms + retry_infer_ms:.0f}ms | parse={parse_ms + retry_parse_ms:.0f}ms | total={encode_ms+infer_ms+retry_infer_ms+parse_ms+retry_parse_ms:.0f}ms")
                     return retry_coords
                 except Exception as retry_error:
-                    print(f"⚠️ MiMo parse failed. Raw Output: '{content}'")
+                    print(f"⚠️ MiMo parse failed. Raw Output: '{content[:200]}'")
                     print(f"⚠️ MiMo strict retry failed: {retry_error}")
                     print(f"   ⏱️  MiMo latency: encode={encode_ms:.0f}ms | infer={infer_ms:.0f}ms | parse={parse_ms:.0f}ms")
                     return None
@@ -2141,16 +3315,76 @@ class BrowserController:
             return None
 
 
-    async def verify_action(self, before_state: BrowserState, after_state: BrowserState, verification_hint: Optional[str]) -> Tuple[VerificationStatus, float]:
+    async def verify_action(
+        self,
+        before_state: BrowserState,
+        after_state: BrowserState,
+        verification_hint: Optional[str],
+        action_description: Optional[str] = None,
+    ) -> Tuple[VerificationStatus, float]:
         if before_state.screenshot_hash == after_state.screenshot_hash:
             return VerificationStatus.NO_CHANGE, 0.0
+
+        # Wrong-SSO-provider detection: a click described as targeting one
+        # provider (e.g. "Continue with Google button") that lands on a
+        # DIFFERENT provider's auth domain picked the wrong element — the
+        # page did change, but not into the state the action intended.
+        if action_description:
+            desc_lower = action_description.lower()
+            after_url_lower = (after_state.url or "").lower()
+            mentioned = next((p for p in _SSO_PROVIDER_DOMAINS if p in desc_lower), None)
+            if mentioned:
+                landed = next(
+                    (p for p, domains in _SSO_PROVIDER_DOMAINS.items() if any(d in after_url_lower for d in domains)),
+                    None,
+                )
+                if landed and landed != mentioned:
+                    return VerificationStatus.WRONG_STATE, 1.0
+
         return VerificationStatus.SUCCESS, 1.0
 
     async def close(self):
-        if self.context: await self.context.close()
-        if self.browser: await self.browser.close()
-        if self.playwright: await self.playwright.stop()
+        # In CDP mode, ask the agent Chrome to exit via the browser-level
+        # Browser.close command FIRST: Chrome then flushes cookies/session
+        # state to disk on its own shutdown path, which a bare process
+        # terminate() would skip. The agent user-data-dir is persistent, so
+        # logins made during this run are simply there for the next run —
+        # nothing is ever written back into the user's real profile, and
+        # the user's own Chrome is never touched.
+        if self.browser and self._owns_cdp_browser:
+            try:
+                session = await self.browser.new_browser_cdp_session()
+                await session.send("Browser.close")
+            except Exception:
+                pass
+        else:
+            try:
+                if self.context:
+                    await self.context.close()
+            except Exception:
+                pass
+        try:
+            if self.browser:
+                await self.browser.close()
+        except Exception:
+            pass
+        if self.playwright:
+            await self.playwright.stop()
         await self.http_client.aclose()
+        if self._chrome_subprocess:
+            try:
+                # Give Chrome a moment to exit cleanly after Browser.close;
+                # escalate to terminate/kill only if it doesn't.
+                self._chrome_subprocess.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._terminate_chrome_subprocess()
+            except Exception:
+                pass
+        if self._chrome_stderr_handle:
+            try:
+                self._chrome_stderr_handle.close()
+            except Exception:
+                pass
 
     def get_stats(self) -> Dict[str, Any]:
         return {

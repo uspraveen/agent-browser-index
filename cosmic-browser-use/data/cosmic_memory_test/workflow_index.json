@@ -1,0 +1,26 @@
+[
+  {
+    "workflow_id": "linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor_success",
+    "name": "linkedin.com: Login to my linkedin using google. Wait for me to complete the signin and search for cursor in the searchbar",
+    "domain": "linkedin.com",
+    "intent": "Login to my linkedin using google. Wait for me to complete the signin and search for cursor in the searchbar",
+    "intent_tokens": [
+      "login",
+      "linkedin",
+      "using",
+      "google",
+      "wait",
+      "complete",
+      "signin",
+      "search",
+      "cursor",
+      "searchbar"
+    ],
+    "task_signature": "linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor",
+    "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
+    "success_count": 1,
+    "step_count": 4,
+    "updated_at": "2026-06-24T14:00:40.127947+00:00",
+    "path": "data\\cosmic_memory_test\\workflows\\linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor_success.json"
+  }
+]

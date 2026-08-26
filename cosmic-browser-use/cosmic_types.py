@@ -15,6 +15,7 @@ class ActionType(str, Enum):
     VISUAL_SCROLL = "VisualScroll"
     VISUAL_HOVER = "VisualHover"
     DOM_CLICK = "DOMClick"
+    DOM_TYPE = "DomType"
     DOM_EXTRACT = "DOMExtract"
     NAVIGATE = "Navigate"
     GO_BACK = "GoBack"
@@ -249,3 +250,6 @@ class TaskConfig:
     summary_interval: int = 10       # Steps between memory compressions
     max_tabs: int = 5                # Maximum open browser tabs
     ask_user_timeout: int = 120      # Seconds to wait for user response before timing out
+    chrome_profile: Optional[str] = None   # Path to Chrome profile dir for CDP mode (e.g. "Default", "Profile 1")
+    restore_previous_tabs: bool = False    # Best-effort reopen of tabs that were open in the live profile (CDP mode only)
+    refresh_chrome_profile: bool = False   # Re-seed the agent's persistent Chrome dir from the real profile (CDP mode only)

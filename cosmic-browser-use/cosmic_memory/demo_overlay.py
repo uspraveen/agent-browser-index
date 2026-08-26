@@ -7,8 +7,8 @@ This module is purely a presentation layer. It must never:
 
 The Python `DemoOverlayManager` owns local mirror state and pushes it into
 each Playwright page. The browser-side script lives inside an injected init
-script and renders into a closed-style shadow DOM so page CSS cannot reach it
-and so it cannot mutate the host document's layout.
+script and renders a fixed, pointer-events-none DOM island. It deliberately
+avoids `innerHTML` so Trusted Types / CSP-heavy sites cannot blank the panel.
 
 Activation is gated by the `--demo-overlay` CLI flag in main.py; when the
 flag is off, every method becomes an inexpensive no-op.
@@ -23,8 +23,8 @@ from typing import Any, Dict, List, Optional
 
 # JavaScript injected once per page (via context.add_init_script). It is
 # defensive: if executed before <html> exists, it retries until the
-# documentElement is available. The overlay attaches into a shadow root so
-# page styles can't bleed in.
+# documentElement is available. The overlay uses real DOM nodes and textContent
+# rather than HTML strings so it survives Trusted Types / CSP-heavy sites.
 OVERLAY_INIT_SCRIPT = r"""
 (() => {
   if (window.__cosmicOverlayInstalled) return;
@@ -69,8 +69,8 @@ OVERLAY_INIT_SCRIPT = r"""
     // letting show()/hide() override them later in the same priority bucket.
     ['opacity', '1'],
     ['visibility', 'visible'],
-    // Defensive: even if the panel inside the shadow loses its computed
-    // height, the host itself stays clearly visible.
+    // Defensive: even if the panel loses its computed height, the host itself
+    // stays clearly visible.
     ['min-height', '230px'],
   ];
 
@@ -93,153 +93,45 @@ OVERLAY_INIT_SCRIPT = r"""
     host.setAttribute('aria-hidden', 'true');
     applyHostStyles(host);
 
-    const shadow = host.attachShadow({ mode: 'open' });
-    const style = document.createElement('style');
-    style.textContent = `
-      :host {
-        /* Reassert inherited properties inside the shadow so even if the
-           page's CSS or our own watchdog races, text and fonts stay set. */
-        color: #eef2f9 !important;
-        font: 12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif !important;
-        line-height: 1.45;
-      }
-      * { box-sizing: border-box; }
-      .panel {
-        position: relative;
-        /* True black frosted glass — neutral tint, no blue cast. */
-        backdrop-filter: blur(22px) saturate(140%);
-        -webkit-backdrop-filter: blur(22px) saturate(140%);
-        background:
-          linear-gradient(180deg, rgba(8,8,10,0.62) 0%, rgba(0,0,0,0.66) 100%);
-        border: 1px solid rgba(255,255,255,0.10);
-        border-radius: 14px;
-        padding: 14px 16px;
-        box-shadow:
-          0 18px 48px rgba(0,0,0,0.45),
-          inset 0 1px 0 rgba(255,255,255,0.06),
-          inset 0 0 0 1px rgba(255,255,255,0.03);
-        color: #eef2f9;
-        /* COSMIC sign-in font stack (see Cosmic-OS/src/settings.css). */
-        font: 12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif;
-        min-height: 220px;
-        max-height: 92vh;
-        overflow: hidden;
-        transform: translateZ(0);
-        transition: none;
-      }
-      /* Soft highlight strip at the top — sells the glassy reflection. */
-      .panel::before {
-        content: '';
-        position: absolute;
-        top: 0; left: 0; right: 0; height: 36%;
-        background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 100%);
-        pointer-events: none;
-        border-top-left-radius: 14px;
-        border-top-right-radius: 14px;
-      }
-      .panel.dim { opacity: 0.92; }
-      .header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-      .brand {
-        /* Mirror the COSMIC wordmark: heavy tracking + small caps look. */
-        font-family: Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif;
-        font-weight: 600;
-        font-size: 11px;
-        letter-spacing: 0.32em;
-        color: #eef2f9;
-        text-transform: uppercase;
-      }
-      .brand .dot {
-        display: inline-block; width: 6px; height: 6px; border-radius: 999px;
-        background: #ffffff;
-        margin-right: 8px; vertical-align: middle;
-        box-shadow: 0 0 8px rgba(255,255,255,0.45);
-      }
-      .badge {
-        font-family: Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", sans-serif;
-        font-size: 10px; padding: 2px 8px; border-radius: 999px;
-        background: rgba(255,255,255,0.08); color: #eef2f9;
-        border: 1px solid rgba(255,255,255,0.16);
-        letter-spacing: 0.12em; text-transform: uppercase;
-        margin-left: auto;
-      }
-      .pulse-ring { position: relative; }
-      .pulse-ring::after {
-        content: ''; position: absolute; inset: -3px;
-        border-radius: inherit; pointer-events: none;
-        box-shadow: 0 0 0 1px rgba(255,255,255,0.20), 0 0 14px rgba(255,255,255,0.10);
-      }
-      .row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
-      .row .k { color: #9aa3b2; }
-      .row .v {
-        color: #eef2f9; font-weight: 500; max-width: 62%;
-        text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      }
-      .section { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.08); }
-      .section-title {
-        font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
-        color: #9aa3b2; margin-bottom: 6px;
-      }
-      .phase {
-        display: inline-flex; align-items: center; gap: 6px;
-        padding: 4px 9px; border-radius: 8px;
-        background: rgba(255,255,255,0.06);
-        border: 1px solid rgba(255,255,255,0.14);
-        color: #ffffff; font-weight: 500;
-      }
-      .phase .dot { width: 6px; height: 6px; border-radius: 999px; background: #ffffff; }
-      .timeline { display: flex; flex-direction: column; gap: 4px; }
-      .tl-item { display: flex; align-items: center; gap: 8px; min-height: 18px; }
-      .tl-item .marker { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.7); opacity: 0.9; flex: none; }
-      .tl-item .label { color: #d8dde6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .tl-item.recall   .marker { background: #c8b8ff; }
-      .tl-item.indexed  .marker { background: #ffffff; }
-      .tl-item.navigate .marker { background: #b5e3c4; }
-      .tl-item.checkpoint .marker { background: #ffd99a; }
-      .tl-item.live     .marker { background: #ffb0bf; }
-      .tl-item.saved    .marker { background: #9be8b6; box-shadow: 0 0 6px rgba(155,232,182,0.45); }
-      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
-      .metric .k { font-size: 10px; color: #9aa3b2; text-transform: uppercase; letter-spacing: 0.18em; }
-      .metric .v { font-size: 14px; color: #eef2f9; font-weight: 600; }
-      .metric .v.ok { color: #9be8b6; }
-      .patch {
-        margin-top: 8px; padding: 6px 8px; border-radius: 8px;
-        background: rgba(255,200,120,0.08);
-        border: 1px solid rgba(255,200,120,0.22);
-        color: #ffd9a8; font-size: 11px;
-      }
-      .ok { color: #9be8b6; }
-      .warn { color: #ffd99a; }
-      .muted { color: #9aa3b2; }
-    `;
-    shadow.appendChild(style);
-
+    // The panel lives directly under the host with inline !important styles.
+    // No shadow DOM: previous shadow-based renders had their content go blank
+    // on YouTube once navigation churn started. Plain DOM + inline styles
+    // can't lose their stylesheet because they don't depend on one.
     const root = document.createElement('div');
-    root.className = 'panel';
-    // Inline panel chrome so the glassy shell doesn't depend on the shadow
-    // stylesheet being applied. Matches the .panel CSS rule above.
+    root.id = ROOT_ID + '__panel';
     root.setAttribute(
       'style',
       [
-        'position:relative',
-        'backdrop-filter:blur(22px) saturate(140%)',
-        '-webkit-backdrop-filter:blur(22px) saturate(140%)',
-        'background:linear-gradient(180deg, rgba(8,8,10,0.62) 0%, rgba(0,0,0,0.66) 100%)',
-        'border:1px solid rgba(255,255,255,0.10)',
-        'border-radius:14px',
-        'padding:14px 16px',
-        'box-shadow:0 18px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06), inset 0 0 0 1px rgba(255,255,255,0.03)',
-        'color:#eef2f9',
-        'font:12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif',
-        'min-height:220px',
-        'max-height:92vh',
-        'overflow:hidden',
-        'transform:translateZ(0)',
-        'transition:none',
-        'box-sizing:border-box',
-        'width:100%',
+        'position:relative !important',
+        'display:block !important',
+        'box-sizing:border-box !important',
+        'width:100% !important',
+        'min-height:220px !important',
+        'max-height:92vh !important',
+        'margin:0 !important',
+        'padding:14px 16px !important',
+        'border:1px solid rgba(255,255,255,0.10) !important',
+        'border-radius:14px !important',
+        'background:linear-gradient(180deg, rgba(8,8,10,0.78) 0%, rgba(0,0,0,0.82) 100%) !important',
+        'backdrop-filter:blur(22px) saturate(140%) !important',
+        '-webkit-backdrop-filter:blur(22px) saturate(140%) !important',
+        'box-shadow:0 18px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06), inset 0 0 0 1px rgba(255,255,255,0.03) !important',
+        'color:#eef2f9 !important',
+        'font:12px/1.45 Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif !important',
+        'overflow:hidden !important',
+        'transform:translateZ(0) !important',
+        'transition:none !important',
+        'opacity:1 !important',
+        'visibility:visible !important',
+        'pointer-events:none !important',
+        'text-align:left !important',
+        'text-transform:none !important',
+        'letter-spacing:normal !important',
+        'line-height:1.45 !important',
+        'word-spacing:normal !important',
       ].join(';'),
     );
-    shadow.appendChild(root);
+    host.appendChild(root);
 
     document.documentElement.appendChild(host);
 
@@ -262,14 +154,6 @@ OVERLAY_INIT_SCRIPT = r"""
       pulse_until: 0,
     };
 
-    function escapeHtml(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
     function fmtTime(s) {
       s = Math.max(0, Math.round(Number(s) || 0));
       const m = Math.floor(s / 60);
@@ -285,35 +169,38 @@ OVERLAY_INIT_SCRIPT = r"""
     // ------------------------------------------------------------------
     // Inline styles for every rendered child. Why inline? On busy SPAs
     // (YouTube/Polymer) we saw the panel chrome painting correctly while
-    // child content vanished — almost certainly a cascade race against
-    // the shadow <style> element. Inline element styles are immune to
-    // that and cannot be overridden from outside the shadow tree.
+    // child content vanished. Keeping styles and text pinned on real DOM
+    // nodes avoids both missing stylesheets and Trusted Types innerHTML
+    // failures.
     // ------------------------------------------------------------------
     const FONT_STACK = 'Bahnschrift, "Avenir Next Condensed", "Segoe UI Variable Display", "Helvetica Neue", Arial, sans-serif';
+    // Without shadow DOM, page CSS can reach our nodes — every property we
+    // care about uses !important so site-wide tag selectors can't override.
+    const FONT_INH = 'font-family:' + FONT_STACK + ' !important;font-style:normal !important;';
     const S = {
-      header:      'display:flex;align-items:center;gap:8px;margin:0 0 12px 0;color:#eef2f9;font-family:' + FONT_STACK + ';',
-      brand:       'font-family:' + FONT_STACK + ';font-weight:600;font-size:11px;letter-spacing:0.32em;color:#eef2f9;text-transform:uppercase;display:inline-flex;align-items:center;',
-      brandDot:    'display:inline-block;width:6px;height:6px;border-radius:999px;background:#ffffff;margin-right:8px;box-shadow:0 0 8px rgba(255,255,255,0.45);',
-      badge:       'margin-left:auto;font-family:' + FONT_STACK + ';font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,0.08);color:#eef2f9;border:1px solid rgba(255,255,255,0.16);letter-spacing:0.12em;text-transform:uppercase;',
-      row:         'display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-family:' + FONT_STACK + ';',
-      rowK:        'color:#9aa3b2;font-size:12px;',
-      rowV:        'color:#eef2f9;font-weight:500;font-size:12px;max-width:62%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
-      rowVOk:      'color:#9be8b6;font-weight:500;font-size:12px;max-width:62%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
-      rowVMuted:   'color:#9aa3b2;font-weight:500;font-size:12px;max-width:62%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
-      section:     'margin-top:10px;padding-top:8px;border-top:1px dashed rgba(255,255,255,0.08);font-family:' + FONT_STACK + ';',
-      sectionTitle:'font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#9aa3b2;margin:0 0 6px 0;',
-      phase:       'display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#ffffff;font-weight:500;font-size:12px;font-family:' + FONT_STACK + ';',
-      phaseDot:    'width:6px;height:6px;border-radius:999px;background:#ffffff;display:inline-block;',
-      timeline:    'display:flex;flex-direction:column;gap:4px;',
-      tlItem:      'display:flex;align-items:center;gap:8px;min-height:18px;font-size:12px;',
-      tlMarker:    'width:6px;height:6px;border-radius:999px;flex:none;',
-      tlLabel:     'color:#d8dde6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
-      tlLabelMuted:'color:#9aa3b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
-      metrics:     'display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;',
-      metricK:     'font-size:10px;color:#9aa3b2;text-transform:uppercase;letter-spacing:0.18em;font-family:' + FONT_STACK + ';',
-      metricV:     'font-size:14px;color:#eef2f9;font-weight:600;font-family:' + FONT_STACK + ';',
-      metricVOk:   'font-size:14px;color:#9be8b6;font-weight:600;font-family:' + FONT_STACK + ';',
-      patch:       'margin-top:8px;padding:6px 8px;border-radius:8px;background:rgba(255,200,120,0.08);border:1px solid rgba(255,200,120,0.22);color:#ffd9a8;font-size:11px;font-family:' + FONT_STACK + ';',
+      header:      'display:flex !important;align-items:center !important;gap:8px !important;margin:0 0 12px 0 !important;padding:0 !important;color:#eef2f9 !important;' + FONT_INH,
+      brand:       FONT_INH + 'font-weight:600 !important;font-size:11px !important;letter-spacing:0.32em !important;color:#eef2f9 !important;text-transform:uppercase !important;display:inline-flex !important;align-items:center !important;line-height:1.2 !important;',
+      brandDot:    'display:inline-block !important;width:6px !important;height:6px !important;border-radius:999px !important;background:#ffffff !important;margin-right:8px !important;box-shadow:0 0 8px rgba(255,255,255,0.45) !important;',
+      badge:       'margin-left:auto !important;' + FONT_INH + 'font-size:10px !important;padding:2px 8px !important;border-radius:999px !important;background:rgba(255,255,255,0.08) !important;color:#eef2f9 !important;border:1px solid rgba(255,255,255,0.16) !important;letter-spacing:0.12em !important;text-transform:uppercase !important;line-height:1.4 !important;',
+      row:         'display:flex !important;justify-content:space-between !important;gap:10px !important;padding:3px 0 !important;margin:0 !important;' + FONT_INH,
+      rowK:        'color:#9aa3b2 !important;font-size:12px !important;font-weight:400 !important;' + FONT_INH,
+      rowV:        'color:#eef2f9 !important;font-weight:500 !important;font-size:12px !important;max-width:62% !important;text-align:right !important;overflow:hidden !important;text-overflow:ellipsis !important;white-space:nowrap !important;' + FONT_INH,
+      rowVOk:      'color:#9be8b6 !important;font-weight:500 !important;font-size:12px !important;max-width:62% !important;text-align:right !important;overflow:hidden !important;text-overflow:ellipsis !important;white-space:nowrap !important;' + FONT_INH,
+      rowVMuted:   'color:#9aa3b2 !important;font-weight:500 !important;font-size:12px !important;max-width:62% !important;text-align:right !important;overflow:hidden !important;text-overflow:ellipsis !important;white-space:nowrap !important;' + FONT_INH,
+      section:     'margin:10px 0 0 0 !important;padding:8px 0 0 0 !important;border:0 !important;border-top:1px dashed rgba(255,255,255,0.08) !important;' + FONT_INH,
+      sectionTitle:'font-size:10px !important;letter-spacing:0.18em !important;text-transform:uppercase !important;color:#9aa3b2 !important;margin:0 0 6px 0 !important;padding:0 !important;font-weight:500 !important;' + FONT_INH,
+      phase:       'display:inline-flex !important;align-items:center !important;gap:6px !important;padding:4px 9px !important;border-radius:8px !important;background:rgba(255,255,255,0.06) !important;border:1px solid rgba(255,255,255,0.14) !important;color:#ffffff !important;font-weight:500 !important;font-size:12px !important;line-height:1.3 !important;' + FONT_INH,
+      phaseDot:    'width:6px !important;height:6px !important;border-radius:999px !important;background:#ffffff !important;display:inline-block !important;',
+      timeline:    'display:flex !important;flex-direction:column !important;gap:4px !important;padding:0 !important;margin:0 !important;',
+      tlItem:      'display:flex !important;align-items:center !important;gap:8px !important;min-height:18px !important;font-size:12px !important;' + FONT_INH,
+      tlMarker:    'width:6px !important;height:6px !important;border-radius:999px !important;flex:none !important;',
+      tlLabel:     'color:#d8dde6 !important;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;font-size:12px !important;' + FONT_INH,
+      tlLabelMuted:'color:#9aa3b2 !important;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;font-size:12px !important;' + FONT_INH,
+      metrics:     'display:grid !important;grid-template-columns:1fr 1fr !important;gap:6px 12px !important;padding:0 !important;margin:0 !important;',
+      metricK:     'font-size:10px !important;color:#9aa3b2 !important;text-transform:uppercase !important;letter-spacing:0.18em !important;margin:0 !important;padding:0 !important;font-weight:500 !important;' + FONT_INH,
+      metricV:     'font-size:14px !important;color:#eef2f9 !important;font-weight:600 !important;margin:0 !important;padding:0 !important;' + FONT_INH,
+      metricVOk:   'font-size:14px !important;color:#9be8b6 !important;font-weight:600 !important;margin:0 !important;padding:0 !important;' + FONT_INH,
+      patch:       'margin:8px 0 0 0 !important;padding:6px 8px !important;border-radius:8px !important;background:rgba(255,200,120,0.08) !important;border:1px solid rgba(255,200,120,0.22) !important;color:#ffd9a8 !important;font-size:11px !important;' + FONT_INH,
     };
     const MARKER_COLORS = {
       recall:    '#c8b8ff',
@@ -324,6 +211,54 @@ OVERLAY_INIT_SCRIPT = r"""
       saved:     '#9be8b6',
     };
 
+    function el(tag, style, text) {
+      const node = document.createElement(tag);
+      if (style) node.setAttribute('style', style);
+      if (text != null) node.textContent = String(text);
+      return node;
+    }
+
+    function append(parent, children) {
+      for (const child of children) {
+        if (child) parent.appendChild(child);
+      }
+      return parent;
+    }
+
+    function row(label, value, valueStyle, title) {
+      const wrap = el('div', S.row);
+      const left = el('span', S.rowK, label);
+      const right = el('span', valueStyle || S.rowV, value == null || value === '' ? '—' : value);
+      if (title) right.setAttribute('title', String(title));
+      return append(wrap, [left, right]);
+    }
+
+    function metric(label, value, ok) {
+      const wrap = el('div', '');
+      return append(wrap, [
+        el('div', S.metricK, label),
+        el('div', ok ? S.metricVOk : S.metricV, value == null || value === '' ? 0 : value),
+      ]);
+    }
+
+    function marker(color) {
+      return el('span', S.tlMarker + 'background:' + color + ' !important;');
+    }
+
+    function timelineItem(kind, label, muted) {
+      const item = el('div', S.tlItem);
+      const color = muted ? 'rgba(255,255,255,0.5)' : (MARKER_COLORS[String(kind || 'indexed').toLowerCase()] || '#ffffff');
+      return append(item, [
+        marker(color),
+        el('span', muted ? S.tlLabelMuted : S.tlLabel, label || ''),
+      ]);
+    }
+
+    function section(title, body) {
+      const wrap = el('div', S.section);
+      return append(wrap, [el('div', S.sectionTitle, title), body]);
+    }
+
     function render() {
       const s = state;
       const supermemoryRaw = String(s.supermemory || '');
@@ -333,55 +268,48 @@ OVERLAY_INIT_SCRIPT = r"""
       const m = s.metrics || {};
 
       const tlItems = (s.timeline || []).slice(-5);
-      const timelineHtml = tlItems.length
-        ? tlItems.map(item => {
-            const kind = String(item.kind || 'indexed').toLowerCase();
-            const markerColor = MARKER_COLORS[kind] || '#ffffff';
-            const markerStyle = S.tlMarker + 'background:' + markerColor + ';';
-            return '<div style="' + S.tlItem + '">'
-              +   '<span style="' + markerStyle + '"></span>'
-              +   '<span style="' + S.tlLabel + '">' + escapeHtml(item.label || '') + '</span>'
-              + '</div>';
-          }).join('')
-        : '<div style="' + S.tlItem + '"><span style="' + S.tlMarker + 'background:rgba(255,255,255,0.5);"></span><span style="' + S.tlLabelMuted + '">No replay actions yet</span></div>';
-
-      const patchHtml = s.failure_patch
-        ? '<div style="' + S.patch + '">⚡ ' + escapeHtml(s.failure_patch) + '</div>'
-        : '';
-
       const supermemoryValueStyle = supermemoryOk ? S.rowVOk : S.rowVMuted;
 
-      root.innerHTML =
-        '<div style="' + S.header + '">'
-        +   '<span style="' + S.brand + '"><span style="' + S.brandDot + '"></span>Cosmic Browser Memory</span>'
-        +   '<span style="' + S.badge + '">' + escapeHtml(s.mode || 'Idle') + '</span>'
-        + '</div>'
-        + '<div style="' + S.row + '"><span style="' + S.rowK + '">Supermemory</span>'
-        +   '<span style="' + supermemoryValueStyle + '">' + escapeHtml(supermemoryRaw || '—') + '</span></div>'
-        + '<div style="' + S.row + '"><span style="' + S.rowK + '">Workflow</span>'
-        +   '<span style="' + S.rowV + '" title="' + escapeHtml(s.workflow_id || '') + '">' + escapeHtml(wf) + '</span></div>'
-        + '<div style="' + S.row + '"><span style="' + S.rowK + '">Recall score</span>'
-        +   '<span style="' + S.rowV + '">' + escapeHtml(score) + '</span></div>'
-        + '<div style="' + S.section + '">'
-        +   '<div style="' + S.sectionTitle + '">Replay phase</div>'
-        +   '<div style="' + S.phase + '"><span style="' + S.phaseDot + '"></span>' + escapeHtml(s.phase || '—') + '</div>'
-        + '</div>'
-        + '<div style="' + S.section + '">'
-        +   '<div style="' + S.sectionTitle + '">Action timeline</div>'
-        +   '<div style="' + S.timeline + '">' + timelineHtml + '</div>'
-        + '</div>'
-        + '<div style="' + S.section + '">'
-        +   '<div style="' + S.sectionTitle + '">Metrics</div>'
-        +   '<div style="' + S.metrics + '">'
-        +     '<div><div style="' + S.metricK + '">Elapsed</div><div style="' + S.metricV + '">' + fmtTime(m.elapsed_sec) + '</div></div>'
-        +     '<div><div style="' + S.metricK + '">Replay actions</div><div style="' + S.metricV + '">' + escapeHtml(m.replay_actions || 0) + '</div></div>'
-        +     '<div><div style="' + S.metricK + '">MiMo avoided</div><div style="' + S.metricVOk + '">' + escapeHtml(m.mimo_calls_avoided || 0) + '</div></div>'
-        +     '<div><div style="' + S.metricK + '">MiMo calls</div><div style="' + S.metricV + '">' + escapeHtml(m.mimo_calls || 0) + '</div></div>'
-        +     '<div><div style="' + S.metricK + '">DOM calls</div><div style="' + S.metricV + '">' + escapeHtml(m.dom_calls || 0) + '</div></div>'
-        +     '<div><div style="' + S.metricK + '">LLM calls</div><div style="' + S.metricV + '">' + escapeHtml(m.llm_calls || 0) + '</div></div>'
-        +   '</div>'
-        + '</div>'
-        + patchHtml;
+      const header = el('div', S.header);
+      const brand = el('span', S.brand);
+      append(brand, [el('span', S.brandDot), document.createTextNode('Cosmic Browser Memory')]);
+      append(header, [brand, el('span', S.badge, s.mode || 'Idle')]);
+
+      const phase = el('div', S.phase);
+      append(phase, [el('span', S.phaseDot), document.createTextNode(String(s.phase || '—'))]);
+
+      const timeline = el('div', S.timeline);
+      if (tlItems.length) {
+        for (const item of tlItems) {
+          timeline.appendChild(timelineItem(item.kind, item.label, false));
+        }
+      } else {
+        timeline.appendChild(timelineItem('indexed', 'No replay actions yet', true));
+      }
+
+      const metrics = el('div', S.metrics);
+      append(metrics, [
+        metric('Elapsed', fmtTime(m.elapsed_sec), false),
+        metric('Replay actions', m.replay_actions || 0, false),
+        metric('MiMo avoided', m.mimo_calls_avoided || 0, true),
+        metric('MiMo calls', m.mimo_calls || 0, false),
+        metric('DOM calls', m.dom_calls || 0, false),
+        metric('LLM calls', m.llm_calls || 0, false),
+      ]);
+
+      const children = [
+        header,
+        row('Supermemory', supermemoryRaw || '—', supermemoryValueStyle),
+        row('Workflow', wf, S.rowV, s.workflow_id || ''),
+        row('Recall score', score, S.rowV),
+        section('Replay phase', phase),
+        section('Action timeline', timeline),
+        section('Metrics', metrics),
+      ];
+      if (s.failure_patch) {
+        children.push(el('div', S.patch, '⚡ ' + String(s.failure_patch)));
+      }
+      root.replaceChildren(...children);
     }
 
     function update(patch) {

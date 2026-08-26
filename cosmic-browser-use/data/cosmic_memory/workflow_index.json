@@ -1,5 +1,24 @@
 [
   {
+    "workflow_id": "linkedin_com_search_profile_linkedin_its_description_success",
+    "name": "site: Search for a profile on linkedin and get its description",
+    "domain": "linkedin.com",
+    "intent": "Search for a profile on linkedin and get its description",
+    "intent_tokens": [
+      "search",
+      "profile",
+      "linkedin",
+      "its",
+      "description"
+    ],
+    "task_signature": "linkedin_com_search_profile_linkedin_its_description",
+    "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
+    "success_count": 3,
+    "step_count": 5,
+    "updated_at": "2026-06-30T18:16:51.353920+00:00",
+    "path": "data\\cosmic_memory\\workflows\\linkedin_com_search_profile_linkedin_its_description_success.json"
+  },
+  {
     "workflow_id": "youtube_com_youtube_video_description_official_openai_gpt_launch_video_success",
     "name": "YouTube video description extraction",
     "domain": "youtube.com",

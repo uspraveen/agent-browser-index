@@ -1,0 +1,631 @@
+{
+  "workflow_id": "linkedin_com_search_profile_linkedin_its_description_success",
+  "name": "site: Search for a profile on linkedin and get its description",
+  "domain": "linkedin.com",
+  "intent": "Search for a profile on linkedin and get its description",
+  "task_signature": "linkedin_com_search_profile_linkedin_its_description",
+  "created_at": "2026-06-30T18:16:51.352923+00:00",
+  "updated_at": "2026-06-30T18:16:51.353920+00:00",
+  "success_count": 3,
+  "avg_runtime_seconds": null,
+  "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
+  "route_strategy": "Use indexed actions until checkpoint; dynamic result choices may require normal planner repair.",
+  "replay_instructions": {
+    "do": [
+      "Preserve goal-specific target hints: search, profile, linkedin, its, description."
+    ],
+    "avoid": [],
+    "checkpoints": [
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "partial",
+  "quality": {
+    "usable": true,
+    "confidence": 0.55,
+    "generalization_level": "partial",
+    "reason": "Deterministic fallback selected successful replayable steps and observed final URL."
+  },
+  "variables": [],
+  "acceptance_criteria": {
+    "must_match": [
+      "search",
+      "profile",
+      "linkedin",
+      "its",
+      "description"
+    ],
+    "reject": [
+      "wrong target",
+      "shorts",
+      "playlist",
+      "demo clip"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://www.linkedin.com/company/cursorai/about/",
+    "final_title": "(7) Cursor: About | LinkedIn",
+    "final_note": "",
+    "note_source_step": null
+  },
+  "source_run_dir": "runs\\20260630_130946_recorded",
+  "source_status": "success",
+  "indexer": {
+    "source": "deterministic_fallback",
+    "version": "cosmic_run_indexer_v2",
+    "last_error": "LLM indexer returned non-JSON after retry: Let me analyze this trace step by step.\n\nThe task is: \"Search for a profile on linkedin and get its description\"\n\nLooking at the steps:\n1. Step 1: Navigate to LinkedIn search results for \"Cursor\" - this is a direct navigation to a search UR"
+  },
+  "discarded_steps": [],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Navigated to https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+      "parameters": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+        "title": "(7) LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Clicked: I'm looking for…",
+      "parameters": {
+        "selector": "div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1)"
+      },
+      "coordinates": [
+        431,
+        34
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+        "title": "(7) Cursor: Posts | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Navigated to https://www.linkedin.com/company/cursorai/about/",
+      "parameters": {
+        "url": "https://www.linkedin.com/company/cursorai/about/"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+        "title": "(7) LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Clicked: Home",
+      "parameters": {
+        "selector": "#ember95"
+      },
+      "coordinates": [
+        238,
+        454
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+        "title": "(7) Cursor: Posts | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Navigated to https://www.linkedin.com/company/cursorai/about/",
+      "parameters": {
+        "url": "https://www.linkedin.com/company/cursorai/about/"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+        "title": "(7) Cursor: Posts | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Clicked: Show all details",
+      "parameters": {
+        "selector": "#ember297 > span:nth-of-type(1)"
+      },
+      "coordinates": [
+        590,
+        585
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+        "title": "(7) Cursor: Posts | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualScroll",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Scrolled down",
+      "parameters": {
+        "direction": "down",
+        "amount": 124
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+        "title": "(7) Cursor: Posts | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Navigated to https://www.linkedin.com/company/cursorai/about/",
+      "parameters": {
+        "url": "https://www.linkedin.com/company/cursorai/about/"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+        "title": "(7) Cursor: Posts | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Clicked: Overview\n\nCursor is a coding agent for building ambitious software.\n\nOur goal is",
+      "parameters": {
+        "selector": "#ember544 > section:nth-of-type(1)"
+      },
+      "coordinates": [
+        598,
+        580
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Clicked: 1,081 associated members \nLinkedIn members who’ve listed Cursor as their current",
+      "parameters": {
+        "selector": "#ember544 > section:nth-of-type(1) > dl:nth-of-type(1) > dd:nth-of-type(4)"
+      },
+      "coordinates": [
+        598,
+        737
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualScroll",
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "description": "Scrolled up",
+      "parameters": {
+        "direction": "up",
+        "amount": 88
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      },
+      "after": {
+        "url": "https://www.linkedin.com/company/cursorai/about/",
+        "title": "(7) Cursor: About | LinkedIn",
+        "scroll_y": 8
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "linkedin_com_state_001_page",
+      "name": "State 1",
+      "url_pattern": "about:blank",
+      "page_summary": "at about:blank",
+      "visual_markers": [
+        "navigated",
+        "https",
+        "www",
+        "linkedin",
+        "com",
+        "search",
+        "results",
+        "all",
+        "keywords",
+        "cursor",
+        "origin",
+        "rich"
+      ],
+      "screenshot_path": "runs\\20260630_130946_recorded\\screenshots\\step_000.webp",
+      "screenshot_hash": "3f3fffffffffffff"
+    },
+    {
+      "state_id": "linkedin_com_state_002_page",
+      "name": "State 2",
+      "url_pattern": "about:blank",
+      "page_summary": "at about:blank",
+      "visual_markers": [
+        "clicked",
+        "looking"
+      ],
+      "screenshot_path": "runs\\20260630_130946_recorded\\screenshots\\step_000.webp",
+      "screenshot_hash": "3f3fffffffffffff"
+    },
+    {
+      "state_id": "linkedin_com_state_003_7_linkedin",
+      "name": "(7) LinkedIn",
+      "url_pattern": "https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+      "page_summary": "(7) LinkedIn at https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+      "visual_markers": [
+        "linkedin",
+        "navigated",
+        "https",
+        "www",
+        "com",
+        "company",
+        "cursorai",
+        "about"
+      ],
+      "screenshot_path": "runs\\20260630_130946_recorded\\screenshots\\step_001.webp",
+      "screenshot_hash": "373e9bfffbfbfbf9"
+    },
+    {
+      "state_id": "linkedin_com_state_004_7_cursor_posts_linkedin",
+      "name": "(7) Cursor: Posts | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+      "page_summary": "(7) Cursor: Posts | LinkedIn at https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+      "visual_markers": [
+        "cursor",
+        "posts",
+        "linkedin",
+        "navigated",
+        "https",
+        "www",
+        "com",
+        "company",
+        "cursorai",
+        "about"
+      ],
+      "screenshot_path": "runs\\20260630_130946_recorded\\screenshots\\step_002.webp",
+      "screenshot_hash": "3f3fdbff83bfbbbf"
+    },
+    {
+      "state_id": "linkedin_com_state_005_7_cursor_posts_linkedin",
+      "name": "(7) Cursor: Posts | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+      "page_summary": "(7) Cursor: Posts | LinkedIn at https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+      "visual_markers": [
+        "cursor",
+        "posts",
+        "linkedin",
+        "navigated",
+        "https",
+        "www",
+        "com",
+        "company",
+        "cursorai",
+        "about"
+      ],
+      "screenshot_path": "runs\\20260630_130946_recorded\\screenshots\\step_002.webp",
+      "screenshot_hash": "333e9bfffbfbfbf9"
+    },
+    {
+      "state_id": "linkedin_com_state_006_7_cursor_about_linkedin",
+      "name": "(7) Cursor: About | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/company/cursorai/about/",
+      "page_summary": "(7) Cursor: About | LinkedIn at https://www.linkedin.com/company/cursorai/about/",
+      "visual_markers": [
+        "cursor",
+        "about",
+        "linkedin"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "navigation",
+      "from_state_id": "linkedin_com_state_001_page",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+      "parameters_template": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches (7) LinkedIn https://www.linkedin.com/search/results/all/?keywords=Cursor&origin=RICH_QUERY_TYPEAHEAD_HISTORY&heroEntityKey=urn%3Ali%3Aorganization%3A105614038&position=0",
+      "to_state_id": "linkedin_com_state_002_7_linkedin",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_002",
+      "source_step": 2,
+      "source_evidence_steps": [
+        2
+      ],
+      "role": "expand_content",
+      "from_state_id": "linkedin_com_state_002_page",
+      "action_type": "DOMClick",
+      "target_description": "Clicked: I'm looking for…",
+      "parameters_template": {
+        "selector": "div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1)"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": [
+        431,
+        34
+      ],
+      "expected_result": "Browser reaches (7) Cursor: Posts | LinkedIn https://www.linkedin.com/company/cursorai/posts/?feedView=all",
+      "to_state_id": "linkedin_com_state_003_7_cursor_posts_linkedin",
+      "delay_ms": 900,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_003",
+      "source_step": 3,
+      "source_evidence_steps": [
+        3
+      ],
+      "role": "navigation",
+      "from_state_id": "linkedin_com_state_003_7_linkedin",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.linkedin.com/company/cursorai/about/",
+      "parameters_template": {
+        "url": "https://www.linkedin.com/company/cursorai/about/"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches (7) Cursor: About | LinkedIn https://www.linkedin.com/company/cursorai/about/",
+      "to_state_id": "linkedin_com_state_004_7_cursor_about_linkedin",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_004",
+      "source_step": 5,
+      "source_evidence_steps": [
+        5
+      ],
+      "role": "navigation",
+      "from_state_id": "linkedin_com_state_004_7_cursor_posts_linkedin",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.linkedin.com/company/cursorai/about/",
+      "parameters_template": {
+        "url": "https://www.linkedin.com/company/cursorai/about/"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches (7) Cursor: About | LinkedIn https://www.linkedin.com/company/cursorai/about/",
+      "to_state_id": "linkedin_com_state_005_7_cursor_about_linkedin",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_005",
+      "source_step": 8,
+      "source_evidence_steps": [
+        8
+      ],
+      "role": "navigation",
+      "from_state_id": "linkedin_com_state_005_7_cursor_posts_linkedin",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.linkedin.com/company/cursorai/about/",
+      "parameters_template": {
+        "url": "https://www.linkedin.com/company/cursorai/about/"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches (7) Cursor: About | LinkedIn https://www.linkedin.com/company/cursorai/about/",
+      "to_state_id": "linkedin_com_state_006_7_cursor_about_linkedin",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [],
+  "user_preferences": []
+}

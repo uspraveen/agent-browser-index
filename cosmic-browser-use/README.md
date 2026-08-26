@@ -299,7 +299,7 @@ python main.py --help
 | `--url` | str | `None` | Optional starting URL. |
 | `--steps` | int | `1000` | Max steps. |
 | `--headless` | bool flag | `False` | Run browser headless. |
-| `--mimo-url` | str | `http://cosmos-9.ddns.ualr.edu:8098` | MiMo base URL (controller normalizes to chat completions endpoint). |
+| `--mimo-url` | str | `$MIMO_API_URL` | MiMo base URL (controller normalizes to chat completions endpoint). |
 | `--fast-model` | str | provider default | Override fast tier model ID. |
 | `--slow-model` | str | provider default | Override slow tier model ID. |
 | `--api-key` | str | config value | Override provider API key. |

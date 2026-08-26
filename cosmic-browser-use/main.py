@@ -5,10 +5,12 @@ Cosmic Browser Use Agent - Main execution loop with timing
 import asyncio
 import base64
 import argparse
+import json
 import time
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Windows Asyncio Fix
 if sys.platform == 'win32':
@@ -210,6 +212,55 @@ def _should_try_search_results_governor(
     return has_zig_zag or len(scroll_steps) >= window - 1
 
 
+async def _detect_credential_handoff_reason(browser: BrowserController) -> Optional[str]:
+    """Cheap DOM probe: does the current page look like it's asking for the
+    user's password or an MFA/OTP/verification code? The agent has no
+    business attempting either itself (it doesn't have the user's secrets,
+    and guessing at 2FA codes wastes steps at best). Returns a short reason
+    string ("password" / "verification code") or None."""
+    try:
+        return await browser.page.evaluate(r"""
+            () => {
+                const visible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    const s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                };
+                const inputs = Array.from(document.querySelectorAll('input'));
+                for (const el of inputs) {
+                    if (el.disabled || !visible(el)) continue;
+                    if ((el.type || '').toLowerCase() === 'password') return 'password';
+                    const auto = (el.getAttribute('autocomplete') || '').toLowerCase();
+                    // Normalize snake_case/kebab-case to spaces first — JS regex
+                    // \b treats '_' as a word character, so "otp_field" would
+                    // never match \botp\b without this (caught by testing).
+                    const hint = ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.placeholder || ''))
+                        .toLowerCase().replace(/[_-]/g, ' ');
+                    if (auto.includes('one-time-code') || /\botp\b|\bmfa\b|\b2fa\b|verification.?code|security.?code|auth(entication)?.?code/.test(hint)) {
+                        return 'verification code';
+                    }
+                }
+                return null;
+            }
+        """)
+    except Exception:
+        return None
+
+
+async def _should_try_credential_handoff_governor(
+    browser: BrowserController,
+    config: TaskConfig,
+    step_num: int,
+    last_attempt_step: int,
+) -> Optional[str]:
+    if not _env_bool("CREDENTIAL_HANDOFF_GOVERNOR_ENABLED", True):
+        return None
+    cooldown = int(os.getenv("CREDENTIAL_HANDOFF_GOVERNOR_COOLDOWN_STEPS", "3"))
+    if last_attempt_step and step_num - last_attempt_step < cooldown:
+        return None
+    return await _detect_credential_handoff_reason(browser)
+
+
 async def _try_finalize_after_replay_checkpoint(
     *,
     browser: BrowserController,
@@ -362,6 +413,9 @@ async def run_task(
     interaction_mode: str = "hybrid",
     demo_overlay_enabled: bool = False,
     ask_user_handler=None,
+    chrome_profile: str = None,
+    restore_previous_tabs: bool = False,
+    refresh_chrome_profile: bool = False,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -390,6 +444,26 @@ async def run_task(
     resolved_large_notes_path = Path(large_notes_path).expanduser() if large_notes_path else (working_dir / "large_notes.jsonl")
     cosmic_log = CosmicDebugLogger(working_dir)
 
+    # Resolve chrome_profile to an absolute path if just a profile name was given.
+    resolved_chrome_profile = None
+    if chrome_profile:
+        p = Path(chrome_profile)
+        if p.is_absolute() and p.is_dir():
+            resolved_chrome_profile = str(p)
+        else:
+            # Treat as a profile directory name relative to Chrome's User Data folder.
+            if sys.platform == "win32":
+                user_data = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+            elif sys.platform == "darwin":
+                user_data = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+            else:
+                user_data = Path.home() / ".config" / "google-chrome"
+            candidate = user_data / chrome_profile
+            if candidate.is_dir():
+                resolved_chrome_profile = str(candidate)
+            else:
+                print(f"⚠️  Chrome profile '{chrome_profile}' not found at {candidate}. Falling back to default browser.")
+
     config = TaskConfig(
         task_id=f"task_{datetime.now().timestamp()}",
         goal=goal,
@@ -399,6 +473,9 @@ async def run_task(
         max_tabs=max_tabs,
         ask_user_timeout=ask_user_timeout,
         enable_dom_fallback=enable_dom_fallback,
+        chrome_profile=resolved_chrome_profile,
+        restore_previous_tabs=restore_previous_tabs,
+        refresh_chrome_profile=refresh_chrome_profile,
     )
     
     print(f"\n{'='*80}")
@@ -624,6 +701,7 @@ async def run_task(
     task_status = "incomplete"
     last_visible_answer_governor_step = 0
     last_search_results_governor_step = 0
+    last_credential_governor_step = 0
     live_llm_decisions = 0
     
     try:
@@ -697,7 +775,25 @@ async def run_task(
                 screenshot_b64 = f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}"
 
             llm_response = None
-            if _should_try_visible_answer_governor(
+
+            credential_handoff_reason = await _should_try_credential_handoff_governor(
+                browser=browser,
+                config=config,
+                step_num=step_num,
+                last_attempt_step=last_credential_governor_step,
+            )
+            if credential_handoff_reason:
+                last_credential_governor_step = step_num
+                print(f"   [Credential governor] detected a visible {credential_handoff_reason} field — forcing AskUser handoff...")
+                llm_response = await orchestrator.force_credential_handoff(context=context, reason=credential_handoff_reason)
+                cosmic_log.step(
+                    step_num,
+                    "credential_governor.force_handoff",
+                    reason=credential_handoff_reason,
+                    llm_response=llm_response.to_dict(),
+                )
+
+            if llm_response is None and _should_try_visible_answer_governor(
                 memory=memory,
                 browser_state=browser_state,
                 config=config,
@@ -870,6 +966,7 @@ async def run_task(
                     before_state=browser_state,
                     after_state=new_browser_state,
                     verification_hint=llm_response.tool_call.verification_hint,
+                    action_description=action_result.description,
                 )
                 verification_time_ms = (time.time() - verification_start) * 1000
             
@@ -918,7 +1015,13 @@ async def run_task(
                 log_path=str(memory.log_path),
                 visual_index=saved_step.visual_index if saved_step else None,
             )
-            
+
+            # 8b. Compress history if due. Run synchronously (not as a
+            # background task) — see compress_if_due's docstring for why:
+            # firing it concurrently with the next step's own LLM call caused
+            # unpredictable 30-150s stalls under provider concurrency limits.
+            await memory.compress_if_due()
+
             # 9. Calculate and print step execution time
             step_duration_ms = (time.time() - step_start_time) * 1000
             print(f"\n⏱️  STEP {step_num} TOTAL TIME: {step_duration_ms:.0f}ms ({step_duration_ms/1000:.2f}s)")
@@ -1049,10 +1152,17 @@ async def run_task(
                 elif cosmic_runtime.supermemory.last_error:
                     print(f"⚠️  COSMIC semantic write skipped: {cosmic_runtime.supermemory.last_error}")
         print(f"{'='*80}\n")
-        
-        # Cleanup
-        await browser.close()
-        await orchestrator.close()
+
+        # Cleanup — errors here are non-fatal (browser/LLM clients closing);
+        # swallow them so they don't shadow the task result in main().
+        try:
+            await browser.close()
+        except Exception as _e:
+            print(f"⚠️  browser.close() error (non-fatal): {_e}")
+        try:
+            await orchestrator.close()
+        except Exception as _e:
+            print(f"⚠️  orchestrator.close() error (non-fatal): {_e}")
     
     return {
         "success": True,
@@ -1064,11 +1174,43 @@ async def run_task(
         "cosmic_replay": replay_summary,
     }
 
+def _print_chrome_profiles() -> None:
+    """Print available Chrome profiles to stdout."""
+    if sys.platform == "win32":
+        user_data = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+    elif sys.platform == "darwin":
+        user_data = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+    else:
+        user_data = Path.home() / ".config" / "google-chrome"
+
+    if not user_data.is_dir():
+        print(f"Chrome User Data directory not found at {user_data}")
+        return
+
+    print(f"Chrome profiles in: {user_data}\n")
+    found = False
+    for entry in sorted(user_data.iterdir()):
+        prefs = entry / "Preferences"
+        if not prefs.is_file():
+            continue
+        try:
+            data = json.loads(prefs.read_text(encoding="utf-8", errors="replace"))
+            name = data.get("profile", {}).get("name") or data.get("account_info", [{}])[0].get("full_name") or entry.name
+        except Exception:
+            name = entry.name
+        print(f"  {entry.name:<20} — {name}")
+        found = True
+
+    if not found:
+        print("  (no profiles found)")
+    print(f"\nUsage: --chrome-profile 'Default'  or  --chrome-profile 'Profile 1'")
+
+
 async def main():
     # 1. Argument Parsing
     parser = argparse.ArgumentParser(description="Cosmic Browser Use Agent")
-    parser.add_argument("--goal", type=str, required=True, help="The task you want the agent to perform.")
-    parser.add_argument("--provider", type=str, metavar="PROVIDER", default="openai", help=cli_provider_help())
+    parser.add_argument("--goal", type=str, default=None, help="The task you want the agent to perform.")
+    parser.add_argument("--provider", type=str, metavar="PROVIDER", default="fireworks_kimi", help=cli_provider_help())
     parser.add_argument("--url", type=str, default=None, help="Starting URL (optional).")
     parser.add_argument("--steps", type=int, default=1000, help="Max steps (default 1000).")
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode.")
@@ -1105,8 +1247,53 @@ async def main():
             "long-polls <url>/next_reply for the caller's spoken reply."
         ),
     )
+    parser.add_argument(
+        "--chrome-profile",
+        type=str,
+        default=None,
+        metavar="PROFILE_DIR",
+        help=(
+            "Use an existing Chrome profile via CDP (e.g. 'Default', 'Profile 1'). "
+            "Pass the profile directory name as it appears under Chrome's User Data folder. "
+            "The agent launches your real Chrome binary against a persistent, dedicated "
+            "agent copy of that profile (seeded with its logins and cookies), so your own "
+            "Chrome windows are never closed or modified. Example: --chrome-profile 'Default'"
+        ),
+    )
+    parser.add_argument(
+        "--list-chrome-profiles",
+        action="store_true",
+        help="List available Chrome profiles and exit.",
+    )
+    parser.add_argument(
+        "--restore-tabs",
+        action="store_true",
+        help=(
+            "With --chrome-profile: best-effort reopen (in the agent's browser) of the tabs "
+            "that were open in your live Chrome profile. This CANNOT preserve unsaved form "
+            "text, scroll position, or other in-memory state — only the URLs, freshly "
+            "reloaded. Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-chrome-profile",
+        action="store_true",
+        help=(
+            "With --chrome-profile: re-seed the agent's persistent Chrome data dir from your "
+            "real profile (picks up logins you've done in your own Chrome since the first "
+            "run). For a complete refresh, close Chrome first so no files are locked."
+        ),
+    )
 
     args = parser.parse_args()
+
+    if args.list_chrome_profiles:
+        _print_chrome_profiles()
+        return
+
+    if not args.goal:
+        parser.error("the following arguments are required: --goal")
+
     args.provider = normalize_cli_provider_arg(args.provider)
     if args.provider not in {"openai", "anthropic", "gemini", "fireworks_kimi"}:
         parser.error(f"unsupported provider '{args.provider}'. Choose one of: {cli_allowed_provider_labels()}")
@@ -1306,6 +1493,9 @@ async def main():
             interaction_mode=args.interaction_mode,
             demo_overlay_enabled=args.demo_overlay,
             ask_user_handler=ask_user_handler,
+            chrome_profile=args.chrome_profile,
+            restore_previous_tabs=args.restore_tabs,
+            refresh_chrome_profile=args.refresh_chrome_profile,
         )
     except Exception as e:
         print(f"\n❌ Execution Failed: {e}")

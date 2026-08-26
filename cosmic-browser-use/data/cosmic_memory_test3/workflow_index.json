@@ -1,0 +1,24 @@
+[
+  {
+    "workflow_id": "linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor_success",
+    "name": "LinkedIn Google SSO Login and Direct Search",
+    "domain": "linkedin.com",
+    "intent": "Log into LinkedIn via Google authentication and execute a search query",
+    "intent_tokens": [
+      "log",
+      "linkedin",
+      "via",
+      "google",
+      "authentication",
+      "execute",
+      "search",
+      "query"
+    ],
+    "task_signature": "linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor",
+    "summary": "Navigate to LinkedIn login, trigger Google SSO via DOM click, pause for user to complete authentication, then navigate directly to the LinkedIn search results URL with the desired keywords rather than interacting with the search bar UI.",
+    "success_count": 1,
+    "step_count": 5,
+    "updated_at": "2026-06-24T15:12:03.175270+00:00",
+    "path": "data\\cosmic_memory_test3\\workflows\\linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor_success.json"
+  }
+]

@@ -214,7 +214,11 @@ class WorkflowRunIndexer:
 
 Your task: distill a noisy browser-agent run into a compact replayable workflow.
 
-Return ONLY one JSON object. No prose, no markdown.
+If you need to reason through the trace step-by-step first, do that ENTIRELY inside
+a single <think>...</think> block. After the closing </think> tag, output ONLY the
+JSON object described below — no prose, no markdown, no step-by-step narration
+outside the think block. Analysis that leaks outside <think> tags breaks the
+caller's parser and the whole run fails to index.
 
         Schema:
 {
@@ -276,6 +280,7 @@ Rules:
 - Put anti-detour guidance in workflow.replay_instructions.avoid and failure_patches so replay does not repeat the wrong path.
 - SaveNote can be selected as the terminal extract_answer step, but use a parameterized note template if the answer text must be read live.
 - Mark usable=false only if there is no successful final answer and no reusable route segment.
+- If a typed-text value (DomType/VisualType parameters) looks like personal information — name, email, phone, password, address, resume/cover-letter content — ALWAYS create a `variables` entry for it instead of hardcoding the literal value in parameters_template. This trace may have been recorded by a human demonstrating a task (e.g. a job application) and could contain real personal data that must not leak into a shared, reusable workflow.
 """
         payload = {
             "task": trace.get("task"),
@@ -285,14 +290,14 @@ Rules:
             "observed_urls": trace.get("observed_urls"),
             "steps": trace.get("steps"),
         }
-        try:
+        def _call(extra_user_suffix: str = "") -> str:
             kwargs = {
                 "model": self.config.model,
                 "temperature": self.config.temperature,
                 "max_tokens": self.config.max_tokens,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False) + extra_user_suffix},
                 ],
                 "response_format": {"type": "json_object"},
             }
@@ -303,8 +308,31 @@ Rules:
                     raise
                 kwargs.pop("response_format", None)
                 response = self.client.chat.completions.create(**kwargs)  # type: ignore[union-attr]
-            content = response.choices[0].message.content or ""
+            msg = response.choices[0].message
+            content = msg.content or ""
+            if not content.strip():
+                # Same Fireworks Kimi quirk seen in the summarizer: the real
+                # answer sometimes lands in reasoning_content instead of content.
+                content = str(getattr(msg, "reasoning_content", None) or "")
+            return content
+
+        try:
+            content = _call()
             parsed = _extract_json_object(content, required_keys={"quality", "workflow", "selected_steps"})
+            if not parsed:
+                # Kimi sometimes narrates ("The user wants me to distill...")
+                # instead of emitting JSON, even with response_format set to
+                # json_object — that mode isn't reliably enforced for this
+                # model. One retry with an explicit reminder recovers most of
+                # these cases; if it still fails, the caller falls back to
+                # the deterministic plan rather than losing the run entirely.
+                self.last_error = f"LLM indexer returned non-JSON, retrying once: {_strip_reasoning_markers(content)[:200]}"
+                content = _call(
+                    "\n\nYour last response put analysis outside <think> tags, which broke the parser. "
+                    "Wrap ALL step-by-step reasoning inside <think>...</think>, then output ONLY the JSON "
+                    "object after the closing tag."
+                )
+                parsed = _extract_json_object(content, required_keys={"quality", "workflow", "selected_steps"})
             if parsed:
                 parsed.setdefault("indexer", {})
                 parsed["indexer"].update(
@@ -316,7 +344,7 @@ Rules:
                     }
                 )
                 return parsed
-            self.last_error = f"LLM indexer returned non-JSON: {_strip_reasoning_markers(content)[:240]}"
+            self.last_error = f"LLM indexer returned non-JSON after retry: {_strip_reasoning_markers(content)[:240]}"
         except Exception as exc:
             self.last_error = f"LLM indexer failed: {exc}"
         return None

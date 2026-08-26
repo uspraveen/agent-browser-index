@@ -57,7 +57,6 @@ class MemoryManager:
         self.cumulative_summary: str = "Task Started."
         self.last_summarized_idx: int = 0
         self.recent_action_hashes: deque = deque(maxlen=config.loop_detection_window)
-        self._compression_task: Optional[asyncio.Task] = None
         self.total_tokens_saved: int = 0
         
         # Initialize compression LLM. It can use OpenAI Responses or Fireworks
@@ -151,13 +150,23 @@ class MemoryManager:
         with open(self.log_path, 'w') as f:
             json.dump(log_data, f, indent=2, default=str)
         
-        # Trigger compression if needed (every N steps, configurable via config.summary_interval)
-        if step_number % self.config.summary_interval == 0 and step_number > 5:
-            if self._compression_task is None or self._compression_task.done():
-                self._compression_task = asyncio.create_task(self._compress_summary())
-        
         return step
-    
+
+    def compression_due(self) -> bool:
+        step_number = len(self.steps)
+        return step_number % self.config.summary_interval == 0 and step_number > 5
+
+    async def compress_if_due(self) -> None:
+        """Run compression synchronously when due. Previously this fired as a
+        fire-and-forget background asyncio task — but that ran CONCURRENTLY
+        with the main loop's own LLM call to the same provider/account, and
+        under Fireworks' per-account concurrency limits one of the two
+        requests would queue behind the other, surfacing as unexplained
+        30-150s stalls on ordinary steps. Awaiting it directly trades that
+        unpredictable spike for one small, predictable pause every N steps."""
+        if self.compression_due():
+            await self._compress_summary()
+
     def _append_to_summary(self, step: Step) -> None:
         if step.summary:
             summary_text = step.summary
@@ -209,70 +218,164 @@ class MemoryManager:
             if s.browser_state.notes:
                 history_text += f"  Notes: {s.browser_state.notes[-1]}\n"
 
-        prompt = f"""
-        You are the Memory Manager for an autonomous browser agent.
-        
-        Current Summary (Up to Step {self.steps[self.last_summarized_idx].step_number - 1 if self.last_summarized_idx > 0 else 0}):
-        {self.cumulative_summary}
-        
-        New Steps to Compress (Steps {steps_to_summarize[0].step_number} to {steps_to_summarize[-1].step_number}):
-        {history_text}
-        
-        Task: Merge the 'New Steps' into the 'Current Summary' to create a concise narrative.
-        
-        CRITICAL RULES:
-        1. Keep the summary under 550 words.
-        2. EXPLICITLY retain any SAVED NOTES (e.g., "Step 5: Saved note '...'").
-        3. Mention outcome of KEY GOALS (e.g., "Logged in successfully").
-        4. Condense repetitive details, but PRESERVE the exact repeated action pattern when it indicates a loop or wasted motion.
-        5. PRESERVE FAILURES: You MUST retain the specific details of any action that failed (e.g., "Tried simple-login-page.com but failed"). This is critical so the agent does not repeat mistakes.
-        6. PRESERVE WRONG-PAGE / WRONG-TARGET EVENTS: if the agent clicked the wrong result, recommendation, menu, overlay, link, or toolbar control, say exactly what happened.
-        7. PRESERVE VISIBLE ANSWER STATE: if requested information became visible, include what was visible and that the next action should save it instead of further clicking/scrolling/waiting.
-        8. PRESERVE URL/TITLE transitions when they show drift to the wrong page or return to the right page.
-        """
+        last_summarized_step = self.steps[self.last_summarized_idx].step_number - 1 if self.last_summarized_idx > 0 else 0
+        prompt = f"""CURRENT SUMMARY (steps 1–{last_summarized_step}):
+{self.cumulative_summary}
+
+NEW STEPS TO ABSORB (steps {steps_to_summarize[0].step_number}–{steps_to_summarize[-1].step_number}):
+{history_text}
+
+Write an updated summary that absorbs the new steps into the current summary. Rules:
+- Under 550 words. Plain prose only, no headers or bullets.
+- Include every SAVED NOTE verbatim (e.g. "Step 5 saved: '...'").
+- State key outcomes explicitly (e.g. "Signed in to LinkedIn — now on /feed/ at step 8").
+- Preserve loop/wasted-motion patterns verbatim so the agent avoids repeating them.
+- Preserve failures with specifics (what was tried, why it failed).
+- Preserve wrong-page/wrong-target events exactly.
+- Preserve URL/title transitions that show drift or recovery.
+
+If you need to reason through the steps first, do that ENTIRELY inside a single
+<think>...</think> block — then, after the closing </think> tag, return ONLY
+this JSON object (no other text):
+{{"updated_summary": "the prose summary as a single string"}}"""
         
         try:
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(
-                None, 
-                lambda: self._call_summary_model(prompt)
-            )
-            new_summary = response
-            
+            new_summary = await loop.run_in_executor(None, lambda: self._call_summary_model(prompt))
+
+            if self._looks_like_echoed_instructions(new_summary):
+                # Before giving up, check if this is just a throwaway preamble
+                # sentence followed by an actual usable summary — don't discard
+                # good content just because it opened with "The user wants me
+                # to..." before getting to the real answer.
+                salvaged = self._salvage_after_preamble(new_summary)
+                if salvaged:
+                    new_summary = salvaged
+                else:
+                    print("⚠️  [Context Compression] Model echoed the instructions instead of summarizing — retrying once.")
+                    retry_prompt = prompt + (
+                        "\n\nYour last response put analysis outside <think> tags, which broke the parser. "
+                        "Wrap ALL reasoning inside <think>...</think>, then write ONLY the updated summary "
+                        "prose after the closing tag."
+                    )
+                    new_summary = await loop.run_in_executor(None, lambda: self._call_summary_model(retry_prompt))
+
+            if self._looks_like_echoed_instructions(new_summary):
+                # Do NOT overwrite cumulative_summary with garbage — that poisons
+                # every subsequent main-decision prompt for the rest of the run
+                # (this exact failure mode previously caused the orchestrator's
+                # own reasoning to start talking about "updating a summary"
+                # instead of the actual browser task). Keep the last-good
+                # summary; just drop detail for this window of steps.
+                print(f"⚠️  [Context Compression] Rejected echoed-instructions output after retry — keeping previous summary, dropping detail for steps {steps_to_summarize[0].step_number}-{steps_to_summarize[-1].step_number}.")
+                print(f"   Rejected output ({len(new_summary)} chars): {new_summary[:500]!r}")
+                self.last_summarized_idx += len(steps_to_summarize)
+                return
+
             # Update stats
             saved = len(history_text)
             self.total_tokens_saved += saved
             self.cumulative_summary = new_summary
             self.last_summarized_idx += len(steps_to_summarize)
-            
+
             print(f"\n🧠 [Context Compression] Summary Updated (Saved ~{saved} chars)")
             print(f"   Summary model: {display_provider_model(self.summary_provider, self.summary_model)}")
             print(f"   Consumed Range: Steps {steps_to_summarize[0].step_number}-{steps_to_summarize[-1].step_number}")
             print(f"   New Summary: {new_summary[:100]}...")
-            
+
         except Exception as e:
             print(f"Compression failed: {e}")
+
+    @staticmethod
+    def _looks_like_echoed_instructions(text: str) -> bool:
+        """Detect when the summary model echoed the compression PROMPT back
+        instead of writing an actual summary — the failure mode that, left
+        unchecked, corrupts cumulative_summary permanently for the rest of
+        the run (every later prompt includes it)."""
+        if not text or len(text.strip()) < 20:
+            return True
+        lowered = text.lower().strip()
+        markers = (
+            "the user wants me to",
+            "i need to follow",
+            "let me analyze",
+            "i should write",
+            "the task is to merge",
+            "current summary (steps",
+            "new steps to absorb",
+            "specific rules",
+            "let's analyze",
+            "i'll write",
+        )
+        return any(m in lowered[:250] for m in markers)
+
+    @classmethod
+    def _salvage_after_preamble(cls, text: str) -> Optional[str]:
+        """If the response is a short throwaway preamble ('The user wants me
+        to...') followed by a paragraph break and then real content, recover
+        the part after the break instead of discarding everything. Only
+        salvages when the preamble is short (near the start) and what
+        follows is substantial and doesn't itself look like more
+        meta-commentary — otherwise return None and let the caller retry/reject."""
+        break_idx = text.find("\n\n")
+        if break_idx == -1 or break_idx > 300:
+            return None
+        remainder = text[break_idx:].strip()
+        if len(remainder) < 100:
+            return None
+        if cls._looks_like_echoed_instructions(remainder):
+            return None
+        return remainder
 
     def _call_summary_model(self, prompt: str) -> str:
         if not self.client:
             raise RuntimeError(f"No summary LLM client configured for provider={self.summary_provider}")
 
         if self.summary_provider == "fireworks_kimi":
-            response = self.client.chat.completions.create(
-                model=self.summary_model,
-                messages=[
+            kwargs = {
+                "model": self.summary_model,
+                "messages": [
                     {
                         "role": "system",
-                        "content": "You compress browser-agent history. Return only the updated summary, no markdown preamble.",
+                        "content": (
+                            "You are a browser-agent memory compressor. When given a CURRENT SUMMARY and "
+                            "NEW STEPS, return a JSON object {\"updated_summary\": \"...\"}. If you need to "
+                            "reason first, do it entirely inside <think>...</think> before the JSON — "
+                            "analysis or restated instructions outside the think block or outside the JSON "
+                            "object breaks the caller's parser and the summary is discarded."
+                        ),
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=self.summary_temperature,
-                max_tokens=self.summary_max_tokens,
-                extra_body={"top_k": 40},
-            )
-            content = response.choices[0].message.content or ""
-            return self._strip_summary_thinking(content).strip()
+                "temperature": self.summary_temperature,
+                "max_tokens": self.summary_max_tokens,
+                "extra_body": {"top_k": 40},
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as first_exc:
+                if "response_format" not in str(first_exc):
+                    raise
+                kwargs.pop("response_format", None)
+                response = self.client.chat.completions.create(**kwargs)
+
+            msg = response.choices[0].message
+            content = msg.content or ""
+            if not content.strip():
+                # Same Fireworks Kimi quirk as the main decision path: the
+                # real answer sometimes lands in reasoning_content instead.
+                content = str(getattr(msg, "reasoning_content", None) or "")
+            cleaned_raw = self._strip_summary_thinking(content).strip()
+
+            extracted = self._extract_updated_summary_json(cleaned_raw)
+            if extracted is not None:
+                return extracted
+            # JSON mode wasn't honored (model/account doesn't support it, or
+            # the model still wrote plain prose) — fall back to treating the
+            # post-<think>-stripped text as the summary directly, same as
+            # before JSON mode was added.
+            return cleaned_raw
 
         request_kwargs = {
             "model": self.summary_model,
@@ -293,7 +396,28 @@ class MemoryManager:
             stripped = re.sub(r"```(?:[a-zA-Z0-9_-]+)?\s*", "", stripped)
             stripped = re.sub(r"\s*```\s*", "", stripped).strip()
         return stripped
-            
+
+    @staticmethod
+    def _extract_updated_summary_json(text: str) -> Optional[str]:
+        """Pull {"updated_summary": "..."} out of text that may have extra
+        characters around it (JSON mode isn't always honored exactly, or the
+        object may be preceded by leftover stray text). Returns None if no
+        valid object with that key is found, signalling the caller to fall
+        back to treating the raw text as the summary."""
+        if not text:
+            return None
+        decoder = json.JSONDecoder()
+        for idx, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                obj, _ = decoder.raw_decode(text[idx:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("updated_summary"), str):
+                return obj["updated_summary"].strip()
+        return None
+
     def read_history(self, start_step: int, end_step: int) -> str:
         """Retrieve detailed history for a range of steps."""
         start_idx = max(0, start_step - 1)
@@ -414,12 +538,33 @@ class MemoryManager:
         if len(action_types) < window:
             return False  # Not enough actions to compare
         
-        # Pattern 1: All identical actions
+        # Pattern 0: Same exact action description repeated, even if each
+        # attempt produced a slightly different screenshot hash (hover
+        # rings, focus outlines, tiny scroll jiggle from MiMo's coordinate
+        # noise). Requiring byte-identical hashes (old Pattern 1 below) missed
+        # this — a button re-clicked 5 times in a row with state_change=1.00
+        # every time (because the hash technically differed) was never
+        # flagged, even though the URL never moved and nothing progressed.
+        descriptions = []
+        for s in recent_steps:
+            if not s.action:
+                continue
+            desc = None
+            if s.tool_call:
+                desc = (s.tool_call.get("parameters", {}) or {}).get("description")
+            desc = (desc or s.action.description or "").strip().lower()
+            descriptions.append(desc)
+        if len(descriptions) == window and descriptions[0] and len(set(descriptions)) == 1:
+            urls = [s.browser_state.url for s in recent_steps]
+            if len(set(urls)) == 1:
+                return True
+
+        # Pattern 1: All identical action TYPES (but possibly different targets)
         if len(set(action_types)) == 1:
             # But check if state changed
             urls = [s.browser_state.url for s in recent_steps]
             screenshots = [s.screenshot_hash for s in recent_steps]
-            
+
             # If all URLs and screenshots are identical, it's a loop
             if len(set(urls)) == 1 and len(set(screenshots)) == 1:
                 return True

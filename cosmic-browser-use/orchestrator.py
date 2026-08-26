@@ -1119,7 +1119,42 @@ Recent search-result loop steps:
             return None
 
         return response
-    
+
+    async def force_credential_handoff(self, context: Dict[str, Any], reason: str) -> LLMResponse:
+        """Deterministically hand off to the user when the page is asking for
+        their password, an MFA/OTP code, or similar credential entry.
+
+        Unlike the other force_* governors, this makes NO LLM call — there's
+        no judgment call to make here (the agent has no business attempting
+        to fill these fields itself regardless of what it "thinks"), so a
+        templated AskUser is faster and strictly more reliable than asking a
+        model to decide whether to ask.
+        """
+        goal = context.get("goal") or "the task"
+        browser_state = context.get("browser_state") or {}
+        url = browser_state.get("url") or "this page"
+        if reason == "password":
+            question = (
+                f"I've reached a sign-in page ({url}) that needs your password. "
+                f"Please enter your credentials and complete sign-in, then reply 'done' so I can continue with: {goal}"
+            )
+        else:
+            question = (
+                f"I've reached a verification step ({url}) that needs a code from your phone, "
+                f"authenticator app, or email (MFA/2FA). Please complete it, then reply 'done' so I can continue with: {goal}"
+            )
+        return LLMResponse(
+            tool_call=ToolCall(
+                action_type=ActionType.ASK_USER,
+                parameters={"question": question},
+                verification_hint="credential_handoff_forced",
+            ),
+            reasoning=f"Forced credential-handoff governor: detected a visible {reason} field — the agent cannot and should not attempt this itself.",
+            confidence=0.98,
+            requires_escalation=False,
+            estimated_completion=0.0,
+        )
+
     async def decide_action(
         self,
         context: Dict[str, Any],
@@ -1169,18 +1204,26 @@ Recent search-result loop steps:
                         if retry_count > max_retries:
                             print(f"\n❌ [Orchestrator] Rate limit exceeded after {max_retries} retries.")
                             raise
-                        
+
                         sleep_time = backoff * retry_count
                         print(f"\n⚠️  [Orchestrator] Rate limit (429) hit. Retrying in {sleep_time}s...")
                         await asyncio.sleep(sleep_time)
                     else:
+                        model_id = getattr(provider.config, "model_id", "unknown")
+                        try:
+                            body = e.response.json()
+                            detail = body.get("error", {}).get("message") or str(body)
+                        except Exception:
+                            detail = e.response.text[:300]
+                        print(f"\n❌ [Orchestrator] HTTP {e.response.status_code} from {tier.value} tier (model='{model_id}'): {detail}")
                         raise
         
         except Exception as e:
             # Fallback to slower model on error
             if tier != LLMTier.SLOW:
-                print(f"\n⚠️  [Orchestrator] {type(e).__name__} in {tier.value} tier. Escalating to SLOW tier.")
+                print(f"\n⚠️  [Orchestrator] {type(e).__name__} in {tier.value} tier — escalating to SLOW tier.")
                 return await self.decide_action(context, screenshot_base64, 0.0, LLMTier.SLOW)
+            print(f"\n❌ [Orchestrator] SLOW tier also failed: {e}")
             raise
         
         latency_ms = (time.time() - start_time) * 1000
@@ -1258,6 +1301,7 @@ Recent search-result loop steps:
         if dom_enabled:
             available_tools_definitions[4:4] = [
                 "- DOMClick(selector) - Click via CSS selector (fallback)",
+                "- DomType(selector, text, press_enter) - Type into an input/textarea matched by a CSS selector. Use this instead of VisualType when you already know a stable selector for the field (e.g. from a prior DOMExtract) — it's faster and more reliable than visual grounding.",
                 "- DOMExtract(query) - Extract text/data from DOM. Limit 100k chars. Prefer semantic selectors: 'main', 'article', '[role=\"main\"]', '.readme', '.model-card', '#content', '.post-body' etc. Only use 'body' if no semantic container exists.",
             ]
             save_note_idx = available_tools_definitions.index("- SaveNote(note) - Save important information to memory. NOTE MUST NOT BE EMPTY.")
@@ -1335,6 +1379,13 @@ You control a browser by calling atomic tools. Each tool call is executed immedi
 - Never treat toolbar overflow buttons, kebab menus, option menus, share/save/report menus, side-panel menus, or recommendation-card menus as text expansion controls.
 - If clicking a "more" target opens a menu, popup, overlay, report option, or unrelated panel, close/ignore it and save the best visible answer instead of continuing expansion attempts.
 
+## CREDENTIAL / MFA HANDOFF (CRITICAL)
+A password field or verification-code field is usually caught automatically before you ever see this prompt — but some flows have no input field at all (e.g. "Approve this sign-in on your phone", a CAPTCHA, a security-question dropdown, a passkey/biometric prompt). If you land on any of these:
+- Do NOT attempt to guess, generate, or fill in a password, security code, CAPTCHA answer, or security-question answer yourself. You do not have the user's credentials and cannot pass a CAPTCHA.
+- Do NOT click around looking for a way past it. There isn't one without the user.
+- Immediately use AskUser with a clear, specific question (what step you're stuck on, what the user needs to do), and wait for their reply before continuing.
+- Once the user replies, re-read the CURRENT screenshot/URL rather than assuming you know what page you're on now — they may have ended up somewhere you didn't expect (e.g. a "device confirmed" page, or straight to the logged-in destination).
+
 ## WORKSPACE MANAGEMENT (CRITICAL)
 1.  **Reuse > Create**: Before opening a new tab, check `## ACTIVE TABS`.
     -   If an existing tab has served its purpose (info saved to Notes), REUSE it using `Navigate(url)`.
@@ -1369,12 +1420,20 @@ Rules:
 {extraction_runtime_rule}
 - Do not use TimedWait to inspect static text. If the page is not visibly loading and the answer is visible, SaveNote.
 - Avoid repeated micro-scrolls around the same text block. After two nearby scrolls without new relevant content, SaveNote the best visible answer or choose a different route.
+- **Scroll-to-Extract Rule**: If you have scrolled 2 times on the SAME page searching for specific text/data (a price, a row in a table, a named item in a long list) and still have not found it, STOP scrolling. Switch to DOMExtract on the content container — long docs/pricing/table pages are exactly the "hard to read visually" case DOMExtract exists for. Do not scroll a 3rd time first.
 - Set verification_hint for state changes (URL, title, element appearance)
 - Set confidence low (<0.5) if uncertain - you'll be escalated to a better model
 - Estimate completion: 0.0 = just started, 1.0 = goal achieved
 - **CRITICAL**: Do NOT mark estimated_completion=1.0 unless you have successfully executed the final action (e.g. SaveNote).
+- **URL-Completion Rule**: If the current URL or page title already proves the goal is done — you are ON the destination (e.g. goal="go to linkedin.com" and URL is linkedin.com), or you are LOGGED IN (e.g. goal="sign in to LinkedIn" and URL is linkedin.com/feed/ or linkedin.com/in/), or the search results page is showing — declare estimated_completion=1.0 immediately with a SaveNote confirming success. Do NOT keep taking actions after the goal is already achieved.
 - **Best-Available Rule**: If the exact resource you are looking for does not exist (e.g. a specific year's form not yet released), DO NOT abandon a valid related resource you already have. Accept the best available version, SaveNote what you found and why the exact version was unavailable, and mark the task complete.
 - **Dead-End Rule**: If the same search returns no results after 2 attempts, STOP searching. SaveNote that the resource was not found (include what you searched for and where), then mark estimated_completion=1.0. Never loop on an empty results page.
+- **Element-Not-Found Rule**: If MiMo failed to find an element on the SAME page 2 times in a row, that element does NOT exist on this page. Stop trying to click it. Reassess whether the goal is already done (check the URL/title), navigate somewhere new, or use DOMClick/DOMExtract to verify what is actually on the page.
+- **Wrong-SSO-Provider Rule**: If a step's verification status is `wrong_state`, your last click landed on a DIFFERENT sign-in provider's button than you intended (e.g. you meant to click "Continue with Google" but landed on Microsoft's OAuth page). GoBack, then do NOT repeat the same VisualClick with a similar description — it will pick the wrong button again. Switch to DOMClick instead; DOMClick now searches inside iframes too, which is where these SSO buttons often live.
+- **SSO Selector Rule**: SSO sign-in buttons (Google, Microsoft, Apple, etc.) are almost always rendered as `<div role="button">`, NOT a literal `<button>` tag — this is standard for Google's official Identity Services widget specifically. When using DOMClick on an SSO button, use `[role="button"]:has-text("Continue with Google")` (attribute selector, not a tag name). A `button:has-text(...)` selector will silently match nothing for these widgets even though the button is clearly visible on screen.
+- **Search-Bar Shortcut Rule**: If clicking/typing into a SITE SEARCH bar fails to produce any change (`no_change`) 2 times in a row — via any combination of VisualClick, VisualType, or DOMClick — STOP fighting the input field. Most major sites support a direct search URL (e.g. `linkedin.com/search/results/all/?keywords=TERM`, `youtube.com/results?search_query=TERM`, `google.com/search?q=TERM`, `github.com/search?q=TERM`, `twitter.com/search?q=TERM`). Construct that URL with the search term and use Navigate directly instead of continuing to click/type. This is faster and far more reliable than fighting a JS-heavy search widget.
+- **Extract-Then-Click Rule**: If a DOMExtract call already surfaced the exact text/link/title you need to click (it's visible in TOOL_OUTPUT_DATA), do NOT switch to VisualClick to re-find it visually — that throws away the structural information you just got and pays a fresh MiMo call for something you already located. Build a DOMClick selector directly from the extracted text instead (e.g. `a:has-text("ML Ops Engineer")` or `[role="button"]:has-text("...")`) — it's faster, and DOMClick now auto-tries several tag variants and searches iframes if the first guess doesn't match.
+- **Repeated-Click Rule**: If you are about to issue a VisualClick/DOMClick with the SAME description/target you already clicked in the last 2-3 steps and the URL hasn't changed, that click is not accomplishing anything — clicking it again won't either. Stop, reassess from the current screenshot what's actually different, and either try a different element/approach or conclude the action had no real effect and pick another route.
 
 Current progress: {context['estimated_progress']:.0%} complete
 """

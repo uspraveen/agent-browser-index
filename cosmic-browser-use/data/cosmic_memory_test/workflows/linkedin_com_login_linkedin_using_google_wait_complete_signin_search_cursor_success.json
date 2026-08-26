@@ -1,0 +1,1348 @@
+{
+  "workflow_id": "linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor_success",
+  "name": "linkedin.com: Login to my linkedin using google. Wait for me to complete the signin and search for cursor in the searchbar",
+  "domain": "linkedin.com",
+  "intent": "Login to my linkedin using google. Wait for me to complete the signin and search for cursor in the searchbar",
+  "task_signature": "linkedin_com_login_linkedin_using_google_wait_complete_signin_search_cursor",
+  "created_at": "2026-06-24T14:00:40.127947+00:00",
+  "updated_at": "2026-06-24T14:00:40.127947+00:00",
+  "success_count": 1,
+  "avg_runtime_seconds": null,
+  "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
+  "route_strategy": "Use indexed actions until checkpoint; dynamic result choices may require normal planner repair.",
+  "replay_instructions": {
+    "do": [
+      "Preserve goal-specific target hints: login, linkedin, using, google, wait, complete, signin, search.",
+      "Prefer the observed successful final URL when it still matches the goal: https://www.linkedin.com/search/results/all/?keywords=cursor.",
+      "Patch: Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.."
+    ],
+    "avoid": [
+      "Do not replay source step 2: failed action.",
+      "Do not replay source step 15: not useful for replay.",
+      "Do not replay source step 17: not useful for replay.",
+      "Do not replay source step 22: not useful for replay.",
+      "Do not replay source step 26: not useful for replay.",
+      "Avoid failure: MiMo failed to find element."
+    ],
+    "checkpoints": [
+      "Target page title should resemble: [Tab 1/1] Search | LinkedIn.",
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "partial",
+  "quality": {
+    "usable": true,
+    "confidence": 0.55,
+    "generalization_level": "partial",
+    "reason": "Deterministic fallback selected successful replayable steps and observed final URL."
+  },
+  "variables": [
+    {
+      "name": "search_query",
+      "default": "cursor",
+      "source": "goal",
+      "applies_to_source_steps": [
+        6
+      ]
+    },
+    {
+      "name": "search_query",
+      "default": "cursor",
+      "source": "goal",
+      "applies_to_source_steps": [
+        13
+      ]
+    },
+    {
+      "name": "search_query",
+      "default": "cursor",
+      "source": "goal",
+      "applies_to_source_steps": [
+        23
+      ]
+    }
+  ],
+  "acceptance_criteria": {
+    "must_match": [
+      "login",
+      "linkedin",
+      "using",
+      "google",
+      "wait",
+      "complete",
+      "signin",
+      "search"
+    ],
+    "reject": [
+      "wrong target",
+      "shorts",
+      "playlist",
+      "demo clip"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+    "final_title": "[Tab 1/1] Search | LinkedIn",
+    "final_note": "Task completed successfully. User logged into LinkedIn via Google (URL reached linkedin.com/feed/ after sign-in). Search for 'cursor' executed successfully - currently on LinkedIn search results page at https://www.linkedin.com/search/results/all/?keywords=cursor with search term visible in search bar and results displayed.",
+    "note_source_step": 27
+  },
+  "source_run_dir": "runs\\20260623_220052",
+  "source_status": "success",
+  "indexer": {
+    "source": "deterministic_fallback",
+    "version": "cosmic_run_indexer_v2",
+    "last_error": "LLM indexer returned non-JSON: The user wants me to distill a noisy browser-agent run into a compact replayable workflow JSON.\n\nLet me analyze the trace:\n\n1. Step 1: Navigate to linkedin.com/login - success\n2. Step 2: VisualClick to close SignalHire extension popup - fai"
+  },
+  "discarded_steps": [
+    {
+      "source_step": 2,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 15,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 17,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 22,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 26,
+      "reason": "not useful for replay"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.linkedin.com/login",
+      "parameters": {
+        "url": "https://www.linkedin.com/login"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/login/",
+        "title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "success",
+      "error": "MiMo failed to find element",
+      "description": "X close button on SignalHire extension popup in top right corner of popup",
+      "parameters": {
+        "description": "X close button on SignalHire extension popup in top right corner of popup"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/login/",
+        "title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/login/",
+        "title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Continue with Google button on LinkedIn login page",
+      "parameters": {
+        "description": "Continue with Google button on LinkedIn login page"
+      },
+      "coordinates": [
+        966,
+        282
+      ],
+      "visual_index": {
+        "target_description": "Continue with Google button on LinkedIn login page",
+        "normalized_coordinates": {
+          "x": 0.754687,
+          "y": 0.391667
+        },
+        "pixel_coordinates": {
+          "x": 966,
+          "y": 282
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/login/",
+        "page_title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/login/",
+        "title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/login/",
+        "title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Clicked (locator) [iframe: https://accounts.google.com/gsi/button?logo_alignment=center]: [role=\"button\"]:has-text(\"Continue with Google\")",
+      "parameters": {
+        "selector": "[role=\"button\"]:has-text(\"Continue with Google\")"
+      },
+      "coordinates": [
+        760,
+        226
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/login/",
+        "title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://accounts.google.com/v3/signin/identifier?continue=https%3A%2F%2Faccounts.google.com%2Fgsi%2Fselect%3Fclient_id%3D990339570472-k6nqn1tpmitg8pui82bfaun3jrpmiuhs.apps.googleusercontent.com%26auto_select%3Dtrue%26ux_mode%3Dpopup%26ui_mode%3Dcard%26context%3Dsignin%26hl%3Den-US%26as%3Dp8PYIpTs%252B7XjtoRcBTAEEg%26channel_id%3Db43e917262fd6e1e0feade3143bbd360857166df9a3fe1a9cc2c59f61281d859%26origin%3Dhttps%3A%2F%2Fwww.linkedin.com&dsh=S-801292960%3A1782270144874167&faa=1&flowName=GlifWebSignIn&flowEntry=ServiceLogin&ifkv=AcDsRvzV_QNDqnQJcKNtdqpj-NSOT4XEdo1GS30EpowAWvkZG7Bnl--XyaWc_kfR8eYoAfTyD9Y0AQ",
+        "title": "[Tab 2/2] Sign in - Google Accounts",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "AskUser",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Asked: I've navigated to the Google sign-in page for LinkedIn. Please enter your credentials and complete the sign-in. Once you're fully logged into LinkedIn, reply 'done' and I'll search for 'cursor' in the LinkedIn search bar.",
+      "parameters": {
+        "question": "I've navigated to the Google sign-in page for LinkedIn. Please enter your credentials and complete the sign-in. Once you're fully logged into LinkedIn, reply 'done' and I'll search for 'cursor' in the LinkedIn search bar."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://accounts.google.com/v3/signin/identifier?continue=https%3A%2F%2Faccounts.google.com%2Fgsi%2Fselect%3Fclient_id%3D990339570472-k6nqn1tpmitg8pui82bfaun3jrpmiuhs.apps.googleusercontent.com%26auto_select%3Dtrue%26ux_mode%3Dpopup%26ui_mode%3Dcard%26context%3Dsignin%26hl%3Den-US%26as%3Dp8PYIpTs%252B7XjtoRcBTAEEg%26channel_id%3Db43e917262fd6e1e0feade3143bbd360857166df9a3fe1a9cc2c59f61281d859%26origin%3Dhttps%3A%2F%2Fwww.linkedin.com&dsh=S-801292960%3A1782270144874167&faa=1&flowName=GlifWebSignIn&flowEntry=ServiceLogin&ifkv=AcDsRvzV_QNDqnQJcKNtdqpj-NSOT4XEdo1GS30EpowAWvkZG7Bnl--XyaWc_kfR8eYoAfTyD9Y0AQ",
+        "title": "[Tab 2/2] Sign in - Google Accounts",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualType",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Typed 'cursor'",
+      "parameters": {
+        "field_description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+        "text": "cursor",
+        "press_enter": true
+      },
+      "coordinates": [
+        525,
+        35
+      ],
+      "visual_index": {
+        "target_description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+        "normalized_coordinates": {
+          "x": 0.410156,
+          "y": 0.048611
+        },
+        "pixel_coordinates": {
+          "x": 525,
+          "y": 35
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+      "parameters": {
+        "description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'"
+      },
+      "coordinates": [
+        543,
+        25
+      ],
+      "visual_index": {
+        "target_description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+        "normalized_coordinates": {
+          "x": 0.424219,
+          "y": 0.034722
+        },
+        "pixel_coordinates": {
+          "x": 543,
+          "y": 25
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+      "parameters": {
+        "description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'"
+      },
+      "coordinates": [
+        540,
+        40
+      ],
+      "visual_index": {
+        "target_description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+        "normalized_coordinates": {
+          "x": 0.421875,
+          "y": 0.055556
+        },
+        "pixel_coordinates": {
+          "x": 540,
+          "y": 40
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "search input field with placeholder text 'I'm looking for...' at top of LinkedIn page",
+      "parameters": {
+        "description": "search input field with placeholder text 'I'm looking for...' at top of LinkedIn page"
+      },
+      "coordinates": [
+        547,
+        33
+      ],
+      "visual_index": {
+        "target_description": "search input field with placeholder text 'I'm looking for...' at top of LinkedIn page",
+        "normalized_coordinates": {
+          "x": 0.427344,
+          "y": 0.045833
+        },
+        "pixel_coordinates": {
+          "x": 547,
+          "y": 33
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Clicked visible element for selector: input[placeholder*=\"looking for\"]",
+      "parameters": {
+        "selector": "input[placeholder*=\"looking for\"]"
+      },
+      "coordinates": [
+        386,
+        36
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "search input field at top left with placeholder 'I'm looking for...' next to LinkedIn logo",
+      "parameters": {
+        "description": "search input field at top left with placeholder 'I'm looking for...' next to LinkedIn logo"
+      },
+      "coordinates": [
+        529,
+        30
+      ],
+      "visual_index": {
+        "target_description": "search input field at top left with placeholder 'I'm looking for...' next to LinkedIn logo",
+        "normalized_coordinates": {
+          "x": 0.413281,
+          "y": 0.041667
+        },
+        "pixel_coordinates": {
+          "x": 529,
+          "y": 30
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 12,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "PressKey",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Pressed /",
+      "parameters": {
+        "key": "/"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 13,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualType",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Typed 'cursor'",
+      "parameters": {
+        "field_description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+        "text": "cursor",
+        "press_enter": true
+      },
+      "coordinates": [
+        535,
+        38
+      ],
+      "visual_index": {
+        "target_description": "LinkedIn search bar at top with placeholder text 'I'm looking for...'",
+        "normalized_coordinates": {
+          "x": 0.417969,
+          "y": 0.052778
+        },
+        "pixel_coordinates": {
+          "x": 535,
+          "y": 38
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 14,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "search input field with placeholder text 'I'm looking for...' at the top of the LinkedIn page next to the LinkedIn logo",
+      "parameters": {
+        "description": "search input field with placeholder text 'I'm looking for...' at the top of the LinkedIn page next to the LinkedIn logo"
+      },
+      "coordinates": [
+        529,
+        30
+      ],
+      "visual_index": {
+        "target_description": "search input field with placeholder text 'I'm looking for...' at the top of the LinkedIn page next to the LinkedIn logo",
+        "normalized_coordinates": {
+          "x": 0.413281,
+          "y": 0.041667
+        },
+        "pixel_coordinates": {
+          "x": 529,
+          "y": 30
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 15,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 16,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "input[placeholder*='looking for'], .search-global-typeahead, [role='search']"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 17,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 18,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "search input field at top left with placeholder text 'I'm looking for...' next to LinkedIn logo",
+      "parameters": {
+        "description": "search input field at top left with placeholder text 'I'm looking for...' next to LinkedIn logo"
+      },
+      "coordinates": [
+        529,
+        30
+      ],
+      "visual_index": {
+        "target_description": "search input field at top left with placeholder text 'I'm looking for...' next to LinkedIn logo",
+        "normalized_coordinates": {
+          "x": 0.413281,
+          "y": 0.041667
+        },
+        "pixel_coordinates": {
+          "x": 529,
+          "y": 30
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 19,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "search input field at top with placeholder text 'I'm looking for...' next to LinkedIn logo",
+      "parameters": {
+        "description": "search input field at top with placeholder text 'I'm looking for...' next to LinkedIn logo"
+      },
+      "coordinates": [
+        529,
+        30
+      ],
+      "visual_index": {
+        "target_description": "search input field at top with placeholder text 'I'm looking for...' next to LinkedIn logo",
+        "normalized_coordinates": {
+          "x": 0.413281,
+          "y": 0.041667
+        },
+        "pixel_coordinates": {
+          "x": 529,
+          "y": 30
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 20,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "search input field with placeholder 'I'm looking for...' at top of LinkedIn page",
+      "parameters": {
+        "description": "search input field with placeholder 'I'm looking for...' at top of LinkedIn page"
+      },
+      "coordinates": [
+        547,
+        25
+      ],
+      "visual_index": {
+        "target_description": "search input field with placeholder 'I'm looking for...' at top of LinkedIn page",
+        "normalized_coordinates": {
+          "x": 0.427344,
+          "y": 0.034722
+        },
+        "pixel_coordinates": {
+          "x": 547,
+          "y": 25
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 21,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "PressKey",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Pressed /",
+      "parameters": {
+        "key": "/"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 22,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 23,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualType",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Typed 'cursor'",
+      "parameters": {
+        "field_description": "search input field at top with placeholder 'I'm looking for...'",
+        "text": "cursor",
+        "press_enter": true
+      },
+      "coordinates": [
+        544,
+        28
+      ],
+      "visual_index": {
+        "target_description": "search input field at top with placeholder 'I'm looking for...'",
+        "normalized_coordinates": {
+          "x": 0.425,
+          "y": 0.038889
+        },
+        "pixel_coordinates": {
+          "x": 544,
+          "y": 28
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.linkedin.com/feed/",
+        "page_title": "[Tab 1/1] Feed | LinkedIn"
+      },
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 24,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMClick",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Clicked visible element for selector: input[placeholder*=\"looking for\"]",
+      "parameters": {
+        "selector": "input[placeholder*=\"looking for\"]"
+      },
+      "coordinates": [
+        386,
+        36
+      ],
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 25,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "parameters": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/feed/",
+        "title": "[Tab 1/1] Feed | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+        "title": "[Tab 1/1] Search | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 26,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+        "title": "[Tab 1/1] Search | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+        "title": "[Tab 1/1] Search | LinkedIn",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 27,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (60 tokens)",
+      "parameters": {
+        "note": "Task completed successfully. User logged into LinkedIn via Google (URL reached linkedin.com/feed/ after sign-in). Search for 'cursor' executed successfully - currently on LinkedIn search results page at https://www.linkedin.com/search/results/all/?keywords=cursor with search term visible in search bar and results displayed."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+        "title": "[Tab 1/1] Search | LinkedIn",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+        "title": "[Tab 1/1] Search | LinkedIn",
+        "scroll_y": 0
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "linkedin_com_state_001_tab_1_1",
+      "name": "[Tab 1/1] ",
+      "url_pattern": "about:blank",
+      "page_summary": "[Tab 1/1]  at about:blank",
+      "visual_markers": [
+        "tab",
+        "navigated",
+        "https",
+        "www",
+        "linkedin",
+        "com",
+        "login"
+      ],
+      "screenshot_path": "runs\\20260623_220052\\screenshots\\step_001.webp",
+      "screenshot_hash": "0000000000000000"
+    },
+    {
+      "state_id": "linkedin_com_state_002_tab_1_1_linkedin_login_sign_",
+      "name": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/login/",
+      "page_summary": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn at https://www.linkedin.com/login/",
+      "visual_markers": [
+        "tab",
+        "linkedin",
+        "login",
+        "sign",
+        "continue",
+        "google",
+        "button",
+        "page"
+      ],
+      "screenshot_path": "runs\\20260623_220052\\screenshots\\step_003.webp",
+      "screenshot_hash": "7cece4edfce4e7ff"
+    },
+    {
+      "state_id": "linkedin_com_state_003_tab_1_1_feed_linkedin",
+      "name": "[Tab 1/1] Feed | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/feed/",
+      "page_summary": "[Tab 1/1] Feed | LinkedIn at https://www.linkedin.com/feed/",
+      "visual_markers": [
+        "tab",
+        "feed",
+        "linkedin",
+        "navigated",
+        "https",
+        "www",
+        "com",
+        "search",
+        "results",
+        "all",
+        "keywords",
+        "cursor"
+      ],
+      "screenshot_path": "runs\\20260623_220052\\screenshots\\step_025.webp",
+      "screenshot_hash": "bfbfffc7c3c7c3c7"
+    },
+    {
+      "state_id": "linkedin_com_state_004_tab_1_1_search_linkedin",
+      "name": "[Tab 1/1] Search | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "page_summary": "[Tab 1/1] Search | LinkedIn at https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "visual_markers": [
+        "tab",
+        "search",
+        "linkedin",
+        "saved",
+        "note",
+        "tokens"
+      ],
+      "screenshot_path": "runs\\20260623_220052\\screenshots\\step_027.webp",
+      "screenshot_hash": "fff9ffffc7c7c7ff"
+    },
+    {
+      "state_id": "linkedin_com_state_005_tab_1_1_search_linkedin",
+      "name": "[Tab 1/1] Search | LinkedIn",
+      "url_pattern": "https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "page_summary": "[Tab 1/1] Search | LinkedIn at https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "visual_markers": [
+        "tab",
+        "search",
+        "linkedin"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "navigation",
+      "from_state_id": "linkedin_com_state_001_tab_1_1",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.linkedin.com/login",
+      "parameters_template": {
+        "url": "https://www.linkedin.com/login"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] LinkedIn Login, Sign in | LinkedIn https://www.linkedin.com/login/",
+      "to_state_id": "linkedin_com_state_002_tab_1_1_linkedin_login_sign_",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_002",
+      "source_step": 3,
+      "source_evidence_steps": [
+        3
+      ],
+      "role": "open_target",
+      "from_state_id": "linkedin_com_state_002_tab_1_1_linkedin_login_sign_",
+      "action_type": "VisualClick",
+      "target_description": "Continue with Google button on LinkedIn login page",
+      "parameters_template": {
+        "description": "Continue with Google button on LinkedIn login page"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Continue with Google button on LinkedIn login page",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260623_220052\\screenshots\\step_003.webp",
+        "page_url": "https://www.linkedin.com/login/",
+        "page_title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 966,
+          "y": 282
+        },
+        "normalized_coordinates": {
+          "x": 0.754687,
+          "y": 0.391667
+        },
+        "mimo_grounding": {
+          "instruction": "Continue with Google button on LinkedIn login page",
+          "image_size": {
+            "width": 1920,
+            "height": 1113
+          },
+          "pixel_coordinates": {
+            "x": 966,
+            "y": 282
+          },
+          "normalized_coordinates": {
+            "x": 0.503125,
+            "y": 0.253369
+          },
+          "raw_model_output": "<think>\n</think>\n\n[966, 282]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Continue with Google button on LinkedIn login page",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260623_220052\\screenshots\\step_003.webp",
+        "page_url": "https://www.linkedin.com/login/",
+        "page_title": "[Tab 1/1] LinkedIn Login, Sign in | LinkedIn",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 966,
+          "y": 282
+        },
+        "normalized_coordinates": {
+          "x": 0.754687,
+          "y": 0.391667
+        },
+        "mimo_grounding": {
+          "instruction": "Continue with Google button on LinkedIn login page",
+          "image_size": {
+            "width": 1920,
+            "height": 1113
+          },
+          "pixel_coordinates": {
+            "x": 966,
+            "y": 282
+          },
+          "normalized_coordinates": {
+            "x": 0.503125,
+            "y": 0.253369
+          },
+          "raw_model_output": "<think>\n</think>\n\n[966, 282]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        966,
+        282
+      ],
+      "expected_result": "Browser reaches [Tab 1/1] LinkedIn Login, Sign in | LinkedIn https://www.linkedin.com/login/",
+      "to_state_id": "linkedin_com_state_003_tab_1_1_linkedin_login_sign_",
+      "delay_ms": 900,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_003",
+      "source_step": 25,
+      "source_evidence_steps": [
+        25
+      ],
+      "role": "navigation",
+      "from_state_id": "linkedin_com_state_003_tab_1_1_feed_linkedin",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "parameters_template": {
+        "url": "https://www.linkedin.com/search/results/all/?keywords=cursor"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Search | LinkedIn https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "to_state_id": "linkedin_com_state_004_tab_1_1_search_linkedin",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_004",
+      "source_step": 27,
+      "source_evidence_steps": [
+        27
+      ],
+      "role": "extract_answer",
+      "from_state_id": "linkedin_com_state_004_tab_1_1_search_linkedin",
+      "action_type": "SaveNote",
+      "target_description": "Saved note (60 tokens)",
+      "parameters_template": {
+        "note": "Task completed successfully. User logged into LinkedIn via Google (URL reached linkedin.com/feed/ after sign-in). Search for 'cursor' executed successfully - currently on LinkedIn search results page at https://www.linkedin.com/search/results/all/?keywords=cursor with search term visible in search bar and results displayed."
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Search | LinkedIn https://www.linkedin.com/search/results/all/?keywords=cursor",
+      "to_state_id": "linkedin_com_state_005_tab_1_1_search_linkedin",
+      "delay_ms": 300,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "linkedin.com",
+      "applies_to_source_step": 2,
+      "failure": "MiMo failed to find element",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    }
+  ],
+  "user_preferences": []
+}
