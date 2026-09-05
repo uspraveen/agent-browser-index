@@ -83,7 +83,7 @@ Useful env vars:
 ```bash
 COSMIC_INDEXER_ENABLED=true
 COSMIC_INDEXER_PROVIDER=fireworks_kimi
-COSMIC_INDEXER_MODEL=accounts/fireworks/models/kimi-k2p6
+COSMIC_INDEXER_MODEL=accounts/fireworks/models/glm-5p3-flash
 COSMIC_INDEXER_MAX_TOKENS=4096
 ```
 

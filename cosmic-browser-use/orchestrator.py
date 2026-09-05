@@ -6,7 +6,7 @@ Supports:
 - Gemini (Flash, Pro, Experimental)
 - Claude (Sonnet, Opus, Haiku)
 - OpenAI (GPT-4, GPT-3.5)
-- Fireworks Kimi K2.6+ (OpenAI SDK, OpenAI-compatible endpoint)
+- Fireworks GLM 5.3 Flash (default) / Kimi K2.6 (OpenAI SDK, OpenAI-compatible endpoint)
 - Local models (via vLLM, Ollama)
 - Automatic fast/slow tiering
 - Streaming support
@@ -366,7 +366,9 @@ class FireworksKimiProvider(BaseLLMProvider):
     """Fireworks-hosted Kimi via OpenAI-compatible API using the official AsyncOpenAI SDK.
 
     Default base URL: https://api.fireworks.ai/inference/v1
-    Default model: accounts/fireworks/models/kimi-k2p6 (Kimi K2.6 on Fireworks).
+    Default model: accounts/fireworks/models/glm-5p3-flash (GLM 5.3 Flash on Fireworks).
+    Kimi K2.6 (accounts/fireworks/models/kimi-k2p6) remains available via
+    FIREWORKS_DEFAULT_MODEL / --fast-model / --slow-model overrides.
 
     HTTP/2: On each task run, the first Fireworks chat completion tries HTTP/2 (requires the optional h2 dependency).
     If that fails with a transport-level error, the client falls back to HTTP/1.1 for the rest
@@ -488,12 +490,17 @@ class FireworksKimiProvider(BaseLLMProvider):
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + list(messages)
 
-        extra_body: Dict[str, Any] = {"top_k": 40}
+        extra_body: Dict[str, Any] = {}
+        base = (self.config.api_base or "").lower()
+        if "fireworks" in base:
+            # Fireworks-specific sampling knob; other OpenAI-compatible
+            # endpoints (xAI) may not accept it.
+            extra_body["top_k"] = 40
         model_id = (self.config.model_id or "").lower()
         reasoning_effort_env = os.getenv("FIREWORKS_REASONING_EFFORT", "").strip()
         if "thinking" in model_id:
             extra_body["reasoning_effort"] = reasoning_effort_env or "medium"
-        elif reasoning_effort_env:
+        elif reasoning_effort_env and "fireworks" in base:
             extra_body["reasoning_effort"] = reasoning_effort_env
 
         kwargs: Dict[str, Any] = {
@@ -622,7 +629,9 @@ class Orchestrator:
             return ClaudeProvider(config)
         elif config.provider == LLMProvider.OPENAI:
             return OpenAIProvider(config)
-        elif config.provider == LLMProvider.FIREWORKS_KIMI:
+        elif config.provider in (LLMProvider.FIREWORKS_KIMI, LLMProvider.XAI):
+            # Both are OpenAI-compatible endpoints; the provider only differs
+            # in base URL / API key. XAI carries the escalation/frontier model.
             return FireworksKimiProvider(config)
         elif config.provider == LLMProvider.VLLM:
             return VLLMProvider(config)
@@ -1176,6 +1185,11 @@ Recent search-result loop steps:
         """
         # Select appropriate tier
         tier = force_tier or self._select_tier(context, previous_confidence)
+        escalated = tier == LLMTier.SLOW
+        if escalated:
+            esc_model = getattr(self.models[LLMTier.SLOW].config, "model_id", "?")
+            print(f"\n⏫ [Escalation] handing this step to the frontier brain ({esc_model})")
+            context = dict(context, escalated_tier=True)
         
         # Build messages
         messages = self._build_messages(context, screenshot_base64)
@@ -1234,16 +1248,23 @@ Recent search-result loop steps:
         
         # Parse response
         llm_response = self._parse_response(result["content"])
+        llm_response.tier_used = tier.value
         
         return llm_response
     
     def _select_tier(self, context: Dict[str, Any], previous_confidence: float) -> LLMTier:
-        """Select appropriate LLM tier based on context complexity."""
+        """Pick the base brain vs the escalation brain.
+
+        Base (FAST — MEDIUM falls back to it) handles every routine step.
+        Escalation (SLOW — the frontier model) is deliberately conservative:
+        it fires ONLY on strong, repeated stuck-signals, never on a single
+        bad step. Escalation is expensive and should feel rare.
+        """
         last_action = context.get("last_action") or {}
         dom_enabled = bool(context.get("enable_dom_fallback", True))
 
-        # A read-only tool output usually needs a cheap follow-up decision
-        # such as SaveNote, not another expensive vision call.
+        # A read-only tool output usually needs a cheap base follow-up
+        # decision such as SaveNote, not the frontier model.
         if (
             dom_enabled
             and
@@ -1258,24 +1279,34 @@ Recent search-result loop steps:
         ):
             return LLMTier.FAST
 
-        # Use fast model if:
-        # - High confidence from previous step
-        # - Simple actions (early in task)
-        # - Clear next step
-        if previous_confidence > 0.8 and context["current_step"] < 5:
-            return LLMTier.FAST
-        
-        # Use slow model if:
-        # - Low confidence
-        # - Late in task (complex state)
-        # - Error recovery needed
-        if last_action and last_action.get("verification_status") in ["wrong_state", "loop_detected"]:
+        recent = context.get("recent_steps") or []
+        verifs = [str(s.get("verification_status") or "") for s in recent]
+
+        # 1. Hard loop — the loop detector already fired. Escalate.
+        if last_action.get("verification_status") == "loop_detected":
             return LLMTier.SLOW
-        
-        if previous_confidence < 0.5:
+
+        # 2. Two consecutive wrong-state landings (not one — the prompt-guided
+        #    SSO recovery handles a single wrong pick without a bigger model).
+        if len(verifs) >= 2 and verifs[-1] == "wrong_state" and verifs[-2] == "wrong_state":
             return LLMTier.SLOW
-        
-        # Default to medium
+
+        # 3. Three consecutive steps with no confirmable progress.
+        stuck_streak = 0
+        for v in reversed(verifs):
+            if v in {"incomplete", "no_change"}:
+                stuck_streak += 1
+            else:
+                break
+        if stuck_streak >= 3:
+            return LLMTier.SLOW
+
+        # 4. Very low confidence two steps running (single low-confidence
+        #    steps are normal exploration and stay on the base brain).
+        if previous_confidence < 0.3:
+            return LLMTier.SLOW
+
+        # Default: base brain.
         return LLMTier.MEDIUM
     
     def _build_system_prompt(self, context: Dict[str, Any]) -> str:
@@ -1301,6 +1332,7 @@ Recent search-result loop steps:
         if dom_enabled:
             available_tools_definitions[4:4] = [
                 "- DOMClick(selector) - Click via CSS selector (fallback)",
+                "- SelectOption(selector, value|label|index, values|labels for multi-select) - Select option(s) in a native <select> dropdown (DETERMINISTIC — use this for DETECTED DROPDOWNS instead of clicking invisible options). Fires real change events, works in iframes and shadow DOM.",
                 "- DomType(selector, text, press_enter) - Type into an input/textarea matched by a CSS selector. Use this instead of VisualType when you already know a stable selector for the field (e.g. from a prior DOMExtract) — it's faster and more reliable than visual grounding.",
                 "- DOMExtract(query) - Extract text/data from DOM. Limit 100k chars. Prefer semantic selectors: 'main', 'article', '[role=\"main\"]', '.readme', '.model-card', '#content', '.post-body' etc. Only use 'body' if no semantic container exists.",
             ]
@@ -1313,7 +1345,7 @@ Recent search-result loop steps:
             ]
 
         if os.getenv("TIMED_WAIT_ENABLED", "True").lower() == "true":
-            available_tools_definitions.append("- TimedWait(seconds) - Wait for an active load/animation/streaming update to settle (max 60s). Do not use for static visible text.")
+            available_tools_definitions.append("- TimedWait(seconds) - Wait for an ACTIVE load/animation/streaming update to settle (max 60s). Rules: NEVER as an opening move, NEVER twice in a row, and NEVER as a thinking pause when unsure what to do — if unsure, take a real information-gathering action (search, DOMExtract) instead. The harness blocks a third consecutive wait.")
             
         if os.getenv("VISUAL_WAIT_ENABLED", "True").lower() == "true":
             available_tools_definitions.append("- VisualWait(timeout) - Wait for screen to stop changing (e.g. for streaming text/animations). Use this when waiting for LLM responses or long loads.")
@@ -1342,6 +1374,12 @@ Recent search-result loop steps:
             recovery_route = "Change strategy: use DOM extraction/click, keyboard, URL navigation, browser search, or a broader page-level action."
             avoid_detours_route = "Prefer direct result pages, current video pages, DOM extraction, or URL navigation."
             extraction_runtime_rule = "- Only use DOMExtract if you need to scrape a large list or complex table that is hard to read visually.\n- For information retrieval goals, once `TOOL_OUTPUT_DATA` contains the requested information, call `SaveNote` immediately. Repeated extraction after a useful non-empty output is a failure mode.\n- Prefer SaveNote for concise memory. Use SaveLargeNote only when content is too large to fit as a normal note.\n- Before repeating a large extraction, use SearchLargeNotes/ListLargeNotes to find existing saved data."
+            dropdown_rule = """- **Dropdowns Are A Vision Blind Spot**: If `## DETECTED DROPDOWNS` lists a control, do NOT try to VisualClick its (invisible) options. Native `<select>` popups never render in screenshots. Preferred ladder — pick whichever fits, you have full autonomy here:
+    1. Deterministic: `SelectOption('select#id', label='Option text')` (or `value=` / `index=`; `values=[...]`/`labels=[...]` for multi-selects). Fires real change events; works iframes and shadow DOM too.
+    2. Read options first if unsure: `DOMExtract('select#id option')` to see all choices as text.
+    3. Keyboard fallback: `DOMClick('select#id')` to focus, then `PressKey('ArrowDown')`/`ArrowUp`/first-letter + `PressKey('Enter')`.
+    4. Custom dropdowns (role=combobox/aria-haspopup, NOT native selects): menus usually DO render on-page — DOMClick/VisualClick the trigger open, then VisualClick the visible option or DOMClick the option element.
+    5. Verify the outcome: the select's visible text should change, or `DOMExtract('select#id')` shows the new value. Do not repeat the same failed route more than twice — reassess with DOMExtract instead."""
             mode_line = "Mode: hybrid vision + DOM fallback."
         else:
             extraction_rule = """2.  **Vision-Only Mode**: Use screenshots, visual interaction, keyboard shortcuts, URL navigation, and visible page text only.
@@ -1358,13 +1396,26 @@ Recent search-result loop steps:
             recovery_route = "Change strategy: use keyboard, URL navigation, browser search, scrolling, back/forward, or a broader page-level visual action."
             avoid_detours_route = "Prefer direct result pages, current video pages, visible page content, or URL navigation."
             extraction_runtime_rule = "- Use only the tools listed in Available tools.\n- For information retrieval goals, once the requested answer is visible in the screenshot, call `SaveNote` immediately."
+            dropdown_rule = ""
             mode_line = "Mode: vision-only. Non-visual page-inspection tools are intentionally detached."
+
+        escalation_rule = """- **Self-Escalation (use SPARINGLY — default false)**: `request_escalation: true` hands the NEXT step to a stronger frontier model with deeper reasoning. Only use it when you are genuinely stuck: at least 2 different approaches to the same sub-goal already failed, the page state contradicts what you expected and you cannot explain why, or the remaining task clearly needs deeper reasoning than you can provide. NEVER use it for routine steps, a single failure, slow tool responses, or minor uncertainty — those are normal. When true, put a one-line reason in `escalation_reason`."""
+
+        escalated = bool(context.get("escalated_tier"))
+        escalation_line = (
+            "## ESCALATION MODE (frontier brain)\n"
+            "You are the stronger escalation model taking over because the base agent got stuck. "
+            "You remain in control for up to a few steps. As soon as the blocker you were summoned for is RESOLVED, "
+            "set `hand_back_to_base: true` in your JSON to hand control back to the cheaper base model — do not keep "
+            "the expensive brain once the way forward is clear. If you still need more steps to finish the recovery, "
+            "keep working (hand_back_to_base stays false); control also returns automatically after a step that verifies success.\n"
+        ) if escalated else ""
 
         return f"""You are a high-speed browser automation agent. Your goal is: {context['goal']}
 
 You control a browser by calling atomic tools. Each tool call is executed immediately.
 {mode_line}
-
+{escalation_line}
 ## CORE RULES
 1.  **Vision First**: Use Vision (VisualClick, VisualType) for navigation and interaction (>90% of time). "See" the page like a human.
 {extraction_rule}
@@ -1411,7 +1462,10 @@ Output format (JSON):
     "verification_hint": "url_contains('/checkout')",
     "reasoning": "Need to proceed to checkout",
     "confidence": 0.95,
-    "estimated_completion": 0.6
+    "estimated_completion": 0.6,
+    "request_escalation": false,
+    "escalation_reason": "",
+    "hand_back_to_base": false
 }}
 
 Rules:
@@ -1421,8 +1475,11 @@ Rules:
 - Do not use TimedWait to inspect static text. If the page is not visibly loading and the answer is visible, SaveNote.
 - Avoid repeated micro-scrolls around the same text block. After two nearby scrolls without new relevant content, SaveNote the best visible answer or choose a different route.
 - **Scroll-to-Extract Rule**: If you have scrolled 2 times on the SAME page searching for specific text/data (a price, a row in a table, a named item in a long list) and still have not found it, STOP scrolling. Switch to DOMExtract on the content container — long docs/pricing/table pages are exactly the "hard to read visually" case DOMExtract exists for. Do not scroll a 3rd time first.
+- **Scroll-to-Extract Rule**: If you have scrolled 2 times on the SAME page searching for specific text/data (a price, a row in a table, a named item in a long list) and still have not found it, STOP scrolling. Switch to DOMExtract on the content container — long docs/pricing/table pages are exactly the "hard to read visually" case DOMExtract exists for. Do not scroll a 3rd time first.
+{dropdown_rule}
 - Set verification_hint for state changes (URL, title, element appearance)
-- Set confidence low (<0.5) if uncertain - you'll be escalated to a better model
+- Set confidence honestly (it routes difficulty). Low confidence does NOT excuse passive actions: if uncertain, gather information (search, DOMExtract) instead of waiting. The harness escalates only on repeated stuck-signals, never on a single low number.
+- Your `action_type` must actually DO what your `reasoning` says. If your reasoning says "I'll search X next", the action must be that search (Navigate/DOMClick/VisualType) — never a TimedWait placeholder.
 - Estimate completion: 0.0 = just started, 1.0 = goal achieved
 - **CRITICAL**: Do NOT mark estimated_completion=1.0 unless you have successfully executed the final action (e.g. SaveNote).
 - **URL-Completion Rule**: If the current URL or page title already proves the goal is done — you are ON the destination (e.g. goal="go to linkedin.com" and URL is linkedin.com), or you are LOGGED IN (e.g. goal="sign in to LinkedIn" and URL is linkedin.com/feed/ or linkedin.com/in/), or the search results page is showing — declare estimated_completion=1.0 immediately with a SaveNote confirming success. Do NOT keep taking actions after the goal is already achieved.
@@ -1434,6 +1491,7 @@ Rules:
 - **Search-Bar Shortcut Rule**: If clicking/typing into a SITE SEARCH bar fails to produce any change (`no_change`) 2 times in a row — via any combination of VisualClick, VisualType, or DOMClick — STOP fighting the input field. Most major sites support a direct search URL (e.g. `linkedin.com/search/results/all/?keywords=TERM`, `youtube.com/results?search_query=TERM`, `google.com/search?q=TERM`, `github.com/search?q=TERM`, `twitter.com/search?q=TERM`). Construct that URL with the search term and use Navigate directly instead of continuing to click/type. This is faster and far more reliable than fighting a JS-heavy search widget.
 - **Extract-Then-Click Rule**: If a DOMExtract call already surfaced the exact text/link/title you need to click (it's visible in TOOL_OUTPUT_DATA), do NOT switch to VisualClick to re-find it visually — that throws away the structural information you just got and pays a fresh MiMo call for something you already located. Build a DOMClick selector directly from the extracted text instead (e.g. `a:has-text("ML Ops Engineer")` or `[role="button"]:has-text("...")`) — it's faster, and DOMClick now auto-tries several tag variants and searches iframes if the first guess doesn't match.
 - **Repeated-Click Rule**: If you are about to issue a VisualClick/DOMClick with the SAME description/target you already clicked in the last 2-3 steps and the URL hasn't changed, that click is not accomplishing anything — clicking it again won't either. Stop, reassess from the current screenshot what's actually different, and either try a different element/approach or conclude the action had no real effect and pick another route.
+{escalation_rule}
 
 Current progress: {context['estimated_progress']:.0%} complete
 """
@@ -1462,7 +1520,7 @@ Step: {context['current_step']}/{context['max_steps']}
 ## SAVED NOTES (Your Knowledge Base)
 {self._format_notes(context.get('browser_state'))}
 {self._format_large_notes_index(context.get('browser_state')) if dom_enabled else ''}
-{self._format_dialogs(context.get('browser_state'))}
+{self._format_dialogs(context.get('browser_state'))}{self._format_dropdowns(context.get('browser_state')) if dom_enabled else ''}
 ## RECENT DETAILED STEPS
 {self._format_recent_steps(context.get('recent_steps'))}
 History: {context['cumulative_summary']}
@@ -1577,6 +1635,24 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
         output.append("(These native dialogs were automatically accepted to prevent page blocking.)")
         return "\n".join(output)
 
+    def _format_dropdowns(self, browser_state: Optional[Dict[str, Any]]) -> str:
+        """Format the deterministic dropdown scan for the prompt. Only shown when candidates exist."""
+        if not browser_state or not browser_state.get('dropdowns'):
+            return ""
+        items = [str(x) for x in browser_state['dropdowns'] if x]
+        if not items:
+            return ""
+        listing = "\n".join(f"- {item}" for item in items[:8])
+        return (
+            "\n## DETECTED DROPDOWNS (deterministic DOM scan)\n"
+            f"{listing}\n"
+            "Vision warning: native <select> option popups render in the OS layer, NOT the page — "
+            "they are INVISIBLE to screenshots, so MiMo cannot ground their options. Prefer the deterministic "
+            "route: `SelectOption('select#id', label='Option text')` (see the SelectOption tool), or "
+            "`DOMExtract('select#id option')` to read choices first. Custom (non-select) dropdowns usually "
+            "render their menus on-page — open and click those normally."
+        )
+
     def _parse_response(self, content: str) -> LLMResponse:
         """Parse LLM response into structured format."""
         data = self._extract_json_object(content)
@@ -1588,13 +1664,16 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
                     fallback=data.get("fallback"),
                     verification_hint=data.get("verification_hint"),
                 )
-                
+
                 return LLMResponse(
                     tool_call=tool_call,
                     reasoning=data.get("reasoning"),
                     confidence=data.get("confidence", 1.0),
                     requires_escalation=data.get("confidence", 1.0) < 0.5,
                     estimated_completion=data.get("estimated_completion", 0.0),
+                    request_escalation=bool(data.get("request_escalation")),
+                    escalation_reason=data.get("escalation_reason"),
+                    hand_back_to_base=bool(data.get("hand_back_to_base")),
                 )
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 # Fallback parsing

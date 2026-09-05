@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     DOM_CLICK = "DOMClick"
     DOM_TYPE = "DomType"
     DOM_EXTRACT = "DOMExtract"
+    SELECT_OPTION = "SelectOption"
     NAVIGATE = "Navigate"
     GO_BACK = "GoBack"
     GO_FORWARD = "GoForward"
@@ -54,8 +55,10 @@ class LLMProvider(str, Enum):
     GEMINI = "gemini"
     CLAUDE = "claude"
     OPENAI = "openai"
-    # Fireworks OpenAI-compatible API (e.g. Kimi K2.6 — accounts/fireworks/models/kimi-k2p6)
+    # Fireworks OpenAI-compatible API (e.g. GLM 5.3 Flash — accounts/fireworks/models/glm-5p3-flash, or Kimi K2.6 — accounts/fireworks/models/kimi-k2p6)
     FIREWORKS_KIMI = "fireworks_kimi"
+    # xAI OpenAI-compatible API (grok-4.6) — used as the escalation/frontier brain
+    XAI = "xai"
     VLLM = "vllm"
     OLLAMA = "ollama"
 
@@ -86,6 +89,8 @@ class BrowserState:
     screenshot_hash: str
     timestamp: datetime
     ready_state: str = "complete"
+    dom_signature: str = ""  # Structural DOM fingerprint (no raw text) — see BrowserController._DOM_SIGNATURE_JS
+    dropdowns: List[str] = field(default_factory=list)  # Deterministic scan: likely dropdown controls (native selects + custom comboboxes)
     notes: List[str] = field(default_factory=list)  # Persistent knowledge base
     tabs: List[TabInfo] = field(default_factory=list)  # List of all open tabs
     dialogs: List[Dict[str, str]] = field(default_factory=list)  # Auto-handled browser dialogs since last capture
@@ -99,6 +104,8 @@ class BrowserState:
             "screenshot_hash": self.screenshot_hash,
             "timestamp": self.timestamp.isoformat(),
             "ready_state": self.ready_state,
+            "dom_signature": self.dom_signature,
+            "dropdowns": self.dropdowns,
             "notes": self.notes,
             "tabs": [
                 {"page_id": t.page_id, "url": t.url, "title": t.title}
@@ -204,7 +211,11 @@ class LLMResponse:
     confidence: float = 1.0
     requires_escalation: bool = False  # True if uncertain, needs more powerful model
     estimated_completion: float = 0.0  # 0-1, how close to goal
-    
+    request_escalation: bool = False  # Base brain asks for the frontier model on the NEXT step
+    escalation_reason: Optional[str] = None  # One-line why (required when request_escalation is true)
+    hand_back_to_base: bool = False  # Escalation brain: blocker resolved, return control to base
+    tier_used: Optional[str] = None  # Which tier actually produced this decision ("fast"/"medium"/"slow")
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "tool_call": {
@@ -217,6 +228,10 @@ class LLMResponse:
             "confidence": self.confidence,
             "requires_escalation": self.requires_escalation,
             "estimated_completion": self.estimated_completion,
+            "request_escalation": self.request_escalation,
+            "escalation_reason": self.escalation_reason,
+            "hand_back_to_base": self.hand_back_to_base,
+            "tier_used": self.tier_used,
         }
 
 

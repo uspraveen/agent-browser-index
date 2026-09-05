@@ -1,0 +1,1632 @@
+{
+  "workflow_id": "google_com_find_out_patel_bros_dallas_near_anjappar_restraunt_timing_success",
+  "name": "google-store-hours-near-landmark",
+  "domain": "google.com",
+  "intent": "Find a store's Sunday opening hours for the location nearest a given landmark restaurant via a single targeted Google search",
+  "task_signature": "google_com_find_out_patel_bros_dallas_near_anjappar_restraunt_timing",
+  "created_at": "2026-09-05T04:28:16.231118+00:00",
+  "updated_at": "2026-09-05T04:28:16.231118+00:00",
+  "success_count": 1,
+  "avg_runtime_seconds": null,
+  "summary": "Looks up business hours by navigating directly to a Google search URL that pairs the target store with the nearby landmark (e.g. 'Patel Brothers near Anjappar Dallas Sunday hours'). The results page AI Overview directly answers with the specific store's Sunday hours, address, and phone, which are then saved as a note. Reusable template: swap store name, landmark, city, and day.",
+  "route_strategy": "Skip the search box entirely; Navigate straight to https://www.google.com/search?q={encoded query}. Verify the results page shows an AI Overview / knowledge panel with the day's hours for the specific store, then extract and save the answer. Do not reproduce the generic first query or the wait loop from the source trace.",
+  "replay_instructions": {
+    "do": [
+      "Build one specific query combining store name + 'near' + landmark + city + day + 'hours' (e.g. 'Patel Brothers near Anjappar Dallas Sunday hours') and URL-encode it",
+      "Navigate directly to the Google search results URL instead of typing into the search box",
+      "After navigation, confirm the results page title matches the query and that an AI Overview or business panel shows the target day's hours",
+      "Extract the hours together with the store address and phone so the specific location is unambiguous",
+      "Save the answer as a note with the source query recorded",
+      "Preserve goal-specific target hints: find, out, patel, bros, dallas, near, anjappar, restraunt.",
+      "Prefer the observed successful final URL when it still matches the goal: https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours.",
+      "Patch: Issue the full pairing query in one shot: '<store> near <landmark> <city> <day> hours', navigating directly to the Google search URL.",
+      "Patch: Never chain waits when the page is loaded and the needed next action is known; proceed immediately to the next navigation or extraction step."
+    ],
+    "avoid": [
+      "Do not use a generic query like 'Patel Bros Dallas hours Sunday' — it returns multiple DFW locations and does not identify the one near the landmark (this caused the original stall)",
+      "Do not chain TimedWait steps while the page is already loaded (ready_state complete) — the source trace burned ~50 waits making no progress",
+      "Do not try to disambiguate the correct store from a generic multi-location results page; re-query with the landmark pairing instead",
+      "Do not replay source step 1: Initial TimedWait on about:blank with no observable effect.",
+      "Do not replay source step 2: Detour: generic query 'Patel Bros Dallas hours Sunday' returned multiple DFW locations and never identified the store near Anjappar.",
+      "Do not replay source step 3: TimedWait stall: steps 3–52 are ~50 consecutive 1s waits, all verification_status no_change, while the results page was already loaded; none moved toward the answer.",
+      "Avoid failure: Generic query 'Patel Bros Dallas hours Sunday' produced multi-location results that could not be tied to the Anjappar landmark, leading to a prolonged stall.",
+      "Avoid failure: Agent looped TimedWait ~50 times on an already-loaded page (ready_state complete) instead of acting."
+    ],
+    "checkpoints": [
+      "After the Navigate: results page loaded, title contains the query terms, and an AI Overview / hours panel for the specific store is visible",
+      "After extraction: saved note contains the day's hours plus address/phone for the location tied to the landmark",
+      "Target page title should resemble: [Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search.",
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "No AI Overview or hours panel appears for the specific store — hand back to the live agent to open the business listing",
+      "Results show conflicting hours for multiple similarly-named locations without landmark context",
+      "The results page requires interaction (consent wall, captcha) that the direct navigation did not anticipate",
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "template",
+  "quality": {
+    "usable": true,
+    "confidence": 0.8,
+    "generalization_level": "template",
+    "reason": "Successful answer came from a single specific Google search ('store near landmark + day + hours') whose AI Overview contained the Sunday hours; the generic first query caused a 50-step stall and is discarded. The query pattern is reusable as a template for any store-hours-near-landmark lookup."
+  },
+  "variables": [
+    {
+      "name": "search_query",
+      "default": "Patel Brothers near Anjappar Dallas Sunday hours",
+      "source": "goal",
+      "applies_to_source_steps": [
+        53
+      ]
+    },
+    {
+      "name": "sunday_hours",
+      "default": "10:30 AM to 8:50 PM",
+      "source": "live_read",
+      "applies_to_source_steps": [
+        54
+      ]
+    },
+    {
+      "name": "store_address",
+      "default": "1009 W Rochelle Rd, Irving, TX 75062",
+      "source": "live_read",
+      "applies_to_source_steps": [
+        54
+      ]
+    },
+    {
+      "name": "store_phone",
+      "default": "(972) 570-2504",
+      "source": "live_read",
+      "applies_to_source_steps": [
+        54
+      ]
+    }
+  ],
+  "acceptance_criteria": {
+    "must_match": [
+      "Google results page titled with the query terms (e.g. 'Patel Brothers near Anjappar Dallas Sunday hours - Google Search')",
+      "Visible 'Patel Brothers' business info with 'Sunday' hours",
+      "Answer note contains an hours range plus the store address"
+    ],
+    "reject": [
+      "Generic multi-location results page for 'Patel Bros Dallas hours Sunday' with no Anjappar pairing",
+      "Pages listing other Patel Brothers locations without the landmark context"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+    "final_title": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search",
+    "final_note": "Patel Brothers (Dallas area, near Anjappar restaurant location) — Sunday hours: 10:30 AM to 8:50 PM. Address: 1009 W Rochelle Rd, Irving, TX 75062 (near the former Anjappar area). Phone: (972) 570-2504. Source: Google search results AI Overview for 'Patel Brothers near Anjappar Dallas Sunday hours'.",
+    "note_source_step": 54
+  },
+  "source_run_dir": "runs\\20260904_231707",
+  "source_status": "success",
+  "indexer": {
+    "source": "llm",
+    "provider": "fireworks_kimi",
+    "model": "accounts/fireworks/models/glm-5p3-flash",
+    "version": "cosmic_run_indexer_v2"
+  },
+  "discarded_steps": [
+    {
+      "source_step": 1,
+      "reason": "Initial TimedWait on about:blank with no observable effect"
+    },
+    {
+      "source_step": 2,
+      "reason": "Detour: generic query 'Patel Bros Dallas hours Sunday' returned multiple DFW locations and never identified the store near Anjappar"
+    },
+    {
+      "source_step": 3,
+      "reason": "TimedWait stall: steps 3–52 are ~50 consecutive 1s waits, all verification_status no_change, while the results page was already loaded; none moved toward the answer"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": false,
+      "discarded_reason": "Initial TimedWait on about:blank with no observable effect",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": false,
+      "discarded_reason": "Detour: generic query 'Patel Bros Dallas hours Sunday' returned multiple DFW locations and never identified the store near Anjappar",
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday",
+      "parameters": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": false,
+      "discarded_reason": "TimedWait stall: steps 3–52 are ~50 consecutive 1s waits, all verification_status no_change, while the results page was already loaded; none moved toward the answer",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 12,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 13,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 14,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 15,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 16,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 17,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 18,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 19,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 20,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 21,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 22,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 23,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 24,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 25,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 26,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 27,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 28,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 29,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 30,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 31,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 32,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 33,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 34,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 35,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 36,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 37,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 38,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 39,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 40,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 41,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 42,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 43,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 44,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 45,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 46,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 47,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 48,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 49,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 50,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 51,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 52,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 53,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+      "parameters": {
+        "url": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+        "title": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+        "title": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 54,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Saved note (89 tokens)",
+      "parameters": {
+        "note": "Patel Brothers (Dallas area, near Anjappar restaurant location) — Sunday hours: 10:30 AM to 8:50 PM. Address: 1009 W Rochelle Rd, Irving, TX 75062 (near the former Anjappar area). Phone: (972) 570-2504. Source: Google search results AI Overview for 'Patel Brothers near Anjappar Dallas Sunday hours'."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+        "title": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+        "title": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search",
+        "scroll_y": 0
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "google_com_state_001_tab_1_1_patel_bros_dallas_ho",
+      "name": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search",
+      "url_pattern": "https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+      "page_summary": "[Tab 1/1] Patel Bros Dallas hours Sunday - Google Search at https://www.google.com/search?q=Patel+Bros+Dallas+hours+Sunday&sei=25ebasydLMK0qtsP--SrsA0",
+      "visual_markers": [
+        "tab",
+        "patel",
+        "bros",
+        "dallas",
+        "hours",
+        "sunday",
+        "google",
+        "search",
+        "results",
+        "specific",
+        "pairing",
+        "query"
+      ],
+      "screenshot_path": "runs\\20260904_231707\\screenshots\\step_053.webp",
+      "screenshot_hash": "fe9f1f071918ffff"
+    },
+    {
+      "state_id": "google_com_state_002_tab_1_1_patel_brothers_near_",
+      "name": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search",
+      "url_pattern": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+      "page_summary": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search at https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+      "visual_markers": [
+        "tab",
+        "patel",
+        "brothers",
+        "near",
+        "anjappar",
+        "dallas",
+        "sunday",
+        "hours",
+        "google",
+        "search",
+        "note",
+        "capturing"
+      ],
+      "screenshot_path": "runs\\20260904_231707\\screenshots\\step_054.webp",
+      "screenshot_hash": "8eff0f183cffff07"
+    },
+    {
+      "state_id": "google_com_state_003_tab_1_1_patel_brothers_near_",
+      "name": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search",
+      "url_pattern": "https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+      "page_summary": "[Tab 1/1] Patel Brothers near Anjappar Dallas Sunday hours - Google Search at https://www.google.com/search?q=Patel+Brothers+near+Anjappar+Dallas+Sunday+hours",
+      "visual_markers": [
+        "tab",
+        "patel",
+        "brothers",
+        "near",
+        "anjappar",
+        "dallas",
+        "sunday",
+        "hours",
+        "google",
+        "search"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 53,
+      "source_evidence_steps": [
+        53
+      ],
+      "role": "open_target",
+      "from_state_id": "google_com_state_001_tab_1_1_patel_bros_dallas_ho",
+      "action_type": "Navigate",
+      "target_description": "Google search results for the specific pairing query 'Patel Brothers near Anjappar Dallas Sunday hours'",
+      "parameters_template": {
+        "url": "https://www.google.com/search?q={search_query url-encoded}"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Google results page loads with title matching the query and an AI Overview / business panel showing Sunday hours for the Patel Brothers near Anjappar",
+      "to_state_id": "google_com_state_002_tab_1_1_patel_brothers_near_",
+      "delay_ms": 900,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "parameterized",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_002",
+      "source_step": 54,
+      "source_evidence_steps": [
+        54
+      ],
+      "role": "extract_answer",
+      "from_state_id": "google_com_state_002_tab_1_1_patel_brothers_near_",
+      "action_type": "SaveNote",
+      "target_description": "Note capturing the specific store's Sunday hours, address, and phone as read live from the results AI Overview",
+      "parameters_template": {
+        "note": "Patel Brothers near Anjappar (Dallas area) — Sunday hours: {sunday_hours}. Address: {store_address}. Phone: {store_phone}. Source: Google search results for '{search_query}'."
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Note saved containing the Sunday hours range plus address and phone for the landmark-adjacent location",
+      "to_state_id": "google_com_state_003_tab_1_1_patel_brothers_near_",
+      "delay_ms": 900,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "parameterized",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "google.com",
+      "applies_to_source_step": 2,
+      "failure": "Generic query 'Patel Bros Dallas hours Sunday' produced multi-location results that could not be tied to the Anjappar landmark, leading to a prolonged stall",
+      "fix": "Issue the full pairing query in one shot: '<store> near <landmark> <city> <day> hours', navigating directly to the Google search URL",
+      "confidence": 0.9
+    },
+    {
+      "patch_id": "patch_indexer_002",
+      "domain": "google.com",
+      "applies_to_source_step": 3,
+      "failure": "Agent looped TimedWait ~50 times on an already-loaded page (ready_state complete) instead of acting",
+      "fix": "Never chain waits when the page is loaded and the needed next action is known; proceed immediately to the next navigation or extraction step",
+      "confidence": 0.95
+    }
+  ],
+  "user_preferences": []
+}

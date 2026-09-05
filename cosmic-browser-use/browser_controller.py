@@ -55,6 +55,160 @@ _SSO_PROVIDER_DOMAINS = {
     "github": ("github.com/login",),
 }
 
+# Structural DOM fingerprint captured with every BrowserState. Deliberately
+# excludes raw text (passwords/PII must not leak into logs or memory): input
+# values are represented only as length + polynomial checksum. Together with
+# URL/title/scroll/ready-state it lets verify_action distinguish "pixels
+# changed because an ad refreshed" from "the page actually changed" (focus
+# moved, input values changed, body shape changed) — and catches real changes
+# that pixels hide (masked password fields).
+_DOM_SIGNATURE_JS = """
+() => {
+  try {
+    const ae = document.activeElement;
+    const focus = ae && ae !== document.body ? String(ae.tagName || '') + (ae.id ? '#' + ae.id : '') : '';
+    let visibleInputs = 0;
+    let valueSig = '';
+    let selectSig = '';
+    // Collect inputs/selects from the light DOM AND open shadow roots.
+    const inputs = [];
+    const selects = [];
+    const walk = (root) => {
+      try {
+        root.querySelectorAll('input, textarea').forEach((el) => inputs.push(el));
+        root.querySelectorAll('select').forEach((el) => selects.push(el));
+        const hosts = root.querySelectorAll('*');
+        for (const el of hosts) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      } catch (e0) {}
+    };
+    walk(document);
+    try {
+      const limit = Math.min(inputs.length || 0, 80);
+      for (let i = 0; i < limit; i++) {
+        const el = inputs[i];
+        let r = null;
+        try { r = el.getBoundingClientRect(); } catch (e) { continue; }
+        if (!r || r.width <= 0 || r.height <= 0) continue;
+        visibleInputs++;
+        let v = '';
+        try { v = String(el.value == null ? '' : el.value); } catch (e2) { v = ''; }
+        v = v.trim();
+        if (v) {
+          let h = 0;
+          for (let j = 0; j < v.length; j++) { h = ((h * 31) + v.charCodeAt(j)) & 0x7fffffff; }
+          valueSig += '|' + v.length + ':' + h.toString(36);
+        }
+      }
+    } catch (e3) {}
+    try {
+      const slim = Math.min(selects.length || 0, 40);
+      for (let i = 0; i < slim; i++) {
+        const sel = selects[i];
+        let r = null;
+        try { r = sel.getBoundingClientRect(); } catch (e6) { continue; }
+        if (!r || r.width <= 0 || r.height <= 0) continue;
+        let v = '';
+        try { v = String(sel.value == null ? '' : sel.value); } catch (e8) { v = ''; }
+        let h = 0;
+        for (let j = 0; j < v.length; j++) { h = ((h * 31) + v.charCodeAt(j)) & 0x7fffffff; }
+        selectSig += '|' + (sel.selectedIndex >= 0 ? sel.selectedIndex : -1) + ':' + v.length + ':' + h.toString(36);
+      }
+    } catch (e8) {}
+    let bodyKids = -1;
+    try { bodyKids = document.body ? document.body.childElementCount : -1; } catch (e4) {}
+    let scrollH = -1;
+    try { scrollH = document.documentElement ? document.documentElement.scrollHeight : -1; } catch (e5) {}
+    return focus + '|' + bodyKids + '|' + visibleInputs + '|' + valueSig + '|' + selectSig + '|' + scrollH;
+  } catch (err) { return ''; }
+}
+"""
+# Deterministic dropdown detection, evaluated with every capture_state (DOM
+# mode only), once per frame (main frame + iframes). Native <select> option
+# popups render in the browser's OS UI layer, NOT in the page — they are
+# invisible to screenshots, which makes them a hard failure point for vision
+# grounding. This scan surfaces interactive dropdown-ish controls (native
+# selects with their option labels, plus custom combobox/haspopup widgets) so
+# the orchestrator can prefer DOM tools for them. Pierces open shadow roots;
+# bounded (max 8 items per frame) and cheap (single evaluate per frame).
+_DROPDOWN_SCAN_JS = """
+() => {
+  const out = [];
+  try {
+    const visible = (el) => {
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        if (r.bottom <= 0 || r.top >= (window.innerHeight || 100000)) return false;
+        const st = getComputedStyle(el);
+        return st.visibility !== 'hidden' && st.display !== 'none';
+      } catch (e) { return false; }
+    };
+    // Collect candidates from this root AND all open shadow roots.
+    const candidates = [];
+    const walk = (root) => {
+      try {
+        root.querySelectorAll('select, [role="combobox"], [role="listbox"], [aria-haspopup], [data-toggle="dropdown"], [class*="dropdown" i], [class*="select2" i], [class*="react-select" i], [class*="multiselect" i]').forEach((el) => candidates.push(el));
+        const hosts = root.querySelectorAll('*');
+        for (const el of hosts) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        }
+      } catch (e0) {}
+    };
+    walk(document);
+    const seen = new Set();
+    let customs = 0;
+    for (const el of candidates) {
+      if (out.length >= 8) break;
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      const tag = String(el.tagName || '').toLowerCase();
+      if (tag === 'select') {
+        if (el.disabled || !visible(el)) continue;
+        const count = el.options ? el.options.length : 0;
+        if (!count) continue;
+        const opts = [];
+        const lim = Math.min(count, 4);
+        for (let i = 0; i < lim; i++) {
+          const t = String(el.options[i].text || '').trim();
+          if (t) opts.push(t.slice(0, 40));
+        }
+        const idPart = el.id ? ('#' + el.id) : (el.name ? ('[name=' + el.name + ']') : '');
+        out.push('select' + idPart + (el.multiple ? '(multi)' : '') + ' (' + count + ' options' + (opts.length ? ': ' + opts.join(' | ') : '') + (count > 4 ? ' | ...' : '') + ')');
+      } else {
+        if (customs >= 4 || !visible(el)) continue;
+        const haspopup = el.getAttribute('aria-haspopup');
+        if (haspopup && !['listbox', 'menu', 'true', 'grid', 'tree'].includes(String(haspopup).toLowerCase())) continue;
+        if (el.closest && el.closest('select')) continue;
+        seen.add(el);
+        customs++;
+        const role = el.getAttribute('role') || '';
+        const expanded = el.getAttribute('aria-expanded');
+        let cls = '';
+        try { cls = String(el.className || '').trim(); } catch (e5) { cls = ''; }
+        let txt = '';
+        try { txt = (el.textContent || '').trim().slice(0, 40); } catch (e6) { txt = ''; }
+        out.push('custom dropdown <' + tag + (role ? ' role=' + role : '') + (cls ? ' class~' + cls.split(/\\s+/)[0] : '') + (expanded != null ? ' expanded=' + expanded : '') + (txt ? ' text="' + txt + '"' : '') + '>');
+      }
+    }
+    return JSON.stringify(out);
+  } catch (err) { return '[]'; }
+}
+"""
+
+# verification_hint grammar the verifier understands (key(value)). The
+# orchestrator prompt documents url_contains(...); the other keys are
+# supported symmetrically. Free-form hints (e.g. "answer_saved") do not match
+# the grammar and are ignored by the evaluator, matching legacy behavior.
+_SEMANTIC_HINT_RE = re.compile(
+    r"^\s*(url_contains|url_equals|title_contains|element_exists|element_visible)\s*\(\s*(.+?)\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+# Actions whose primary intended observable effect is a scroll-position change.
+_SCROLL_ACTION_TYPES = {ActionType.VISUAL_SCROLL}
+
 
 def _find_chrome_binary() -> Optional[str]:
     """Return path to the real Google Chrome binary, or None if not found."""
@@ -1259,20 +1413,41 @@ class BrowserController:
         This is the single chokepoint that protects every agent / MiMo
         consumer of screenshot bytes from ever seeing either overlay.
         Behavior is identical to `page.screenshot()` when both are off.
+
+        Resilience: ad-heavy pages repaint continuously (iframes, animations)
+        and starve Playwright's stable-frame wait, so a plain screenshot can
+        time out ("Page.screenshot: Timeout ... exceeded" right after fonts
+        load). Layered fallbacks keep a transient timeout from killing a run:
+          1. caller's exact kwargs
+          2. retry with animations disabled + bounded timeout
+          3. CDP Page.captureScreenshot via fast_screenshot (no stability gate)
         """
         page = self.page
         overlay = self.demo_overlay
         cursor = self.cursor_overlay
         demo_active = bool(overlay and overlay.enabled)
         cursor_active = bool(cursor and cursor.enabled)
-        if not demo_active and not cursor_active:
-            return await page.screenshot(**screenshot_kwargs)
         if demo_active:
             await overlay.hide_for_agent_capture(page)
         if cursor_active:
             await cursor.hide_for_agent_capture(page)
         try:
-            return await page.screenshot(**screenshot_kwargs)
+            # 1) Caller's exact kwargs.
+            try:
+                return await page.screenshot(**screenshot_kwargs)
+            except Exception:
+                pass
+            # 2) Animations disabled + bounded timeout.
+            retry_kwargs = dict(screenshot_kwargs)
+            retry_kwargs["animations"] = "disabled"
+            retry_kwargs.setdefault("timeout", 8000)
+            try:
+                return await page.screenshot(**retry_kwargs)
+            except Exception:
+                pass
+            # 3) CDP fast path — grabs the current frame, no font/stability wait.
+            quality = int(screenshot_kwargs.get("quality") or 50)
+            return await self.fast_screenshot(page, path=screenshot_kwargs.get("path"), quality=quality)
         finally:
             if demo_active:
                 await overlay.restore_after_agent_capture(page)
@@ -1335,6 +1510,19 @@ class BrowserController:
                     continue
                 return fallback
         return fallback
+
+    async def _safe_evaluate_frame(self, frame, js: str, fallback=None):
+        """Run frame.evaluate(), tolerating detached/cross-origin frames.
+
+        Used by the dropdown scan, which walks every frame — detached frames,
+        about:blank children, and navigation-in-progress frames fail softly
+        to the fallback instead of breaking the scan."""
+        if frame is None:
+            return fallback
+        try:
+            return await frame.evaluate(js)
+        except Exception:
+            return fallback
 
     async def _human_type(self, text: str) -> None:
         """Type text with human-like cadence when humanize is on.
@@ -1466,6 +1654,30 @@ class BrowserController:
         recent_dialogs = list(self._pending_dialogs)
         self._pending_dialogs.clear()
 
+        # Deterministic dropdown scan (DOM mode only): native <select> popups
+        # never render in screenshots, so surface candidates to the LLM.
+        # Scans the main frame AND iframes (embedded checkout forms), pierces
+        # open shadow roots, dedupes, caps at 8 entries.
+        dropdowns: list = []
+        if self.config.enable_dom_fallback:
+            for frame in self._frame_search_order():
+                raw = await self._safe_evaluate_frame(frame, _DROPDOWN_SCAN_JS, fallback="[]")
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else (raw or [])
+                except Exception:
+                    parsed = []
+                for item in parsed:
+                    if not item:
+                        continue
+                    entry = str(item)
+                    if frame is not self.page.main_frame:
+                        entry = f"[iframe: {(frame.url or '')[:60]}] {entry}"
+                    if entry not in dropdowns:
+                        dropdowns.append(entry)
+                if len(dropdowns) >= 8:
+                    break
+            dropdowns = dropdowns[:8]
+
         state = BrowserState(
             url=self.page.url,
             title=full_title,
@@ -1475,6 +1687,8 @@ class BrowserController:
             screenshot_hash=img_hash,
             timestamp=datetime.now(),
             ready_state=await self._safe_evaluate("document.readyState", fallback="complete"),
+            dom_signature=await self._safe_evaluate(_DOM_SIGNATURE_JS, fallback=""),
+            dropdowns=dropdowns,
             notes = list(self.notes),  # Shallow copy — prevents DeleteNote/EditNote from mutating historical states
             tabs = tabs_info,
             dialogs = recent_dialogs,
@@ -1507,7 +1721,7 @@ class BrowserController:
         try:
             if (
                 not self.config.enable_dom_fallback
-                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_TYPE, ActionType.DOM_EXTRACT}
+                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_TYPE, ActionType.DOM_EXTRACT, ActionType.SELECT_OPTION}
             ):
                 return ActionResult(
                     success=False,
@@ -1537,6 +1751,15 @@ class BrowserController:
                 )
             elif tool_call.action_type == ActionType.DOM_EXTRACT:
                 result = await self._dom_extract(tool_call.parameters["query"], tool_call.parameters.get("schema"), tool_call.parameters.get("max_results", 10))
+            elif tool_call.action_type == ActionType.SELECT_OPTION:
+                result = await self._dom_select(
+                    tool_call.parameters["selector"],
+                    value=tool_call.parameters.get("value"),
+                    label=tool_call.parameters.get("label"),
+                    index=tool_call.parameters.get("index"),
+                    values=tool_call.parameters.get("values"),
+                    labels=tool_call.parameters.get("labels"),
+                )
             elif tool_call.action_type == ActionType.NAVIGATE:
                 result = await self._navigate(tool_call.parameters["url"])
             elif tool_call.action_type == ActionType.GO_BACK:
@@ -2693,6 +2916,92 @@ class BrowserController:
             )
         except Exception as e: return ActionResult(success=False, action_type=ActionType.DOM_CLICK, description=f"Click {selector}", error=str(e))
 
+    async def _dom_select(
+        self,
+        selector: str,
+        value: Optional[str] = None,
+        label: Optional[str] = None,
+        index: Optional[int] = None,
+        values: Optional[List[str]] = None,
+        labels: Optional[List[str]] = None,
+    ) -> ActionResult:
+        """Select option(s) in a native <select> — the deterministic dropdown
+        primitive (native option popups are invisible to screenshots, so vision
+        cannot ground them). Mirrors _dom_click's frame-search structure:
+        main frame first, then iframes. Accepts value (option value), label
+        (visible option text), zero-based index, or values/labels lists for
+        <select multiple>; fires real change events, so JS-framework-controlled
+        selects update too."""
+        self.dom_calls += 1
+        await self._human_dwell_after_load()
+        if value is None and label is None and index is None and not values and not labels:
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SELECT_OPTION,
+                description=f"Select {selector}",
+                error="Provide one of: value, label, index, values (list for multi-select), or labels (list for multi-select).",
+            )
+        frames = self._frame_search_order()
+        try:
+            async def _try_select(frame):
+                loc = frame.locator(selector).first
+                if not await loc.is_visible():
+                    return None
+                if values:
+                    try:
+                        await loc.select_option(value=values, timeout=5000)
+                    except Exception:
+                        await loc.select_option(label=values, timeout=5000)
+                elif labels:
+                    try:
+                        await loc.select_option(label=labels, timeout=5000)
+                    except Exception:
+                        await loc.select_option(value=labels, timeout=5000)
+                elif value is not None:
+                    try:
+                        await loc.select_option(value=value, timeout=5000)
+                    except Exception:
+                        # Value didn't match — retry as a label (visible text).
+                        await loc.select_option(label=value, timeout=5000)
+                elif label is not None:
+                    try:
+                        await loc.select_option(label=str(label), timeout=5000)
+                    except Exception:
+                        await loc.select_option(value=label, timeout=5000)
+                else:
+                    await loc.select_option(index=int(index), timeout=5000)
+                chosen = await loc.evaluate(
+                    "el => (el.selectedOptions && el.selectedOptions[0] ? "
+                    "String(el.selectedOptions[0].text).trim() : String(el.value))"
+                )
+                box = await loc.bounding_box()
+                if box:
+                    await self.cursor_overlay.show_click(self.page, int(box["x"] + 20), int(box["y"] + box["height"] / 2))
+                return chosen
+            last_err: Optional[str] = "no visible <select> matched the selector in any frame"
+            for frame in frames:
+                try:
+                    chosen = await _try_select(frame)
+                except Exception as exc:
+                    last_err = str(exc) or repr(exc)
+                    continue
+                if chosen is not None:
+                    frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                    return ActionResult(
+                        success=True,
+                        action_type=ActionType.SELECT_OPTION,
+                        description=f"Selected option{frame_note}: {chosen}",
+                        output=f"selected={chosen}",
+                    )
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SELECT_OPTION,
+                description=f"Select {selector}",
+                error=f"Could not select in main frame or any iframe: {last_err}",
+            )
+        except Exception as e:
+            return ActionResult(success=False, action_type=ActionType.SELECT_OPTION, description=f"Select {selector}", error=str(e))
+
     async def _dom_type(self, selector: str, text: str, press_enter: bool = False) -> ActionResult:
         """Type into an element matched by a CSS/Playwright selector. Mirrors
         _dom_click's frame-search + tag-fallback structure, but types with
@@ -3315,20 +3624,146 @@ class BrowserController:
             return None
 
 
+    async def _evaluate_verification_hint(
+        self,
+        verification_hint: Optional[str],
+        after_state: BrowserState,
+    ) -> Optional[bool]:
+        """Evaluate a structured verification_hint against the post-action state.
+
+        Returns True/False for parseable, evaluable hints; None when the hint
+        is absent, free-form (not in the grammar), or cannot be evaluated —
+        in which case the caller falls back to structural evidence, exactly
+        like the legacy behavior. Never raises.
+        """
+        if not verification_hint:
+            return None
+        match = _SEMANTIC_HINT_RE.match(str(verification_hint).strip())
+        if not match:
+            return None
+        key = match.group(1).lower()
+        value = match.group(2).strip().strip("'\"")
+        if not value:
+            return None
+        after_url = (after_state.url or "").lower()
+        if key == "url_contains":
+            return value.lower() in after_url
+        if key == "url_equals":
+            return (after_state.url or "").rstrip("/") == value.rstrip("/")
+        if key == "title_contains":
+            return value.lower() in (after_state.title or "").lower()
+        if key in ("element_exists", "element_visible"):
+            return await self._hint_selector_visible(value)
+        return None
+
+    async def _hint_selector_visible(self, selector: str) -> Optional[bool]:
+        """Best-effort main-frame check that a CSS selector matches a visible element.
+
+        Returns True/False, or None when the selector is invalid CSS, the
+        selector check cannot run, or no page is available. The selector is
+        passed to evaluate() as an argument, never interpolated into JS source.
+        """
+        if not self.page:
+            return None
+        js = """
+        (sel) => {
+          let el = null;
+          try { el = document.querySelector(sel); } catch (e) { return 'invalid'; }
+          if (!el) return false;
+          try {
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return false;
+            const st = getComputedStyle(el);
+            if (st.visibility === 'hidden' || st.display === 'none') return false;
+            return true;
+          } catch (e) { return false; }
+        }
+        """
+        js_result = None
+        for attempt in range(2):
+            try:
+                js_result = await self.page.evaluate(js, selector)
+                break
+            except Exception as e:
+                if attempt == 0 and ("context" in str(e).lower() or "execution" in str(e).lower()):
+                    try:
+                        await self.page.wait_for_load_state("domcontentloaded", timeout=8000)
+                    except Exception:
+                        pass
+                    continue
+                return None
+        if js_result is None:
+            return None
+        if js_result == "invalid":
+            return None
+        return bool(js_result)
+
     async def verify_action(
         self,
         before_state: BrowserState,
         after_state: BrowserState,
         verification_hint: Optional[str],
         action_description: Optional[str] = None,
+        action_type: Optional[ActionType] = None,
     ) -> Tuple[VerificationStatus, float]:
-        if before_state.screenshot_hash == after_state.screenshot_hash:
+        """Layered, deterministic verification of whether an action changed the
+        page into the state it intended.
+
+        Evidence layers (cheapest first):
+          1. Screenshot hash (pixels) — necessary, but fooled by ad refreshes,
+             spinners, and animations, which change pixels without the page
+             actually moving.
+          2. Semantic state diff: URL, title, open tabs, auto-handled dialogs,
+             ready state, scroll position.
+          3. Structural DOM signature diff (focus, body shape, visible input
+             count, value fingerprints — never raw text) — catches changes
+             pixels hide (e.g. typed text in masked/password fields) and
+             filters changes pixels invent (ad refreshes).
+          4. Structured verification_hint from the orchestrator, e.g.
+             url_contains('/checkout'), title_contains('Inbox'),
+             element_exists('#submit'), element_visible('.results').
+
+        Status semantics:
+        - SUCCESS: structural/semantic evidence confirms the page moved.
+        - INCOMPLETE: the page changed only in pixels while the DOM signature
+          shows no structural change (likely ad/spinner/animation), the page
+          did not scroll when a scroll was requested, or a semantic hint
+          evaluated false. Deliberately NOT reported as SUCCESS so COSMIC
+          memory does not index unverifiable steps as gold-path actions.
+        - NO_CHANGE: nothing observable happened at all.
+        - WRONG_STATE: decisive negative (e.g. wrong SSO provider landed).
+
+        Backwards compatible: BrowserStates without a DOM signature (old
+        checkpoints/replays, or pages where the signature could not be
+        evaluated) fall back to the legacy hash-only decision, and unparseable
+        hints are ignored.
+        """
+        if before_state is None or after_state is None:
+            return VerificationStatus.ERROR, 0.0
+
+        url_changed = (before_state.url or "") != (after_state.url or "")
+        title_changed = (before_state.title or "") != (after_state.title or "")
+        tabs_before = [(t.page_id, t.url) for t in (before_state.tabs or [])]
+        tabs_after = [(t.page_id, t.url) for t in (after_state.tabs or [])]
+        tabs_changed = tabs_before != tabs_after
+        dialogs_appeared = bool(after_state.dialogs) and not before_state.dialogs
+        scroll_delta = abs((after_state.scroll_y or 0) - (before_state.scroll_y or 0))
+        ready_changed = (before_state.ready_state or "") != (after_state.ready_state or "")
+        pixels_changed = before_state.screenshot_hash != after_state.screenshot_hash
+        dom_signatures_usable = bool(before_state.dom_signature) and bool(after_state.dom_signature)
+        dom_changed = dom_signatures_usable and before_state.dom_signature != after_state.dom_signature
+        structural_evidence = (
+            url_changed or title_changed or tabs_changed or dialogs_appeared
+            or ready_changed or dom_changed
+        )
+
+        # 1. Nothing observable happened: pixels, DOM, URL, and scroll identical.
+        if not pixels_changed and not structural_evidence and scroll_delta < 5:
             return VerificationStatus.NO_CHANGE, 0.0
 
-        # Wrong-SSO-provider detection: a click described as targeting one
-        # provider (e.g. "Continue with Google button") that lands on a
-        # DIFFERENT provider's auth domain picked the wrong element — the
-        # page did change, but not into the state the action intended.
+        # 2. Wrong-SSO-provider detection (unchanged, decisive). A click
+        # described as targeting one provider that lands on a DIFFERENT
+        # provider's auth domain picked the wrong element.
         if action_description:
             desc_lower = action_description.lower()
             after_url_lower = (after_state.url or "").lower()
@@ -3341,7 +3776,35 @@ class BrowserController:
                 if landed and landed != mentioned:
                     return VerificationStatus.WRONG_STATE, 1.0
 
-        return VerificationStatus.SUCCESS, 1.0
+        # 3. Scroll actions: scroll position IS the intended effect. Pixels
+        # moving while the page stays put is almost always an ad refresh.
+        if action_type in _SCROLL_ACTION_TYPES:
+            if scroll_delta >= 5:
+                return VerificationStatus.SUCCESS, 1.0
+            return VerificationStatus.INCOMPLETE, 0.5
+
+        # 4. Structured semantic hint (decisive when parseable and evaluated).
+        hint_result = await self._evaluate_verification_hint(verification_hint, after_state)
+        if hint_result is False:
+            return VerificationStatus.INCOMPLETE, 0.5
+
+        # 5. Structural evidence (URL/title/tabs/dialogs/ready-state/DOM
+        # signature) confirms the page actually moved.
+        if structural_evidence:
+            return VerificationStatus.SUCCESS, 1.0
+        if hint_result is True:
+            return VerificationStatus.SUCCESS, 1.0
+
+        # 6. Pixels changed but nothing structural did — treat as cosmetic
+        # (ad refresh, spinner, animation) rather than success. When DOM
+        # signatures are unavailable (legacy states), preserve the old
+        # behavior and trust the pixel change.
+        if pixels_changed:
+            if dom_signatures_usable:
+                return VerificationStatus.INCOMPLETE, 0.5
+            return VerificationStatus.SUCCESS, 1.0
+
+        return VerificationStatus.NO_CHANGE, 0.0
 
     async def close(self):
         # In CDP mode, ask the agent Chrome to exit via the browser-level

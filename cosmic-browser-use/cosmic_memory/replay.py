@@ -565,7 +565,9 @@ async def execute_indexed_replay_plan(
             await asyncio.sleep(delay_ms / 1000.0)
 
         after_screenshot_path, after_screenshot_hash, after_state = await browser.capture_state(f"step_{step_num:03d}_indexed_after")
-        verification_status, change_score = await browser.verify_action(before_state, after_state, None)
+        verification_status, change_score = await browser.verify_action(
+            before_state, after_state, None, action_type=tool_call.action_type
+        )
         semantic_error = None
         if action_result.success:
             semantic_error = _replay_semantic_error(

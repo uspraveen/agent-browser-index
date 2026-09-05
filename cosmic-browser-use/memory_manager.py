@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from collections import deque
 from openai import OpenAI
-from cli_labels import display_provider_model
+from cli_labels import display_provider_model, resolve_fireworks_default_model
 
 from cosmic_types import Step, BrowserState, ActionResult, TaskConfig
 from cosmic_memory.coordinates import build_visual_index
@@ -60,15 +60,15 @@ class MemoryManager:
         self.total_tokens_saved: int = 0
         
         # Initialize compression LLM. It can use OpenAI Responses or Fireworks
-        # Kimi through the OpenAI-compatible chat-completions API.
+        # GLM/Kimi through the OpenAI-compatible chat-completions API.
         self.summary_provider = (summary_provider or os.getenv("SUMMARY_LLM_PROVIDER") or "openai").strip().lower()
         self.summary_model = (
             summary_model
             or os.getenv("SUMMARY_LLM_MODEL")
             or (
-                os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6")
+                resolve_fireworks_default_model()
                 if self.summary_provider in {"fireworks", "fireworks_kimi", "kimi"}
-                else "gpt-4o-mini"
+                else "gpt-5.6-luna"
             )
         ).strip().strip('"')
         self.summary_temperature = float(os.getenv("SUMMARY_LLM_TEMPERATURE", "0.1"))
@@ -80,7 +80,7 @@ class MemoryManager:
             base_url = (summary_api_base or os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1").rstrip("/")
             self.client = OpenAI(api_key=key, base_url=base_url) if key else None
             if not summary_model and not os.getenv("SUMMARY_LLM_MODEL"):
-                self.summary_model = os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6").strip().strip('"')
+                self.summary_model = resolve_fireworks_default_model().strip().strip('"')
         else:
             self.summary_provider = "openai"
             key = summary_api_key or api_key or os.getenv("OPENAI_API_KEY")
@@ -382,7 +382,7 @@ this JSON object (no other text):
             "input": prompt,
         }
         if self.summary_model.startswith("gpt-5"):
-            request_kwargs["reasoning"] = {"effort": "medium"}
+            request_kwargs["reasoning"] = {"effort": os.getenv("SUMMARY_LLM_REASONING_EFFORT", "high")}
             request_kwargs["text"] = {"verbosity": "low"}
         response = self.client.responses.create(**request_kwargs)
         return str(response.output_text or "").strip()

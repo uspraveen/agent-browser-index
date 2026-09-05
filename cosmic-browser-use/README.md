@@ -9,7 +9,7 @@ This is the browser execution layer behind **COSMIC Browser Memory**. It runs as
 ## What This Project Is
 
 Cosmic Browser Use Agent is an autonomous web task runner that:
-- Decides actions with an LLM orchestrator (Fireworks Kimi by default).
+- Decides actions with an LLM orchestrator (Fireworks GLM 5.3 Flash by default; Kimi K2.6 opt-in).
 - Grounds visual targets on screenshots using **MiMo-VL-7B-RL**.
 - Executes atomic actions through Playwright (bundled Chromium or real Chrome via CDP).
 - Maintains layered in-run memory for long-running tasks.
@@ -20,12 +20,13 @@ It is designed for real browsing environments where DOM-only automation is britt
 ## Highlights
 
 - Vision-first control loop with screenshot-grounded actions.
+- Deterministic dropdown detection: native `<select>` popups are invisible to screenshots, so every capture scans for them (native selects + custom comboboxes, across iframes and open shadow roots) and prompts the agent to switch to DOM tools. The `SelectOption` tool sets options deterministically, and the workflow recorder captures human dropdown picks as `SelectOption` steps.
 - MiMo-VL-7B-RL visual grounding: screenshot + target description → pixel coordinate.
 - COSMIC traversal memory: page states, actions, visual indexes, failures, fixes, and replay checkpoints.
 - Indexed replay that can execute known actions without a fresh LLM/MiMo call per step.
 - Chrome profile support via CDP — seed logins from your real profile into a dedicated agent browser.
 - Human-driven workflow recording (`scripts/record_workflow.py`).
-- Multi-provider orchestration (OpenAI, Anthropic, Gemini, Fireworks Kimi).
+- Multi-provider orchestration (OpenAI, Anthropic, Gemini, Fireworks GLM/Kimi).
 - Optional Supermemory semantic recall (local workflow store is the source of truth).
 - Atomic tool model with robust recovery behavior.
 - Memory compression + rolling context window to keep long tasks stable.
@@ -206,6 +207,8 @@ Reads targeted ranges or full content.
 ### DOM / Navigation
 
 - `DOMClick(selector)`
+- `DomType(selector, text, press_enter)`
+- `SelectOption(selector, value|label|index)` - Select an option in a native `<select>` (deterministic; native popups are invisible to screenshots)
 - `DOMExtract(query, schema, max_results)`
 - `Navigate(url)`
 - `GoBack()`
@@ -246,6 +249,8 @@ This is the complete action enum the LLM can return, with execution path:
 | `VisualScroll` | `browser_controller.execute_tool -> _visual_scroll` | Directional scroll/top/bottom logic. |
 | `VisualHover` | `browser_controller.execute_tool -> _visual_hover` | Hover without click. |
 | `DOMClick` | `browser_controller.execute_tool -> _dom_click` | CSS selector click fallback. |
+| `DomType` | `browser_controller.execute_tool -> _dom_type` | CSS-selector typing with real keyboard events. |
+| `SelectOption` | `browser_controller.execute_tool -> _dom_select` | Deterministic native `<select>` option selection (value/label/index, `values`/`labels` lists for multi-selects), iframe- and shadow-DOM-aware, fires real change events. |
 | `DOMExtract` | `browser_controller.execute_tool -> _dom_extract` | Structured text/data extraction. |
 | `Navigate` | `browser_controller.execute_tool -> _navigate` | Tab navigation to URL. |
 | `GoBack` | `browser_controller.execute_tool -> _go_back` | Browser history back. |
@@ -358,9 +363,21 @@ python main.py --help
 | `--restore-tabs` | flag | off | Best-effort reopen URLs from your live profile's session. |
 | `--ask-user-bridge-url` | str | `None` | HTTP bridge for `AskUser` in non-interactive environments. |
 
-### Fireworks Kimi Provider
+### Fireworks Provider
 
-Use `--provider fireworks_kimi` for the Fireworks-hosted Kimi K2.6 path.
+`--provider fireworks_kimi` is the Fireworks OpenAI-compatible path (aliases: `fireworks`, `glm`, `kimi`).
+
+Default brain model: **GLM 5.3 Flash** (`accounts/fireworks/models/glm-5p3-flash`) — 1040k-token context window, function calling, image input.
+
+Kimi K2.6 (`accounts/fireworks/models/kimi-k2p6`) remains available as an opt-in:
+
+```powershell
+# Per-run override:
+python main.py --provider fireworks_kimi --fast-model accounts/fireworks/models/kimi-k2p6 --slow-model accounts/fireworks/models/kimi-k2p6 --goal "..."
+
+# Or via env:
+FIREWORKS_DEFAULT_MODEL=accounts/fireworks/models/kimi-k2p6
+```
 
 ```powershell
 python main.py --provider fireworks_kimi --goal "..."
@@ -416,10 +433,10 @@ async def run():
         tier=LLMTier.SLOW,
     )
 
-    # Fireworks Kimi (OpenAI-compatible endpoint):
+    # Fireworks GLM 5.3 Flash (default; Kimi K2.6 opt-in) (OpenAI-compatible endpoint):
     # fast_fw = LLMConfig(
     #     provider=LLMProvider.FIREWORKS_KIMI,
-    #     model_id="accounts/fireworks/models/kimi-k2p6",
+    #     model_id="accounts/fireworks/models/glm-5p3-flash",
     #     api_key=os.environ["FIREWORKS_API_KEY"],
     #     api_base="https://api.fireworks.ai/inference/v1",
     #     tier=LLMTier.FAST,
@@ -490,15 +507,14 @@ Configure at minimum `FIREWORKS_API_KEY` and `MIMO_API_URL` in `.env`. See `.env
 ## Current Gaps
 
 - No automated test suite (`pytest` reports no tests).
-- `verify_action` validates by screenshot hash change only (no deep semantic verification yet).
+- `verify_action` validates with layered deterministic evidence: screenshot hash, semantic state diff (URL/title/tabs/dialogs/scroll/ready-state), a structural DOM signature (no raw text — no PII leak), and optional structured `verification_hint`s (`url_contains(...)`, `title_contains(...)`, `element_exists(...)`, `element_visible(...)`). Pixel-only changes (ads/spinners) verify as `incomplete` instead of `success`, and `no_change` steps are excluded from COSMIC gold paths.
 - Replay is best-effort — sites change; COSMIC checkpoints and falls back to live vision when confidence drops.
 
 ## Recommended Next Steps
 
 1. Keep all API keys in environment variables or a secret manager.
 2. Add smoke + regression tests for tool dispatch, memory policy, and replay.
-3. Add semantic verification (URL/title/selectors) on top of screenshot hash checks.
-4. Pin `requirements.txt` to tested version ranges.
+3. Pin `requirements.txt` to tested version ranges.
 
 ## Further Reading
 

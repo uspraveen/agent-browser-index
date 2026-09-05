@@ -31,6 +31,9 @@ from cli_labels import (
     display_provider_model,
     display_stat_value,
     normalize_cli_provider_arg,
+    resolve_fireworks_default_model,
+    resolve_escalation_model,
+    XAI_BASE_URL,
 )
 from cosmic_memory.debug_log import CosmicDebugLogger
 from cosmic_memory.demo_overlay import DemoOverlayManager
@@ -511,11 +514,11 @@ async def run_task(
         or ("fireworks_kimi" if fast_model_config.provider == LLMProvider.FIREWORKS_KIMI else "openai")
     ).strip().lower()
     if summary_provider in {"fireworks", "fireworks_kimi", "kimi"}:
-        summary_model = os.getenv("SUMMARY_LLM_MODEL") or os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6")
+        summary_model = os.getenv("SUMMARY_LLM_MODEL") or resolve_fireworks_default_model()
         summary_api_key = os.getenv("FIREWORKS_API_KEY") or os.getenv("SLIDE_AGENT_FIREWORKS_API_KEY")
         summary_api_base = os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1"
     else:
-        summary_model = os.getenv("SUMMARY_LLM_MODEL", "gpt-4o-mini")
+        summary_model = os.getenv("SUMMARY_LLM_MODEL", "gpt-5.6-luna")
         summary_api_key = os.getenv("OPENAI_API_KEY")
         summary_api_base = None
 
@@ -697,6 +700,9 @@ async def run_task(
     
     # Main loop
     previous_confidence = 1.0
+    pending_escalation = False  # set when the base brain requests the frontier model
+    escalation_hold = 0  # consecutive frontier steps remaining (sticky escalation budget)
+    escalation_cooldown = 0  # steps forced back onto the base brain after a frontier handback
     checkpoint_path = None
     task_status = "incomplete"
     last_visible_answer_governor_step = 0
@@ -858,11 +864,31 @@ async def run_task(
                     )
 
             if llm_response is None:
+                force_tier = None
+                if pending_escalation:
+                    # Base brain asked for help — give the frontier a small
+                    # budget of consecutive steps to resolve the blocker.
+                    force_tier = LLMTier.SLOW
+                    escalation_hold = 3
+                    pending_escalation = False
+                elif escalation_hold > 0:
+                    # Sticky: the frontier brain is mid-recovery.
+                    force_tier = LLMTier.SLOW
+                elif escalation_cooldown > 0:
+                    # Frontier handed back — the base brain gets a fair chance
+                    # before deterministic triggers may escalate again.
+                    force_tier = LLMTier.FAST
                 llm_response = await orchestrator.decide_action(
                     context=context,
                     screenshot_base64=screenshot_b64,
                     previous_confidence=previous_confidence,
+                    force_tier=force_tier,
                 )
+                if llm_response.tier_used == "slow" and escalation_hold > 0:
+                    escalation_hold -= 1
+                if llm_response.tier_used == "fast" and escalation_cooldown > 0:
+                    escalation_cooldown -= 1
+                pending_escalation = False
             llm_time_ms = (time.time() - llm_start) * 1000
 
             # Live overlay: count this LLM-driven step. Replay-mode steps run
@@ -885,7 +911,17 @@ async def run_task(
             print(f"   Confidence: {llm_response.confidence:.2f}")
             print(f"   Progress: {llm_response.estimated_completion:.0%}")
             print(f"   ⏱️  LLM time: {llm_time_ms:.0f}ms")
-            
+
+            if getattr(llm_response, "request_escalation", False):
+                pending_escalation = True
+                reason = (llm_response.escalation_reason or "base brain stuck").strip()
+                print(f"   ⏫ Base brain requested escalation for the next step: {reason[:120]}")
+
+            if llm_response.tier_used == "slow" and getattr(llm_response, "hand_back_to_base", False):
+                escalation_hold = 0
+                escalation_cooldown = 3
+                print("   ⏬ Frontier brain reports the blocker is resolved — handing back to the base brain.")
+
             if llm_response.reasoning:
                 print(f"   Reasoning: {llm_response.reasoning[:150]}...")
             cosmic_log.step(
@@ -922,6 +958,32 @@ async def run_task(
                         error=str(e),
                         execution_time_ms=(time.time() - execution_start) * 1000
                     )
+
+            # TimedWait circuit breaker: two consecutive waits that verified
+            # no_change/incomplete means waiting is not the path forward.
+            # Refuse a third so the model must take a real action — the failed
+            # result (and its error text) becomes the teaching observation.
+            if (
+                llm_response.tool_call.action_type == ActionType.TIMED_WAIT
+                and len(memory.steps) >= 2
+                and all(
+                    s.action
+                    and s.action.action_type == ActionType.TIMED_WAIT
+                    and s.action.verification_status in (VerificationStatus.NO_CHANGE, VerificationStatus.INCOMPLETE)
+                    for s in memory.steps[-2:]
+                )
+            ):
+                action_result = ActionResult(
+                    success=False,
+                    action_type=ActionType.TIMED_WAIT,
+                    description="TimedWait refused",
+                    error=(
+                        "Two consecutive TimedWaits already produced no change. Waiting again is blocked — "
+                        "take a real action now: Navigate to a more specific search URL, click/type into the "
+                        "page, DOMExtract the visible data, or SaveNote what you already have."
+                    ),
+                    execution_time_ms=0,
+                )
 
             # Normal execution
             if not action_result:
@@ -961,18 +1023,51 @@ async def run_task(
                 verification_time_ms = (time.time() - verification_start) * 1000
             else:
                 await asyncio.sleep(0.5)
-                after_screenshot_path, after_screenshot_hash, new_browser_state = await browser.capture_state(f"step_{step_num:03d}_after")
-                verification_status, change_score = await browser.verify_action(
-                    before_state=browser_state,
-                    after_state=new_browser_state,
-                    verification_hint=llm_response.tool_call.verification_hint,
-                    action_description=action_result.description,
-                )
+                try:
+                    after_screenshot_path, after_screenshot_hash, new_browser_state = await browser.capture_state(f"step_{step_num:03d}_after")
+                    verification_status, change_score = await browser.verify_action(
+                        before_state=browser_state,
+                        after_state=new_browser_state,
+                        verification_hint=llm_response.tool_call.verification_hint,
+                        action_description=action_result.description,
+                        action_type=llm_response.tool_call.action_type,
+                    )
+                except Exception as capture_err:
+                    # The action already executed — a broken after-capture must
+                    # not lose the whole run. Record the step against the last
+                    # known state with an honest ERROR verification and move on.
+                    print(f"⚠️  After-state capture failed ({capture_err}); recording step with last-known state and continuing.")
+                    after_screenshot_path = screenshot_path
+                    after_screenshot_hash = screenshot_hash
+                    new_browser_state = browser_state
+                    verification_status = VerificationStatus.ERROR
+                    change_score = 0.0
                 verification_time_ms = (time.time() - verification_start) * 1000
             
             action_result.verification_status = verification_status
             action_result.state_change_score = change_score
             action_result.estimated_completion = llm_response.estimated_completion
+
+            # Auto-de-escalation: when the frontier brain's step verifies
+            # success, the blocker it was summoned for is gone — hand control
+            # back to the base brain (with a short cooldown so it gets a fair
+            # chance before triggers may escalate again).
+            if (
+                llm_response.tier_used == "slow"
+                and verification_status == VerificationStatus.SUCCESS
+                and (escalation_hold > 0 or escalation_cooldown == 0)
+            ):
+                escalation_hold = 0
+                escalation_cooldown = 2
+                print("   ⏬ Frontier step verified success — handing control back to the base brain.")
+
+            # Escalation episode discipline: if the frontier brain's step did
+            # NOT verify success, the base brain must take a step before the
+            # deterministic triggers may escalate again. Without this, a failing
+            # escalation re-triggers itself forever (observed as 40+ straight
+            # escalated steps on one stuck page).
+            if llm_response.tier_used == "slow" and verification_status != VerificationStatus.SUCCESS:
+                escalation_cooldown = max(escalation_cooldown, 1)
             
             print(f"\n✅ Verification:")
             print(f"   Status: {verification_status.value}")
@@ -1394,32 +1489,75 @@ async def main():
             )
             sys.exit(1)
         base_url = (os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1").rstrip("/")
-        default_model = os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6").strip()
+        default_model = resolve_fireworks_default_model()
+        # Two-brain design: base brain (GLM 5.3 Flash on Fireworks) handles every
+        # routine step; the escalation brain (frontier model on xAI) takes over
+        # only on strong stuck-signals (see Orchestrator._select_tier) or when
+        # the base brain itself requests escalation.
         fast_model = (args.fast_model or os.getenv("FIREWORKS_FAST_MODEL") or default_model).strip()
-        slow_model = (args.slow_model or os.getenv("FIREWORKS_SLOW_MODEL") or default_model).strip()
         default_temp = float(os.getenv("FIREWORKS_TEMPERATURE", "0.2"))
-        max_fast = int(os.getenv("FIREWORKS_FAST_MAX_TOKENS", "1024"))
-        max_slow = int(os.getenv("FIREWORKS_SLOW_MAX_TOKENS", "2048"))
+        # Headroom for reasoning-style models (GLM/Kimi emit thinking before the
+        # action JSON): reasoning tokens count toward max_tokens, so generous
+        # limits prevent truncated tool calls. Timeouts are env-tunable.
+        max_fast = int(os.getenv("FIREWORKS_FAST_MAX_TOKENS", "2048"))
+        max_slow = int(os.getenv("FIREWORKS_SLOW_MAX_TOKENS", "4096"))
+        fast_timeout_ms = int(os.getenv("FIREWORKS_FAST_TIMEOUT_MS", "30000"))
+        slow_timeout_ms = int(os.getenv("FIREWORKS_SLOW_TIMEOUT_MS", "90000"))
         fast_config = LLMConfig(
             provider=LLMProvider.FIREWORKS_KIMI,
             model_id=fast_model,
             api_key=api_key,
             api_base=base_url,
             tier=LLMTier.FAST,
-            timeout_ms=15000,
+            timeout_ms=fast_timeout_ms,
             max_tokens=max_fast,
             temperature=args.temperature if args.temperature is not None else default_temp,
         )
-        slow_config = LLMConfig(
-            provider=LLMProvider.FIREWORKS_KIMI,
-            model_id=slow_model,
-            api_key=api_key,
-            api_base=base_url,
-            tier=LLMTier.SLOW,
-            timeout_ms=90000,
-            max_tokens=max_slow,
-            temperature=args.temperature if args.temperature is not None else default_temp,
-        )
+
+        # Escalation brain: frontier model (default: grok-4.6 on xAI).
+        # A Fireworks-style --slow-model override stays on Fireworks; anything
+        # else runs on xAI. Without an xAI key, escalation degrades gracefully.
+        escalation_model = (args.slow_model or os.getenv("ESCALATION_MODEL") or resolve_escalation_model()).strip()
+        if "fireworks" in escalation_model or "kimi" in escalation_model:
+            slow_config = LLMConfig(
+                provider=LLMProvider.FIREWORKS_KIMI,
+                model_id=escalation_model,
+                api_key=api_key,
+                api_base=base_url,
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=max_slow,
+                temperature=args.temperature if args.temperature is not None else default_temp,
+            )
+            print(f"Escalation brain: fireworks:{escalation_model}")
+        elif (xai_key := (os.getenv("XAI_API_KEY") or "").strip()):
+            escalation_base = (os.getenv("XAI_BASE_URL") or XAI_BASE_URL).rstrip("/")
+            slow_config = LLMConfig(
+                provider=LLMProvider.XAI,
+                model_id=escalation_model,
+                api_key=xai_key,
+                api_base=escalation_base,
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=max_slow,
+                temperature=args.temperature if args.temperature is not None else default_temp,
+            )
+            print(f"Escalation brain: xai:{escalation_model}")
+        else:
+            # No xAI key — degrade gracefully: escalation falls back to the base
+            # brain with a longer timeout and bigger output budget. The run still
+            # works; stuck-signal escalation just loses the frontier boost.
+            print("⚠️  XAI_API_KEY not set — escalation tier falls back to the base brain (longer timeout, bigger budget).")
+            slow_config = LLMConfig(
+                provider=LLMProvider.FIREWORKS_KIMI,
+                model_id=fast_model,
+                api_key=api_key,
+                api_base=base_url,
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=max_slow,
+                temperature=args.temperature if args.temperature is not None else default_temp,
+            )
 
     # 3. Pre-check MiMo Availability
     mimo_health_timeout = int(os.getenv("MIMO_HEALTH_TIMEOUT", "8"))

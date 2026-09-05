@@ -1,5 +1,34 @@
 [
   {
+    "workflow_id": "google_com_find_out_patel_bros_dallas_near_anjappar_restraunt_timing_success",
+    "name": "google-store-hours-near-landmark",
+    "domain": "google.com",
+    "intent": "Find a store's Sunday opening hours for the location nearest a given landmark restaurant via a single targeted Google search",
+    "intent_tokens": [
+      "find",
+      "store",
+      "sunday",
+      "opening",
+      "hours",
+      "location",
+      "nearest",
+      "given",
+      "landmark",
+      "restaurant",
+      "via",
+      "single",
+      "targeted",
+      "google",
+      "search"
+    ],
+    "task_signature": "google_com_find_out_patel_bros_dallas_near_anjappar_restraunt_timing",
+    "summary": "Looks up business hours by navigating directly to a Google search URL that pairs the target store with the nearby landmark (e.g. 'Patel Brothers near Anjappar Dallas Sunday hours'). The results page AI Overview directly answers with the specific store's Sunday hours, address, and phone, which are then saved as a note. Reusable template: swap store name, landmark, city, and day.",
+    "success_count": 1,
+    "step_count": 2,
+    "updated_at": "2026-09-05T04:28:16.231118+00:00",
+    "path": "data\\cosmic_memory\\workflows\\google_com_find_out_patel_bros_dallas_near_anjappar_restraunt_timing_success.json"
+  },
+  {
     "workflow_id": "linkedin_com_search_profile_linkedin_its_description_success",
     "name": "site: Search for a profile on linkedin and get its description",
     "domain": "linkedin.com",

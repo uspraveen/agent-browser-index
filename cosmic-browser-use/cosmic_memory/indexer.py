@@ -15,6 +15,8 @@ from openai import OpenAI
 from .coordinates import VISUAL_ACTIONS
 from .workflow_store import infer_domain, intent_tokens
 
+from cli_labels import FIREWORKS_DEFAULT_MODEL_ID
+
 
 INDEXER_VERSION = "cosmic_run_indexer_v2"
 
@@ -61,7 +63,7 @@ def _short(value: Any, limit: int = 360) -> str:
 class IndexerConfig:
     enabled: bool = True
     provider: str = "fireworks_kimi"
-    model: str = "accounts/fireworks/models/kimi-k2p6"
+    model: str = "accounts/fireworks/models/glm-5p3-flash"
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     temperature: float = 0.1
@@ -91,7 +93,7 @@ class WorkflowRunIndexer:
         provider = os.getenv("COSMIC_INDEXER_PROVIDER", "fireworks_kimi").strip().lower()
         enabled = os.getenv("COSMIC_INDEXER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
         if provider in {"fireworks", "fireworks_kimi", "kimi"}:
-            model = os.getenv("COSMIC_INDEXER_MODEL") or os.getenv("FIREWORKS_KIMI_MODEL", "accounts/fireworks/models/kimi-k2p6")
+            model = os.getenv("COSMIC_INDEXER_MODEL") or os.getenv("FIREWORKS_DEFAULT_MODEL") or FIREWORKS_DEFAULT_MODEL_ID
             api_key = os.getenv("COSMIC_INDEXER_API_KEY") or os.getenv("FIREWORKS_API_KEY") or os.getenv("SLIDE_AGENT_FIREWORKS_API_KEY")
             api_base = os.getenv("COSMIC_INDEXER_BASE_URL") or os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1"
             provider = "fireworks_kimi"
@@ -275,6 +277,8 @@ Rules:
 - Do not invent visual coordinates. Visual indexes are attached later from source_step only.
 - You may include synthetic Navigate actions only to URLs that appear in observed_urls or final.url.
 - Prefer gold-path steps that move toward final success. Discard wrong pages, retries, waits, failed clicks, and detours.
+- Treat verification_status as evidence: "no_change" steps had no observable effect and "incomplete" steps changed the page but the outcome could not be confirmed (pixels-only change, e.g. ads/spinners). Discard them from the gold path unless they are essential (e.g. read-only extraction immediately followed by the answer note).
+- SelectOption steps are deterministic native-dropdown selections (value/label/index, values/labels for multi-selects) — keep them in the gold path when they move toward the goal; they replay more reliably than any visual click on a dropdown control.
 - If the run found the right final page only through a detour, create a partial/template workflow with a checkpoint where the dynamic choice must be re-decided.
 - For dynamic web search results, keep search-box typing and checkpoint after results unless the trace contains a reliable correct-result click.
 - Put anti-detour guidance in workflow.replay_instructions.avoid and failure_patches so replay does not repeat the wrong path.
@@ -370,6 +374,13 @@ Rules:
 
             if not success:
                 discarded.append({"source_step": source_step, "reason": "failed action"})
+                continue
+            if str(row.get("verification_status") or "") == "no_change":
+                # The verifier confirmed nothing observable happened (pixels,
+                # DOM signature, URL, title, scroll all unchanged). Replaying
+                # such a click would be a wasted step at best, a mis-click at
+                # worst — it must not enter the gold path.
+                discarded.append({"source_step": source_step, "reason": "verified no_change — no observable effect"})
                 continue
             if action_type in {"TimedWait", "VisualWait", "Screenshot", "ReadHistory"}:
                 discarded.append({"source_step": source_step, "reason": "not useful for replay"})

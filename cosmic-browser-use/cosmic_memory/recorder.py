@@ -96,6 +96,14 @@ RECORDER_INIT_SCRIPT = r"""
   document.addEventListener('click', (ev) => {
     const el = ev.target;
     if (inOverlay(el)) return;
+    // A click on a native <select> (or its <option>, e.g. list-box multi-selects)
+    // only opens/toggles the OS popup — the meaningful, replayable action is the
+    // selection itself, which arrives as a 'select' change event. Recording the
+    // click too would produce a redundant DOMClick step that replays as a
+    // pointless popup toggle.
+    const clickTag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (clickTag === 'select' || clickTag === 'option') return;
+    if (el.closest && el.closest('select, option')) return;
     const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : {left: 0, top: 0, width: 0, height: 0};
     emit({
       type: 'click',
@@ -111,7 +119,21 @@ RECORDER_INIT_SCRIPT = r"""
     const el = ev.target;
     if (inOverlay(el)) return;
     const tag = el.tagName ? el.tagName.toLowerCase() : '';
-    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
+    if (tag === 'select') {
+      // Native dropdown selection — record it as a deterministic SelectOption
+      // step (value + visible label), not as typing into a control.
+      const opts = el.selectedOptions ? Array.from(el.selectedOptions) : [];
+      emit({
+        type: 'select',
+        selector: getSelector(el),
+        value: String(el.value || ''),
+        label: opts[0] ? String(opts[0].text || '').trim() : '',
+        values: el.multiple ? opts.map((o) => String(o.value)) : null,
+        labels: el.multiple ? opts.map((o) => String(o.text || '').trim()) : null,
+      });
+      return;
+    }
+    if (tag !== 'input' && tag !== 'textarea') return;
     const isPassword = (el.type || '').toLowerCase() === 'password';
     const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : {left: 0, top: 0, width: 0, height: 0};
     emit({
@@ -335,6 +357,28 @@ class WorkflowRecorder:
                     if before_state:
                         visual_index = build_visual_index(action, tool_call, before_state, screenshot_path)
                 await self._append_step(action, tool_call, before_state, screenshot_path, after_state, visual_index)
+
+            elif event_type == "select":
+                selector = payload.get("selector")
+                if not selector:
+                    return  # can't replay a selection without a target selector
+                params: Dict[str, Any] = {"selector": selector}
+                if payload.get("values"):
+                    params["values"] = payload.get("values")
+                elif payload.get("labels"):
+                    params["labels"] = payload.get("labels")
+                elif payload.get("label"):
+                    params["label"] = payload.get("label")
+                elif payload.get("value"):
+                    params["value"] = payload.get("value")
+                chosen = payload.get("label") or payload.get("value") or ""
+                action = ActionResult(
+                    success=True, action_type=ActionType.SELECT_OPTION,
+                    description=f"Selected '{chosen}' in {selector}",
+                    coordinates=(int(payload.get("x", 0)), int(payload.get("y", 0))),
+                )
+                tool_call = {"action_type": "SelectOption", "parameters": params}
+                await self._append_step(action, tool_call, before_state, screenshot_path, after_state)
 
             elif event_type == "input":
                 selector = payload.get("selector")
