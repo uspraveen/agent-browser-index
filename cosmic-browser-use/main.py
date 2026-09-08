@@ -23,6 +23,7 @@ from cosmic_types import (
 from memory_manager import MemoryManager
 from orchestrator import Orchestrator, reset_fireworks_http2_preference
 from browser_controller import BrowserController
+from credentials import CredentialStore
 from find_coordinates_mimo import check_mimo_health
 from cli_labels import (
     cli_allowed_provider_labels,
@@ -35,10 +36,10 @@ from cli_labels import (
     resolve_escalation_model,
     XAI_BASE_URL,
 )
-from cosmic_memory.debug_log import CosmicDebugLogger
-from cosmic_memory.demo_overlay import DemoOverlayManager
-from cosmic_memory.replay import execute_indexed_replay_plan
-from cosmic_memory.runtime import CosmicMemoryRuntime
+from browser_memory.debug_log import CosmicDebugLogger
+from browser_memory.demo_overlay import DemoOverlayManager
+from browser_memory.replay import execute_indexed_replay_plan
+from browser_memory.runtime import BrowserMemoryRuntime
 
 import os
 from dotenv import load_dotenv
@@ -408,7 +409,7 @@ async def run_task(
     ask_user_timeout: int = None,
     large_notes_path: str = None,
     memory_mode: str = "off",
-    memory_dir: str = "./data/cosmic_memory",
+    memory_dir: str = None,
     cosmic_user_id: str = "demo_user",
     cosmic_container_tag: str = "cosmic-hackathon-demo",
     supermemory_enabled: bool = True,
@@ -419,6 +420,8 @@ async def run_task(
     chrome_profile: str = None,
     restore_previous_tabs: bool = False,
     refresh_chrome_profile: bool = False,
+    credentials: Optional[Dict[str, Dict[str, str]]] = None,
+    step_callback=None,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -431,6 +434,26 @@ async def run_task(
     if interaction_mode not in {"hybrid", "vision"}:
         interaction_mode = "hybrid"
     enable_dom_fallback = interaction_mode != "vision"
+
+    # Per-run vault credentials (provisioned by the Cosmic orchestrator or the
+    # SDK caller). Values stay in memory only; the model learns just the
+    # domains they cover.
+    credential_store = CredentialStore()
+    if credentials:
+        if isinstance(credentials, str):
+            credentials = json.loads(credentials)
+        if isinstance(credentials, dict):
+            for site, values in credentials.items():
+                if isinstance(values, dict):
+                    credential_store.add(
+                        site,
+                        username=values.get("username", ""),
+                        password=values.get("password", ""),
+                        totp_seed=values.get("totp_seed", ""),
+                        notes=values.get("notes", ""),
+                        site_url=values.get("site_url", ""),
+                    )
+    credentials_available_for = tuple(credential_store.available_domains())
     """
     Run a browser automation task with comprehensive timing.
 
@@ -479,13 +502,17 @@ async def run_task(
         chrome_profile=resolved_chrome_profile,
         restore_previous_tabs=restore_previous_tabs,
         refresh_chrome_profile=refresh_chrome_profile,
+        credentials_available_for=credentials_available_for,
     )
     
     print(f"\n{'='*80}")
     print(f"COSMIC BROWSER USE AGENT - Task Started")
     print(f"{'='*80}")
     print(f"Goal: {goal}")
+    base_model_id = getattr(fast_model_config, "model_id", "?")
+    esc_model_id = getattr(slow_model_config, "model_id", "?") if slow_model_config else "?"
     print(f"Provider: {display_provider_label(fast_model_config.provider)}")
+    print(f"Base brain: {base_model_id} | Escalation brain: {esc_model_id}")
     print(f"Initial URL: {initial_url if initial_url else 'about:blank'}")
     print(f"Max steps: {max_steps}")
     print(f"Working directory: {working_dir}")
@@ -563,6 +590,7 @@ async def run_task(
         headless=headless,
         demo_overlay=demo_overlay,
         ask_user_handler=ask_user_handler,
+        credential_store=credential_store,
     )
 
     await browser.start(initial_url)
@@ -572,7 +600,7 @@ async def run_task(
     retrieved_memory = None
     replay_summary = None
     if memory_mode in {"learn", "recall", "auto"}:
-        cosmic_runtime = CosmicMemoryRuntime(
+        cosmic_runtime = BrowserMemoryRuntime(
             data_dir=memory_dir,
             user_id=cosmic_user_id,
             container_tag=cosmic_container_tag,
@@ -603,7 +631,7 @@ async def run_task(
             pulse_ms=1500,
             timeline_append={"kind": "recall", "label": "Supermemory recall"},
         )
-        probe_screenshot_path, _, probe_state = await browser.capture_state("cosmic_memory_probe")
+        probe_screenshot_path, _, probe_state = await browser.capture_state("browser_memory_probe")
         cosmic_log.memory(
             "recall.probe_state",
             screenshot_path=probe_screenshot_path,
@@ -705,6 +733,7 @@ async def run_task(
     escalation_cooldown = 0  # steps forced back onto the base brain after a frontier handback
     checkpoint_path = None
     task_status = "incomplete"
+    credentials_request = None
     last_visible_answer_governor_step = 0
     last_search_results_governor_step = 0
     last_credential_governor_step = 0
@@ -769,7 +798,7 @@ async def run_task(
             
             # 2. Check loop detection
             if memory.detect_loop():
-                print("\n⚠️  LOOP DETECTED - Escalating to slow model")
+                print("\n⚠️  Stuck-signal detected — escalating to the frontier brain")
                 previous_confidence = 0.0
             
             # 3. Get LLM decision
@@ -936,8 +965,24 @@ async def run_task(
             execution_start = time.time()
             action_result = None
             
+            # Parse failure: no action ran. Record a teachable error step so
+            # the model sees WHY nothing happened (the orchestrator already
+            # retried once with a format correction).
+            if getattr(llm_response, "parse_failed", False):
+                print("   ⚠️  Model reply was not valid JSON — no action executed.")
+                action_result = ActionResult(
+                    success=False,
+                    action_type=ActionType.PARSE_ERROR,
+                    description="Decision was not valid JSON",
+                    error=(
+                        "Your previous decision was not valid JSON, so no action ran. Respond with ONLY "
+                        "the JSON object per the output format (action_type, parameters, reasoning, "
+                        "confidence) — no prose, no markdown fences — and re-issue your intended action."
+                    ),
+                    execution_time_ms=(time.time() - execution_start) * 1000,
+                )
             # Special handling for ReadHistory
-            if llm_response.tool_call.action_type == ActionType.READ_HISTORY:
+            elif llm_response.tool_call.action_type == ActionType.READ_HISTORY:
                 try:
                     start_step = int(llm_response.tool_call.parameters.get("start_step", 1))
                     end_step = int(llm_response.tool_call.parameters.get("end_step", len(memory.steps)))
@@ -959,26 +1004,34 @@ async def run_task(
                         execution_time_ms=(time.time() - execution_start) * 1000
                     )
 
-            # TimedWait circuit breaker: two consecutive waits that verified
-            # no_change/incomplete means waiting is not the path forward.
-            # Refuse a third so the model must take a real action — the failed
-            # result (and its error text) becomes the teaching observation.
+            # TimedWait circuit breaker: waiting is not the path forward when
+            # recent steps show no progress. Hardened window — a stray failed
+            # non-wait action (e.g. a malformed click) does NOT reset the
+            # counter. Refuses the wait; the error text teaches the model.
+            recent_three = memory.steps[-3:]
+            timedwait_no_progress = sum(
+                1 for s in recent_three
+                if s.action
+                and s.action.action_type == ActionType.TIMED_WAIT
+                and s.action.verification_status in (VerificationStatus.NO_CHANGE, VerificationStatus.INCOMPLETE)
+            )
+            last_was_no_progress = bool(
+                memory.steps
+                and memory.steps[-1].action
+                and memory.steps[-1].action.verification_status in (VerificationStatus.NO_CHANGE, VerificationStatus.INCOMPLETE)
+            )
             if (
                 llm_response.tool_call.action_type == ActionType.TIMED_WAIT
-                and len(memory.steps) >= 2
-                and all(
-                    s.action
-                    and s.action.action_type == ActionType.TIMED_WAIT
-                    and s.action.verification_status in (VerificationStatus.NO_CHANGE, VerificationStatus.INCOMPLETE)
-                    for s in memory.steps[-2:]
-                )
+                and len(recent_three) >= 2
+                and timedwait_no_progress >= 2
+                and last_was_no_progress
             ):
                 action_result = ActionResult(
                     success=False,
                     action_type=ActionType.TIMED_WAIT,
                     description="TimedWait refused",
                     error=(
-                        "Two consecutive TimedWaits already produced no change. Waiting again is blocked — "
+                        "Recent waits already produced no change. Waiting again is blocked — "
                         "take a real action now: Navigate to a more specific search URL, click/type into the "
                         "page, DOMExtract the visible data, or SaveNote what you already have."
                     ),
@@ -1010,9 +1063,11 @@ async def run_task(
             verification_start = time.time()
             read_only_action_types = {
                 ActionType.DOM_EXTRACT,
+                ActionType.BATCH_EXTRACT,
                 ActionType.READ_HISTORY,
                 ActionType.LIST_LARGE_NOTES,
                 ActionType.SEARCH_LARGE_NOTES,
+                ActionType.PARSE_ERROR,
             }
             if action_result.action_type in read_only_action_types:
                 after_screenshot_path = screenshot_path
@@ -1111,6 +1166,27 @@ async def run_task(
                 visual_index=saved_step.visual_index if saved_step else None,
             )
 
+            # 8a. Progress hook (Cosmic orchestrator integration). Non-fatal by
+            # design — a broken consumer must never kill a run.
+            if step_callback is not None:
+                try:
+                    progress_info = {
+                        "step": step_num,
+                        "action_type": action_result.action_type.value if action_result else None,
+                        "description": action_result.description if action_result else "",
+                        "success": bool(action_result.success) if action_result else False,
+                        "error": action_result.error if action_result else None,
+                        "estimated_completion": llm_response.estimated_completion,
+                        "tier_used": llm_response.tier_used,
+                        "steps_taken": len(memory.steps),
+                        "max_steps": config.max_steps,
+                    }
+                    hook_result = step_callback(progress_info)
+                    if asyncio.iscoroutine(hook_result):
+                        await hook_result
+                except Exception as cb_err:
+                    print(f"⚠️  step_callback error (non-fatal): {cb_err}")
+
             # 8b. Compress history if due. Run synchronously (not as a
             # background task) — see compress_if_due's docstring for why:
             # firing it concurrently with the next step's own LLM call caused
@@ -1137,6 +1213,11 @@ async def run_task(
             
             # 11. Check completion
             # 11. Check completion
+            if action_result and action_result.action_type == ActionType.REQUEST_CREDENTIALS and action_result.success:
+                print("\n🔑 Credentials needed - ending run for orchestrator follow-up")
+                task_status = "credentials_needed"
+                credentials_request = action_result
+                break
             if llm_response.estimated_completion >= 0.95:
                 if action_result and action_result.success:
                     print("\n🎉 GOAL ACHIEVED - Task complete!")
@@ -1171,7 +1252,12 @@ async def run_task(
                 previous_confidence = 0.0  # Force escalation
                 
             if verification_status == VerificationStatus.ERROR:
-                if llm_response.confidence < 0.3:
+                if getattr(llm_response, "parse_failed", False):
+                    # A format failure is recoverable — the orchestrator
+                    # already retried once and the next step may parse fine.
+                    # Never abort the whole run for it.
+                    pass
+                elif llm_response.confidence < 0.3:
                     print("\n❌ CRITICAL ERROR - Manual intervention needed")
                     task_status = "failed"
                     break
@@ -1220,12 +1306,24 @@ async def run_task(
 
         if memory_mode in {"learn", "auto"} and cosmic_runtime:
             status = task_status if memory.steps else "empty"
-            workflow = cosmic_runtime.compile_run(
-                task=goal,
-                steps=memory.steps,
-                run_dir=str(working_dir),
-                status=status,
-            )
+            # compile_run blocks on two synchronous network calls (the indexer
+            # LLM and the Supermemory write — the latter has no SDK timeout).
+            # Run it off the event loop with a hard bound so end-of-run
+            # finalization can never freeze the process for a minute.
+            try:
+                workflow = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        cosmic_runtime.compile_run,
+                        task=goal,
+                        steps=memory.steps,
+                        run_dir=str(working_dir),
+                        status=status,
+                    ),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError:
+                print("⚠️  COSMIC indexing timed out after 120s — workflow not saved this run.")
+                workflow = None
             if workflow:
                 print(f"🧠 COSMIC workflow indexed: {workflow.get('workflow_id')}")
                 cosmic_log.memory(
@@ -1261,13 +1359,34 @@ async def run_task(
     
     return {
         "success": True,
+        "task_status": task_status,
         "steps_taken": len(memory.steps),
         "total_time_sec": total_duration_sec,
         "avg_time_per_step_sec": total_duration_sec / len(memory.steps) if memory.steps else 0,
         "checkpoint_path": str(checkpoint_path),
         "working_dir": str(working_dir),
         "cosmic_replay": replay_summary,
+        "final_answer": _extract_final_answer(memory),
+        "credentials_needed": credentials_request.output if credentials_request else None,
     }
+
+def _extract_final_answer(memory) -> str:
+    """Best-effort extraction of the run's final answer from saved notes.
+
+    Prefers the note the agent explicitly prefixed with 'FINAL ANSWER';
+    falls back to the most recent note.
+    """
+    try:
+        if not memory.steps:
+            return ""
+        last_state = memory.steps[-1].browser_state
+        final_notes = last_state.notes if last_state else []
+        if not final_notes:
+            return ""
+        preferred = [note for note in final_notes if "FINAL ANSWER" in note]
+        return str(preferred[-1] if preferred else final_notes[-1])
+    except Exception:
+        return ""
 
 def _print_chrome_profiles() -> None:
     """Print available Chrome profiles to stdout."""
@@ -1324,8 +1443,8 @@ async def main():
     parser.add_argument("--screenshot-quality", type=int, default=int(os.getenv("SCREENSHOT_QUALITY", "50")), help="Screenshot JPEG quality 1-100.")
     parser.add_argument("--ask-user-timeout", type=int, default=int(os.getenv("ASK_USER_TIMEOUT", "120")), help="Seconds to wait for user response.")
     parser.add_argument("--large-notes-path", type=str, default=None, help="Path to external large-notes JSONL file. Default: <run working dir>/large_notes.jsonl")
-    parser.add_argument("--memory-mode", type=str, choices=["off", "learn", "recall", "auto"], default=os.getenv("COSMIC_MEMORY_MODE", "off"), help="COSMIC traversal memory mode: off, learn, recall, or auto.")
-    parser.add_argument("--memory-dir", type=str, default=os.getenv("COSMIC_MEMORY_DIR", "./data/cosmic_memory"), help="Directory for local COSMIC workflow memory.")
+    parser.add_argument("--memory-mode", type=str, choices=["off", "learn", "recall", "auto"], default=os.getenv("BROWSER_MEMORY_MODE") or os.getenv("COSMIC_MEMORY_MODE", "off"), help="Browser traversal memory mode: off, learn, recall, or auto.")
+    parser.add_argument("--memory-dir", type=str, default=os.getenv("BROWSER_MEMORY_DIR") or os.getenv("COSMIC_MEMORY_DIR"), help="Directory for local browser workflow memory (default: ./data/browser_memory, adopts legacy ./data/cosmic_memory when present).")
     parser.add_argument("--cosmic-user-id", type=str, default=os.getenv("COSMIC_USER_ID", "demo_user"), help="User/container identity for COSMIC memory.")
     parser.add_argument("--cosmic-container-tag", type=str, default=os.getenv("COSMIC_CONTAINER_TAG", "cosmic-hackathon-demo"), help="Supermemory container tag for COSMIC memories.")
     parser.add_argument("--disable-supermemory", action="store_true", help="Use only local workflow memory; skip Supermemory reads/writes.")
@@ -1560,12 +1679,17 @@ async def main():
             )
 
     # 3. Pre-check MiMo Availability
-    mimo_health_timeout = int(os.getenv("MIMO_HEALTH_TIMEOUT", "8"))
+    # Modal cold starts boot vLLM after the first request connects — the read
+    # timeout must be long enough for the container to answer while booting,
+    # and the total budget long enough for a full cold boot (~20-60s).
+    mimo_health_timeout = int(os.getenv("MIMO_HEALTH_TIMEOUT", "25"))
+    mimo_health_total_wait = int(os.getenv("MIMO_HEALTH_TOTAL_WAIT", "180"))
     print("\n[PRE-CHECK] verifying MiMo vision server...")
     if not check_mimo_health(
         args.mimo_url,
         timeout=mimo_health_timeout,
         api_key=args.mimo_api_key,
+        total_wait=mimo_health_total_wait,
     ):
         print(f"\n❌ CRITICAL ERROR: MiMo Vision Server is unreachable at: {args.mimo_url}")
         print("   This is a vision-dominant system and cannot function without MiMo.")

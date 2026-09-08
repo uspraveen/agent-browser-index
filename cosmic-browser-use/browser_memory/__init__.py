@@ -1,6 +1,6 @@
 """COSMIC cross-run browser traversal memory.
 
-Submodule imports are intentionally lazy: importing ``cosmic_memory.coordinates``
+Submodule imports are intentionally lazy: importing ``browser_memory.coordinates``
 must not pull Playwright, OpenAI, or Supermemory into every process (e.g. a
 phone-triggered browser subprocess should start quickly).
 """
@@ -13,7 +13,7 @@ __all__ = [
     "build_visual_index",
     "replay_coordinates",
     "CosmicDebugLogger",
-    "CosmicMemoryRuntime",
+    "BrowserMemoryRuntime",
     "DemoOverlayManager",
     "MemoryRetriever",
     "SupermemoryMemoryClient",
@@ -29,7 +29,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "DemoOverlayManager": (".demo_overlay", "DemoOverlayManager"),
     "WorkflowRunIndexer": (".indexer", "WorkflowRunIndexer"),
     "MemoryRetriever": (".retriever", "MemoryRetriever"),
-    "CosmicMemoryRuntime": (".runtime", "CosmicMemoryRuntime"),
+    "BrowserMemoryRuntime": (".runtime", "BrowserMemoryRuntime"),
     "SupermemoryMemoryClient": (".supermemory_client", "SupermemoryMemoryClient"),
     "TraceCompiler": (".trace_compiler", "TraceCompiler"),
     "WorkflowStore": (".workflow_store", "WorkflowStore"),

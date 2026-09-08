@@ -1,0 +1,1135 @@
+{
+  "workflow_id": "worldlabs_ai_find_out_engineering_job_oppurtunities_world_labs_list_all_incomplete",
+  "name": "site: Find out the Engineering Job oppurtunities at World labs. List all Jobs with salaries",
+  "domain": "worldlabs.ai",
+  "intent": "Find out the Engineering Job oppurtunities at World labs. List all Jobs with salaries",
+  "task_signature": "worldlabs_ai_find_out_engineering_job_oppurtunities_world_labs_list_all",
+  "created_at": "2026-09-06T04:37:52.506385+00:00",
+  "updated_at": "2026-09-06T04:37:52.506385+00:00",
+  "success_count": 0,
+  "avg_runtime_seconds": null,
+  "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
+  "route_strategy": "Use indexed actions until checkpoint; dynamic result choices may require normal planner repair.",
+  "replay_instructions": {
+    "do": [
+      "Preserve goal-specific target hints: find, out, engineering, job, oppurtunities, world, labs, list.",
+      "Patch: Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.."
+    ],
+    "avoid": [
+      "Do not replay source step 2: not useful for replay.",
+      "Do not replay source step 3: not useful for replay.",
+      "Do not replay source step 5: failed action.",
+      "Do not replay source step 6: failed action.",
+      "Do not replay source step 7: failed action.",
+      "Do not replay source step 9: verified no_change — no observable effect.",
+      "Do not replay source step 10: not useful for replay.",
+      "Do not replay source step 11: failed action.",
+      "Do not replay source step 12: failed action.",
+      "Do not replay source step 13: failed action.",
+      "Do not replay source step 14: failed action.",
+      "Do not replay source step 15: failed action."
+    ],
+    "checkpoints": [
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "partial",
+  "quality": {
+    "usable": true,
+    "confidence": 0.55,
+    "generalization_level": "partial",
+    "reason": "Deterministic fallback selected successful replayable steps and observed final URL."
+  },
+  "variables": [],
+  "acceptance_criteria": {
+    "must_match": [
+      "find",
+      "out",
+      "engineering",
+      "job",
+      "oppurtunities",
+      "world",
+      "labs",
+      "list"
+    ],
+    "reject": [
+      "wrong target",
+      "shorts",
+      "playlist",
+      "demo clip"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://www.worldlabs.ai/careers#open-roles",
+    "final_title": "[Tab 1/1] Careers | World Labs",
+    "final_note": "",
+    "note_source_step": null
+  },
+  "source_run_dir": "runs\\20260905_233115",
+  "source_status": "incomplete",
+  "indexer": {
+    "source": "deterministic_fallback",
+    "version": "cosmic_run_indexer_v2",
+    "last_error": "LLM indexer returned non-JSON after retry: {\n\"quality\": {\n\"usable\": true,\n\"confidence\": 0.6,\n\"generalization_level\": \"partial\",\n\"reason\": \"Clean reusable route to the World Labs Engineering roles list (navigate, anchor to open roles, expand Engineering accordion, DOM-extract), but t"
+  },
+  "discarded_steps": [
+    {
+      "source_step": 2,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 3,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 5,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 6,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 7,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 9,
+      "reason": "verified no_change — no observable effect"
+    },
+    {
+      "source_step": 10,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 11,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 12,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 13,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 14,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 15,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 16,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 17,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 18,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 19,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 20,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 22,
+      "reason": "verified no_change — no observable effect"
+    },
+    {
+      "source_step": 23,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 24,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 25,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 26,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 27,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 28,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 29,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 30,
+      "reason": "failed action"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.worldlabs.ai/careers",
+      "parameters": {
+        "url": "https://www.worldlabs.ai/careers"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "incomplete",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "incomplete",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "black 'Explore open roles' button below the paragraph text on the left side",
+      "parameters": {
+        "description": "black 'Explore open roles' button below the paragraph text on the left side"
+      },
+      "coordinates": [
+        129,
+        549
+      ],
+      "visual_index": {
+        "target_description": "black 'Explore open roles' button below the paragraph text on the left side",
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "description": "VisualClick missing parameter",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "description": "VisualClick missing parameter",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "description": "VisualClick missing parameter",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Engineering row with '3 roles' text and dropdown arrow on the right",
+      "parameters": {
+        "description": "Engineering row with '3 roles' text and dropdown arrow on the right",
+        "region_hint": "center"
+      },
+      "coordinates": [
+        612,
+        502
+      ],
+      "visual_index": {
+        "target_description": "Engineering row with '3 roles' text and dropdown arrow on the right",
+        "normalized_coordinates": {
+          "x": 0.478125,
+          "y": 0.697222
+        },
+        "pixel_coordinates": {
+          "x": 612,
+          "y": 502
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/careers#open-roles",
+        "page_title": "[Tab 1/1] Careers | World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "incomplete",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "incomplete",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 12,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 13,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 14,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 15,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 16,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 17,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 18,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 19,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 20,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 21,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 22,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 23,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 24,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 25,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 26,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 27,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 28,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 29,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 30,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "TimedWait",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "description": "TimedWait refused",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "worldlabs_ai_state_001_tab_1_1",
+      "name": "[Tab 1/1] ",
+      "url_pattern": "about:blank",
+      "page_summary": "[Tab 1/1]  at about:blank",
+      "visual_markers": [
+        "tab",
+        "navigated",
+        "https",
+        "www",
+        "worldlabs",
+        "careers"
+      ],
+      "screenshot_path": "runs\\20260905_233115\\screenshots\\step_001.webp",
+      "screenshot_hash": "0000000000000000"
+    },
+    {
+      "state_id": "worldlabs_ai_state_002_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "navigation",
+      "from_state_id": "worldlabs_ai_state_001_tab_1_1",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.worldlabs.ai/careers",
+      "parameters_template": {
+        "url": "https://www.worldlabs.ai/careers"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Careers | World Labs https://www.worldlabs.ai/careers",
+      "to_state_id": "worldlabs_ai_state_002_tab_1_1_careers_world_labs",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 5,
+      "failure": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_002",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 6,
+      "failure": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_003",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 7,
+      "failure": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_004",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 11,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_005",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 12,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_006",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 13,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_007",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 14,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_008",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 15,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_009",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 16,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_010",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 17,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_011",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 18,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_012",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 19,
+      "failure": "Recent waits already produced no change. Waiting again is blocked — take a real action now: Navigate to a more specific search URL, click/type into the page, DOMExtract the visible data, or SaveNote what you already have.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    }
+  ],
+  "user_preferences": []
+}

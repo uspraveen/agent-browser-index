@@ -90,17 +90,24 @@ class WorkflowRunIndexer:
 
     @classmethod
     def from_env(cls) -> "WorkflowRunIndexer":
-        provider = os.getenv("COSMIC_INDEXER_PROVIDER", "fireworks_kimi").strip().lower()
-        enabled = os.getenv("COSMIC_INDEXER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+        def _indexer_env(name: str, default: str = "") -> str:
+            """BROWSER_INDEXER_* with legacy COSMIC_INDEXER_* fallback."""
+            value = os.getenv(f"BROWSER_INDEXER_{name}")
+            if value is None or value == "":
+                value = os.getenv(f"COSMIC_INDEXER_{name}", default)
+            return value
+
+        provider = (_indexer_env("PROVIDER", "fireworks_kimi") or "fireworks_kimi").strip().lower()
+        enabled = _indexer_env("ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
         if provider in {"fireworks", "fireworks_kimi", "kimi"}:
-            model = os.getenv("COSMIC_INDEXER_MODEL") or os.getenv("FIREWORKS_DEFAULT_MODEL") or FIREWORKS_DEFAULT_MODEL_ID
-            api_key = os.getenv("COSMIC_INDEXER_API_KEY") or os.getenv("FIREWORKS_API_KEY") or os.getenv("SLIDE_AGENT_FIREWORKS_API_KEY")
-            api_base = os.getenv("COSMIC_INDEXER_BASE_URL") or os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1"
+            model = _indexer_env("MODEL") or os.getenv("FIREWORKS_DEFAULT_MODEL") or FIREWORKS_DEFAULT_MODEL_ID
+            api_key = _indexer_env("API_KEY") or os.getenv("FIREWORKS_API_KEY") or os.getenv("SLIDE_AGENT_FIREWORKS_API_KEY")
+            api_base = _indexer_env("BASE_URL") or os.getenv("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1"
             provider = "fireworks_kimi"
         else:
-            model = os.getenv("COSMIC_INDEXER_MODEL", "gpt-4o")
-            api_key = os.getenv("COSMIC_INDEXER_API_KEY") or os.getenv("OPENAI_API_KEY")
-            api_base = os.getenv("COSMIC_INDEXER_BASE_URL")
+            model = _indexer_env("MODEL", "gpt-4o")
+            api_key = _indexer_env("API_KEY") or os.getenv("OPENAI_API_KEY")
+            api_base = _indexer_env("BASE_URL")
             provider = "openai"
 
         return cls(
@@ -110,9 +117,9 @@ class WorkflowRunIndexer:
                 model=model.strip().strip('"'),
                 api_key=api_key,
                 api_base=api_base,
-                temperature=float(os.getenv("COSMIC_INDEXER_TEMPERATURE", "0.1")),
-                max_tokens=int(os.getenv("COSMIC_INDEXER_MAX_TOKENS", "4096")),
-                timeout_sec=float(os.getenv("COSMIC_INDEXER_TIMEOUT", "90")),
+                temperature=float(_indexer_env("TEMPERATURE", "0.1")),
+                max_tokens=int(_indexer_env("MAX_TOKENS", "4096")),
+                timeout_sec=float(_indexer_env("TIMEOUT", "90")),
             )
         )
 

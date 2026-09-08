@@ -18,6 +18,7 @@ class ActionType(str, Enum):
     DOM_TYPE = "DomType"
     DOM_EXTRACT = "DOMExtract"
     SELECT_OPTION = "SelectOption"
+    BATCH_EXTRACT = "BatchExtract"
     NAVIGATE = "Navigate"
     GO_BACK = "GoBack"
     GO_FORWARD = "GoForward"
@@ -38,6 +39,12 @@ class ActionType(str, Enum):
     EDIT_NOTE = "EditNote"
     READ_HISTORY = "ReadHistory"
     ASK_USER = "AskUser"
+    PARSE_ERROR = "ParseError"
+    # Vault-backed login fill — values come from a per-run secure store, never
+    # from the LLM context or screenshots.
+    CREDENTIAL_FILL = "CredentialFill"
+    # Ends the run asking the orchestrator for credentials for a site.
+    REQUEST_CREDENTIALS = "RequestCredentials"
 
 
 class VerificationStatus(str, Enum):
@@ -215,6 +222,7 @@ class LLMResponse:
     escalation_reason: Optional[str] = None  # One-line why (required when request_escalation is true)
     hand_back_to_base: bool = False  # Escalation brain: blocker resolved, return control to base
     tier_used: Optional[str] = None  # Which tier actually produced this decision ("fast"/"medium"/"slow")
+    parse_failed: bool = False  # True when the reply could not be parsed as a JSON decision
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -232,6 +240,7 @@ class LLMResponse:
             "escalation_reason": self.escalation_reason,
             "hand_back_to_base": self.hand_back_to_base,
             "tier_used": self.tier_used,
+            "parse_failed": self.parse_failed,
         }
 
 
@@ -268,3 +277,4 @@ class TaskConfig:
     chrome_profile: Optional[str] = None   # Path to Chrome profile dir for CDP mode (e.g. "Default", "Profile 1")
     restore_previous_tabs: bool = False    # Best-effort reopen of tabs that were open in the live profile (CDP mode only)
     refresh_chrome_profile: bool = False   # Re-seed the agent's persistent Chrome dir from the real profile (CDP mode only)
+    credentials_available_for: tuple = ()  # Site domains with vault credentials provisioned for this run (domains only — never values)

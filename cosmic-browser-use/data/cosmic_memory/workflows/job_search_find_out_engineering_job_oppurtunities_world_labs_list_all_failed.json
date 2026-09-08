@@ -1,0 +1,208 @@
+{
+  "workflow_id": "job_search_find_out_engineering_job_oppurtunities_world_labs_list_all_failed",
+  "name": "World Labs Engineering Jobs — Careers Page Entry",
+  "domain": "job search / company careers",
+  "intent": "Find engineering job openings at World Labs and list all jobs with salaries",
+  "task_signature": "job_search_find_out_engineering_job_oppurtunities_world_labs_list_all",
+  "created_at": "2026-09-06T04:51:39.462006+00:00",
+  "updated_at": "2026-09-06T04:51:39.462006+00:00",
+  "success_count": 0,
+  "avg_runtime_seconds": null,
+  "summary": "Partial workflow capturing the only reliable segment of a failed run: direct navigation to the World Labs careers page (https://www.worldlabs.ai/careers), which loaded successfully with title 'Careers | World Labs'. The source run halted on a decision-formatting error before any job listings or salaries were extracted, so this workflow serves as a verified entry-point template; replay must hand off to the live agent for the enumeration of Engineering roles and salaries.",
+  "route_strategy": "Replay the single navigation step to land on the careers page, verify it loaded, then return control to the live agent to scroll, locate Engineering openings, and extract titles and salary information.",
+  "replay_instructions": {
+    "do": [
+      "Navigate directly to https://www.worldlabs.ai/careers",
+      "Verify the page loaded with title containing 'Careers | World Labs' before proceeding",
+      "After the checkpoint, hand back to the live agent to scroll the careers page, identify Engineering roles, and record each job title with its listed salary",
+      "Preserve goal-specific target hints: find, out, engineering, job, oppurtunities, world, labs, list.",
+      "Patch: After the careers page loads, always respond with a single valid JSON action object (action_type, parameters, reasoning, confidence) and continue with scroll/extract steps to enumerate Engineering roles and salaries."
+    ],
+    "avoid": [
+      "Do not treat the careers page load as task completion — the recorded trace never extracted any job listings or salaries",
+      "Do not repeat the source run's failure mode of emitting an invalid/non-JSON decision, which halted the run at step 2",
+      "Do not wander to unrelated pages; the careers URL is the confirmed correct target",
+      "Do not replay source step 2: ParseError — agent decision was invalid JSON, no action executed and no page effect; not part of any route.",
+      "Avoid failure: Agent emitted a decision that was not valid JSON, causing the run to halt on the careers page before any extraction."
+    ],
+    "checkpoints": [
+      "After navigation: URL is https://www.worldlabs.ai/careers and page title contains 'Careers | World Labs'",
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "Careers page successfully loaded — recorded gold path ends here; live agent must perform job/salary extraction",
+      "Careers page fails to load, redirects unexpectedly, or returns an error — hand back to live agent",
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "partial",
+  "quality": {
+    "usable": true,
+    "confidence": 0.4,
+    "generalization_level": "partial",
+    "reason": "Run failed immediately after reaching the careers page; only the navigation entry point is reusable, extraction of jobs/salaries was never performed."
+  },
+  "variables": [],
+  "acceptance_criteria": {
+    "must_match": [
+      "Careers | World Labs",
+      "worldlabs.ai/careers"
+    ],
+    "reject": [
+      "about:blank",
+      "404",
+      "page not found"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://www.worldlabs.ai/careers",
+    "final_title": "[Tab 1/1] Careers | World Labs",
+    "final_note": "",
+    "note_source_step": null
+  },
+  "source_run_dir": "runs\\20260905_235104",
+  "source_status": "failed",
+  "indexer": {
+    "source": "llm",
+    "provider": "fireworks_kimi",
+    "model": "accounts/fireworks/models/glm-5p3-flash",
+    "version": "cosmic_run_indexer_v2"
+  },
+  "discarded_steps": [
+    {
+      "source_step": 2,
+      "reason": "ParseError — agent decision was invalid JSON, no action executed and no page effect; not part of any route"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.worldlabs.ai/careers",
+      "parameters": {
+        "url": "https://www.worldlabs.ai/careers"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": false,
+      "discarded_reason": "ParseError — agent decision was invalid JSON, no action executed and no page effect; not part of any route",
+      "action_type": "ParseError",
+      "success": false,
+      "verification_status": "error",
+      "error": "Your previous decision was not valid JSON, so no action ran. Respond with ONLY the JSON object per the output format (action_type, parameters, reasoning, confidence) — no prose, no markdown fences — and re-issue your intended action.",
+      "description": "Decision was not valid JSON",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "job_search_company_careers_state_001_tab_1_1",
+      "name": "[Tab 1/1] ",
+      "url_pattern": "about:blank",
+      "page_summary": "[Tab 1/1]  at about:blank",
+      "visual_markers": [
+        "tab",
+        "world",
+        "labs",
+        "careers",
+        "page",
+        "listing",
+        "company",
+        "job",
+        "openings"
+      ],
+      "screenshot_path": "runs\\20260905_235104\\screenshots\\step_001.webp",
+      "screenshot_hash": "0000000000000000"
+    },
+    {
+      "state_id": "job_search_company_careers_state_002_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "open_target",
+      "from_state_id": "job_search_company_careers_state_001_tab_1_1",
+      "action_type": "Navigate",
+      "target_description": "World Labs careers page listing company job openings",
+      "parameters_template": {
+        "url": "https://www.worldlabs.ai/careers"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Careers | World Labs page loaded at https://www.worldlabs.ai/careers",
+      "to_state_id": "job_search_company_careers_state_002_tab_1_1_careers_world_labs",
+      "delay_ms": 1200,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "job search / company careers",
+      "applies_to_source_step": 2,
+      "failure": "Agent emitted a decision that was not valid JSON, causing the run to halt on the careers page before any extraction",
+      "fix": "After the careers page loads, always respond with a single valid JSON action object (action_type, parameters, reasoning, confidence) and continue with scroll/extract steps to enumerate Engineering roles and salaries",
+      "confidence": 0.9
+    }
+  ],
+  "user_preferences": []
+}

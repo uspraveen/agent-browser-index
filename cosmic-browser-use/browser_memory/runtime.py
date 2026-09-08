@@ -1,4 +1,4 @@
-"""High-level COSMIC memory runtime wiring."""
+"""High-level browser workflow memory runtime wiring."""
 
 from __future__ import annotations
 
@@ -11,16 +11,35 @@ from .supermemory_client import SupermemoryMemoryClient
 from .trace_compiler import TraceCompiler
 from .workflow_store import WorkflowStore
 
+LEGACY_MEMORY_DIR = "./data/cosmic_memory"
+DEFAULT_MEMORY_DIR = "./data/browser_memory"
 
-class CosmicMemoryRuntime:
+
+def resolve_memory_dir(data_dir: str | Path | None = None) -> Path:
+    """Resolve the workflow-memory directory.
+
+    Defaults to ./data/browser_memory, but transparently adopts the legacy
+    ./data/cosmic_memory location when it exists and the new one does not, so
+    existing workflow libraries keep working after the rename.
+    """
+    if data_dir:
+        return Path(data_dir).expanduser()
+    new_dir = Path(DEFAULT_MEMORY_DIR)
+    legacy_dir = Path(LEGACY_MEMORY_DIR)
+    if not new_dir.exists() and legacy_dir.exists():
+        return legacy_dir
+    return new_dir
+
+
+class BrowserMemoryRuntime:
     def __init__(
         self,
-        data_dir: str | Path = "./data/cosmic_memory",
+        data_dir: str | Path | None = None,
         user_id: str = "demo_user",
         container_tag: str = "cosmic-hackathon-demo",
         supermemory_enabled: bool = True,
     ):
-        self.store = WorkflowStore(data_dir)
+        self.store = WorkflowStore(resolve_memory_dir(data_dir))
         self.supermemory = SupermemoryMemoryClient(
             api_key=os.getenv("SUPERMEMORY_API_KEY"),
             container_tag=container_tag,

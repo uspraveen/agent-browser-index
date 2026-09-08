@@ -1,4 +1,4 @@
-# COSMIC Browser Memory
+# Browser Workflow Memory
 
 ## Indexing the Web for Agents
 
@@ -81,17 +81,17 @@ from the whole successful run without forcing replay to execute unsafe steps.
 Useful env vars:
 
 ```bash
-COSMIC_INDEXER_ENABLED=true
-COSMIC_INDEXER_PROVIDER=fireworks_kimi
-COSMIC_INDEXER_MODEL=accounts/fireworks/models/glm-5p3-flash
-COSMIC_INDEXER_MAX_TOKENS=4096
+BROWSER_INDEXER_ENABLED=true
+BROWSER_INDEXER_PROVIDER=fireworks_kimi
+BROWSER_INDEXER_MODEL=accounts/fireworks/models/glm-5p3-flash
+BROWSER_INDEXER_MAX_TOKENS=4096
 ```
 
 ## Modes
 
 `off`: original browser agent behavior.
 
-`learn`: run normally, then compile the run into `data/cosmic_memory/workflows/*.json`. Writes a semantic summary to Supermemory only when `SUPERMEMORY_API_KEY` is set.
+`learn`: run normally, then compile the run into `data/browser_memory/workflows/*.json`. Writes a semantic summary to Supermemory only when `SUPERMEMORY_API_KEY` is set.
 
 `recall`: retrieve an existing workflow, build one upfront replay plan, execute that plan without per-step LLM calls until checkpoint, then continue with the normal agent. If the indexed workflow has an observed successful final URL and the current goal strongly matches that target, recall uses the deterministic observed-final-URL fast path before spending a slow planner call.
 

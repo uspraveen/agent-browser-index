@@ -1,0 +1,1321 @@
+{
+  "workflow_id": "job_boards_greenhouse_io_find_out_engineering_job_oppurtunities_world_labs_list__success",
+  "name": "job-boards.greenhouse.io: Find out the Engineering Job oppurtunities at World labs. List all Jobs with salaries",
+  "domain": "job-boards.greenhouse.io",
+  "intent": "Find out the Engineering Job oppurtunities at World labs. List all Jobs with salaries",
+  "task_signature": "job_boards_greenhouse_io_find_out_engineering_job_oppurtunities_world_labs_list_",
+  "created_at": "2026-09-06T05:08:02.557386+00:00",
+  "updated_at": "2026-09-06T05:08:02.558328+00:00",
+  "success_count": 1,
+  "avg_runtime_seconds": null,
+  "summary": "Fallback workflow from successful actions, visual indexes, and observed final URL.",
+  "route_strategy": "Use indexed actions until checkpoint; dynamic result choices may require normal planner repair.",
+  "replay_instructions": {
+    "do": [
+      "Preserve goal-specific target hints: find, out, engineering, job, oppurtunities, world, labs, list.",
+      "Prefer the observed successful final URL when it still matches the goal: https://job-boards.greenhouse.io/worldlabs/jobs/4089337009.",
+      "Patch: Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.."
+    ],
+    "avoid": [
+      "Do not replay source step 3: failed action.",
+      "Do not replay source step 7: verified no_change — no observable effect.",
+      "Do not replay source step 8: not useful for replay.",
+      "Do not replay source step 13: failed action.",
+      "Do not replay source step 15: verified no_change — no observable effect.",
+      "Do not replay source step 18: failed action.",
+      "Do not replay source step 20: verified no_change — no observable effect.",
+      "Do not replay source step 23: failed action.",
+      "Do not replay source step 25: verified no_change — no observable effect.",
+      "Do not replay source step 26: verified no_change — no observable effect.",
+      "Avoid failure: Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'..",
+      "Avoid failure: Not found in main frame or 0 iframe(s) across 5 tag variant(s) (5 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Performance Engineer (Inference, Training & GPU)\\\")..."
+    ],
+    "checkpoints": [
+      "Target page title should resemble: [Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs.",
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "partial",
+  "quality": {
+    "usable": true,
+    "confidence": 0.55,
+    "generalization_level": "partial",
+    "reason": "Deterministic fallback selected successful replayable steps and observed final URL."
+  },
+  "variables": [],
+  "acceptance_criteria": {
+    "must_match": [
+      "find",
+      "out",
+      "engineering",
+      "job",
+      "oppurtunities",
+      "world",
+      "labs",
+      "list"
+    ],
+    "reject": [
+      "wrong target",
+      "shorts",
+      "playlist",
+      "demo clip"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+    "final_title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+    "final_note": "FINAL ANSWER — World Labs Engineering Job Opportunities (all San Francisco, apply via job-boards.greenhouse.io/worldlabs): 1) Performance Engineer (Inference, Training & GPU) — $200,000–$300,000 base salary + equity awards (greenhouse job 4238069009). 2) Pipeline Engineer (Graphics/3D) — $200,000–$325,000 base salary + equity awards (greenhouse job 4093035009). 3) Senior Product Engineer (Tech Lead) — $250,000–$325,000 base salary + equity awards (greenhouse job 4089337009). All pay ranges are good-faith estimates for the SF Bay Area upon hire; actual offers based on experience, skills, and qualifications. Total compensation = base salary plus equity awards. These are the only 3 Engineering roles listed on the World Labs careers page.",
+    "note_source_step": 26
+  },
+  "source_run_dir": "runs\\20260906_000045",
+  "source_status": "success",
+  "indexer": {
+    "source": "deterministic_fallback",
+    "version": "cosmic_run_indexer_v2",
+    "last_error": "LLM indexer returned non-JSON after retry: {\n\"quality\": {\n\"usable\": true,\n\"confidence\": 0.85,\n\"generalization_level\": \"template\",\n\"reason\": \"Clean gold path from careers page to each Greenhouse posting; flaky title-clicks replaced by direct navigations to observed job URLs; pattern "
+  },
+  "discarded_steps": [
+    {
+      "source_step": 3,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 7,
+      "reason": "verified no_change — no observable effect"
+    },
+    {
+      "source_step": 8,
+      "reason": "not useful for replay"
+    },
+    {
+      "source_step": 13,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 15,
+      "reason": "verified no_change — no observable effect"
+    },
+    {
+      "source_step": 18,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 20,
+      "reason": "verified no_change — no observable effect"
+    },
+    {
+      "source_step": 23,
+      "reason": "failed action"
+    },
+    {
+      "source_step": 25,
+      "reason": "verified no_change — no observable effect"
+    },
+    {
+      "source_step": 26,
+      "reason": "verified no_change — no observable effect"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.worldlabs.ai/careers",
+      "parameters": {
+        "url": "https://www.worldlabs.ai/careers"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Explore open roles button - dark rounded button below the 'Join our team' text",
+      "parameters": {
+        "description": "Explore open roles button - dark rounded button below the 'Join our team' text"
+      },
+      "coordinates": [
+        129,
+        549
+      ],
+      "visual_index": {
+        "target_description": "Explore open roles button - dark rounded button below the 'Join our team' text",
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "description": "VisualClick missing parameter",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Engineering accordion row with '3 roles' label and downward chevron on the right side",
+      "parameters": {
+        "description": "Engineering accordion row with '3 roles' label and downward chevron on the right side"
+      },
+      "coordinates": [
+        612,
+        502
+      ],
+      "visual_index": {
+        "target_description": "Engineering accordion row with '3 roles' label and downward chevron on the right side",
+        "normalized_coordinates": {
+          "x": 0.478125,
+          "y": 0.697222
+        },
+        "pixel_coordinates": {
+          "x": 612,
+          "y": 502
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/careers#open-roles",
+        "page_title": "[Tab 1/1] Careers | World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 3 items",
+      "parameters": {
+        "query": "a[href*='greenhouse']"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (93 tokens)",
+      "parameters": {
+        "note": "World Labs Engineering roles (from careers page #open-roles, Engineering accordion = 3 roles): 1) Performance Engineer (Inference, Training & GPU) - San Francisco; 2) Pipeline Engineer (Graphics/3D) - San Francisco; 3) Senior Product Engineer (Tech Lead) - San Francisco. All apply via Greenhouse. Salaries NOT shown on careers page - need to open each Greenhouse job posting to get salary ranges."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": false,
+      "discarded_reason": "not useful for replay",
+      "action_type": "ReadHistory",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Read history from step 6 to 6",
+      "parameters": {
+        "start_step": 6,
+        "end_step": 6
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 3 items",
+      "parameters": {
+        "query": "a[href*='greenhouse']"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://job-boards.greenhouse.io/worldlabs",
+      "parameters": {
+        "url": "https://job-boards.greenhouse.io/worldlabs"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 10 items",
+      "parameters": {
+        "query": ".job-post, [class*='job-post'], section[aria-label], main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 12,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 9 items",
+      "parameters": {
+        "query": "a[href*='/jobs/']"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 13,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "DOMClick",
+      "success": false,
+      "verification_status": "success",
+      "error": "Not found in main frame or 0 iframe(s) across 5 tag variant(s) (5 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Performance Engineer (Inference, Training & GPU)\\\")\").first\n",
+      "description": "Click a:has-text('Performance Engineer (Inference, Training & GPU)')",
+      "parameters": {
+        "selector": "a:has-text('Performance Engineer (Inference, Training & GPU)')"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+        "title": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 14,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+        "title": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+        "title": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 15,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (85 tokens)",
+      "parameters": {
+        "note": "World Labs Engineering salary #1: Performance Engineer (Inference, Training & GPU), San Francisco — Pay Range $200-$300k base salary (good-faith estimate for SF Bay Area; actual offer based on experience). Total comp = base + equity awards. Source: greenhouse job 4238069009. Still need salaries for: Pipeline Engineer (Graphics/3D) and Senior Product Engineer (Tech Lead)."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+        "title": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+        "title": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 16,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://job-boards.greenhouse.io/worldlabs",
+      "parameters": {
+        "url": "https://job-boards.greenhouse.io/worldlabs"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+        "title": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 17,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 9 items",
+      "parameters": {
+        "query": "a[href*='/jobs/']"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 18,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "DOMClick",
+      "success": false,
+      "verification_status": "success",
+      "error": "Not found in main frame or 0 iframe(s) across 4 tag variant(s) (4 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Pipeline Engineer\\\")\").first\n",
+      "description": "Click a:has-text(\"Pipeline Engineer\")",
+      "parameters": {
+        "selector": "a:has-text(\"Pipeline Engineer\")"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+        "title": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 19,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": ".job-post, [class*='job-description'], #content, main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+        "title": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+        "title": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 20,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (80 tokens)",
+      "parameters": {
+        "note": "World Labs Engineering salary #2: Pipeline Engineer (Graphics/3D), San Francisco — Pay Range $200-$325k base salary (good-faith estimate for SF Bay Area upon hire; actual offer based on experience, skills, qualifications). Total comp = base + equity awards. Source: greenhouse job 4093035009. Still need salary for: Senior Product Engineer (Tech Lead)."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+        "title": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+        "title": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 21,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://job-boards.greenhouse.io/worldlabs",
+      "parameters": {
+        "url": "https://job-boards.greenhouse.io/worldlabs"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+        "title": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 22,
+      "selected": false,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 9 items",
+      "parameters": {
+        "query": "a[href*='/jobs/']"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 23,
+      "selected": false,
+      "discarded_reason": "failed action",
+      "action_type": "DOMClick",
+      "success": false,
+      "verification_status": "success",
+      "error": "Not found in main frame or 0 iframe(s) across 4 tag variant(s) (4 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Senior Product Engineer (Tech Lead)\\\")\").first\n",
+      "description": "Click a:has-text(\"Senior Product Engineer (Tech Lead)\")",
+      "parameters": {
+        "selector": "a:has-text(\"Senior Product Engineer (Tech Lead)\")"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs",
+        "title": "[Tab 1/1] Jobs at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 24,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 25,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (77 tokens)",
+      "parameters": {
+        "note": "World Labs Engineering salary #3: Senior Product Engineer (Tech Lead), San Francisco — Pay Range $250-$325k base salary (good-faith estimate for SF Bay Area upon hire; actual offer based on experience, skills, and qualifications). Total comp = base salary plus equity awards. Source: greenhouse job 4089337009. ALL 3 Engineering salaries now collected."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 26,
+      "selected": false,
+      "discarded_reason": "verified no_change — no observable effect",
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (187 tokens)",
+      "parameters": {
+        "note": "FINAL ANSWER — World Labs Engineering Job Opportunities (all San Francisco, apply via job-boards.greenhouse.io/worldlabs): 1) Performance Engineer (Inference, Training & GPU) — $200,000–$300,000 base salary + equity awards (greenhouse job 4238069009). 2) Pipeline Engineer (Graphics/3D) — $200,000–$325,000 base salary + equity awards (greenhouse job 4093035009). 3) Senior Product Engineer (Tech Lead) — $250,000–$325,000 base salary + equity awards (greenhouse job 4089337009). All pay ranges are good-faith estimates for the SF Bay Area upon hire; actual offers based on experience, skills, and qualifications. Total compensation = base salary plus equity awards. These are the only 3 Engineering roles listed on the World Labs careers page."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+        "title": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+        "scroll_y": 0
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "job_boards_greenhouse_io_state_001_tab_1_1",
+      "name": "[Tab 1/1] ",
+      "url_pattern": "about:blank",
+      "page_summary": "[Tab 1/1]  at about:blank",
+      "visual_markers": [
+        "tab",
+        "navigated",
+        "https",
+        "www",
+        "worldlabs",
+        "careers"
+      ],
+      "screenshot_path": "runs\\20260906_000045\\screenshots\\step_001.webp",
+      "screenshot_hash": "0000000000000000"
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_002_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs",
+        "explore",
+        "roles",
+        "button",
+        "dark",
+        "rounded",
+        "below",
+        "join",
+        "our"
+      ],
+      "screenshot_path": "runs\\20260906_000045\\screenshots\\step_002.webp",
+      "screenshot_hash": "00fe0f3fff3f7fbf"
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_003_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers#open-roles",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers#open-roles",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs",
+        "navigated",
+        "https",
+        "job",
+        "boards",
+        "greenhouse",
+        "worldlabs"
+      ],
+      "screenshot_path": "runs\\20260906_000045\\screenshots\\step_010.webp",
+      "screenshot_hash": "00fe3fffffffbfbf"
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_004_tab_1_1_job_application_for_",
+      "name": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs",
+      "url_pattern": "https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+      "page_summary": "[Tab 1/1] Job Application for Performance Engineer (Inference, Training & GPU) at World Labs at https://job-boards.greenhouse.io/worldlabs/jobs/4238069009",
+      "visual_markers": [
+        "tab",
+        "job",
+        "application",
+        "performance",
+        "engineer",
+        "inference",
+        "training",
+        "gpu",
+        "world",
+        "labs",
+        "navigated",
+        "https"
+      ],
+      "screenshot_path": "runs\\20260906_000045\\screenshots\\step_016.webp",
+      "screenshot_hash": "9f9fb99f8381bf82"
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_005_tab_1_1_job_application_for_",
+      "name": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs",
+      "url_pattern": "https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+      "page_summary": "[Tab 1/1] Job Application for Pipeline Engineer (Graphics/3D) at World Labs at https://job-boards.greenhouse.io/worldlabs/jobs/4093035009",
+      "visual_markers": [
+        "tab",
+        "job",
+        "application",
+        "pipeline",
+        "engineer",
+        "graphics",
+        "world",
+        "labs",
+        "navigated",
+        "https",
+        "boards",
+        "greenhouse"
+      ],
+      "screenshot_path": "runs\\20260906_000045\\screenshots\\step_021.webp",
+      "screenshot_hash": "9f9dbd93819b9380"
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_006_tab_1_1_jobs_at_world_labs",
+      "name": "[Tab 1/1] Jobs at World Labs",
+      "url_pattern": "https://job-boards.greenhouse.io/worldlabs",
+      "page_summary": "[Tab 1/1] Jobs at World Labs at https://job-boards.greenhouse.io/worldlabs",
+      "visual_markers": [
+        "tab",
+        "jobs",
+        "world",
+        "labs",
+        "observed",
+        "final",
+        "target",
+        "url",
+        "https",
+        "job",
+        "boards",
+        "greenhouse"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_007_tab_1_1_job_application_for_",
+      "name": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+      "url_pattern": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+      "page_summary": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs at https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+      "visual_markers": [
+        "tab",
+        "job",
+        "application",
+        "senior",
+        "product",
+        "engineer",
+        "tech",
+        "lead",
+        "world",
+        "labs",
+        "extracted",
+        "items"
+      ],
+      "screenshot_path": "runs\\20260906_000045\\screenshots\\step_024.webp",
+      "screenshot_hash": "9f9dfd97819f8381"
+    },
+    {
+      "state_id": "job_boards_greenhouse_io_state_008_tab_1_1_job_application_for_",
+      "name": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+      "url_pattern": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+      "page_summary": "[Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs at https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+      "visual_markers": [
+        "tab",
+        "job",
+        "application",
+        "senior",
+        "product",
+        "engineer",
+        "tech",
+        "lead",
+        "world",
+        "labs"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "navigation",
+      "from_state_id": "job_boards_greenhouse_io_state_001_tab_1_1",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://www.worldlabs.ai/careers",
+      "parameters_template": {
+        "url": "https://www.worldlabs.ai/careers"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Careers | World Labs https://www.worldlabs.ai/careers",
+      "to_state_id": "job_boards_greenhouse_io_state_002_tab_1_1_careers_world_labs",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_002",
+      "source_step": 2,
+      "source_evidence_steps": [
+        2
+      ],
+      "role": "open_target",
+      "from_state_id": "job_boards_greenhouse_io_state_002_tab_1_1_careers_world_labs",
+      "action_type": "VisualClick",
+      "target_description": "Explore open roles button - dark rounded button below the 'Join our team' text",
+      "parameters_template": {
+        "description": "Explore open roles button - dark rounded button below the 'Join our team' text"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Explore open roles button - dark rounded button below the 'Join our team' text",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260906_000045\\screenshots\\step_002.webp",
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "mimo_grounding": {
+          "instruction": "Explore open roles button - dark rounded button below the 'Join our team' text",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 129,
+            "y": 549
+          },
+          "normalized_coordinates": {
+            "x": 0.100781,
+            "y": 0.7625
+          },
+          "raw_model_output": "<think>\n</think>\n\n[129, 549]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Explore open roles button - dark rounded button below the 'Join our team' text",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260906_000045\\screenshots\\step_002.webp",
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "mimo_grounding": {
+          "instruction": "Explore open roles button - dark rounded button below the 'Join our team' text",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 129,
+            "y": 549
+          },
+          "normalized_coordinates": {
+            "x": 0.100781,
+            "y": 0.7625
+          },
+          "raw_model_output": "<think>\n</think>\n\n[129, 549]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        129,
+        549
+      ],
+      "expected_result": "Browser reaches [Tab 1/1] Careers | World Labs https://www.worldlabs.ai/careers#open-roles",
+      "to_state_id": "job_boards_greenhouse_io_state_003_tab_1_1_careers_world_labs",
+      "delay_ms": 900,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_003",
+      "source_step": 10,
+      "source_evidence_steps": [
+        10
+      ],
+      "role": "navigation",
+      "from_state_id": "job_boards_greenhouse_io_state_003_tab_1_1_careers_world_labs",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://job-boards.greenhouse.io/worldlabs",
+      "parameters_template": {
+        "url": "https://job-boards.greenhouse.io/worldlabs"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Jobs at World Labs https://job-boards.greenhouse.io/worldlabs",
+      "to_state_id": "job_boards_greenhouse_io_state_004_tab_1_1_jobs_at_world_labs",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_004",
+      "source_step": 16,
+      "source_evidence_steps": [
+        16
+      ],
+      "role": "navigation",
+      "from_state_id": "job_boards_greenhouse_io_state_004_tab_1_1_job_application_for_",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://job-boards.greenhouse.io/worldlabs",
+      "parameters_template": {
+        "url": "https://job-boards.greenhouse.io/worldlabs"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Jobs at World Labs https://job-boards.greenhouse.io/worldlabs",
+      "to_state_id": "job_boards_greenhouse_io_state_005_tab_1_1_jobs_at_world_labs",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_005",
+      "source_step": 21,
+      "source_evidence_steps": [
+        21
+      ],
+      "role": "navigation",
+      "from_state_id": "job_boards_greenhouse_io_state_005_tab_1_1_job_application_for_",
+      "action_type": "Navigate",
+      "target_description": "Navigated to https://job-boards.greenhouse.io/worldlabs",
+      "parameters_template": {
+        "url": "https://job-boards.greenhouse.io/worldlabs"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Jobs at World Labs https://job-boards.greenhouse.io/worldlabs",
+      "to_state_id": "job_boards_greenhouse_io_state_006_tab_1_1_jobs_at_world_labs",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_006",
+      "source_step": null,
+      "source_evidence_steps": [
+        23,
+        24,
+        25,
+        26
+      ],
+      "role": "direct_final_target",
+      "from_state_id": "job_boards_greenhouse_io_state_006_tab_1_1_jobs_at_world_labs",
+      "action_type": "Navigate",
+      "target_description": "Observed final target URL: https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+      "parameters_template": {
+        "url": "https://job-boards.greenhouse.io/worldlabs/jobs/4089337009"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs",
+      "to_state_id": "job_boards_greenhouse_io_state_007_browser_reaches_tab_1_1_job_",
+      "delay_ms": 1500,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": null,
+      "error": null,
+      "mutation": "synthetic_observed_url",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_007",
+      "source_step": 24,
+      "source_evidence_steps": [
+        24
+      ],
+      "role": "expand_content",
+      "from_state_id": "job_boards_greenhouse_io_state_007_tab_1_1_job_application_for_",
+      "action_type": "DOMExtract",
+      "target_description": "Extracted 1 items",
+      "parameters_template": {
+        "query": "main"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Browser reaches [Tab 1/1] Job Application for Senior Product Engineer (Tech Lead) at World Labs https://job-boards.greenhouse.io/worldlabs/jobs/4089337009",
+      "to_state_id": "job_boards_greenhouse_io_state_008_tab_1_1_job_application_for_",
+      "delay_ms": 300,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "job-boards.greenhouse.io",
+      "applies_to_source_step": 3,
+      "failure": "Missing required parameter description for VisualClick. Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs 'description' (what to click, with color/position/text cues), VisualType needs 'field_description' + 'text'.",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_002",
+      "domain": "job-boards.greenhouse.io",
+      "applies_to_source_step": 13,
+      "failure": "Not found in main frame or 0 iframe(s) across 5 tag variant(s) (5 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Performance Engineer (Inference, Training & GPU)\\\")\").first\n",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_003",
+      "domain": "job-boards.greenhouse.io",
+      "applies_to_source_step": 18,
+      "failure": "Not found in main frame or 0 iframe(s) across 4 tag variant(s) (4 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Pipeline Engineer\\\")\").first\n",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    },
+    {
+      "patch_id": "patch_indexer_004",
+      "domain": "job-boards.greenhouse.io",
+      "applies_to_source_step": 23,
+      "failure": "Not found in main frame or 0 iframe(s) across 4 tag variant(s) (4 attempts): Locator.scroll_into_view_if_needed: Timeout 2000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"Senior Product Engineer (Tech Lead)\\\")\").first\n",
+      "fix": "Resume with current screenshot and let the normal browser agent repair before continuing indexed replay.",
+      "confidence": 0.5
+    }
+  ],
+  "user_preferences": []
+}

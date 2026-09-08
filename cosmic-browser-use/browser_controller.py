@@ -34,9 +34,9 @@ except Exception:
     tiktoken = None
 
 from cosmic_types import ActionType, ActionResult, BrowserState, TabInfo, ToolCall, VerificationStatus, TaskConfig
-from cosmic_memory.coordinates import replay_coordinates
-from cosmic_memory.demo_overlay import DemoOverlayManager
-from cosmic_memory.cursor_overlay import CursorOverlayManager
+from browser_memory.coordinates import replay_coordinates
+from browser_memory.demo_overlay import DemoOverlayManager
+from browser_memory.cursor_overlay import CursorOverlayManager
 import os
 from dotenv import load_dotenv
 
@@ -421,6 +421,7 @@ class BrowserController:
         demo_overlay: Optional[DemoOverlayManager] = None,
         ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = None,
         human_driven: bool = False,
+        credential_store: Optional[Any] = None,
     ):
         self.config = config
         # When True, a human is driving this browser (workflow recorder), not
@@ -447,6 +448,9 @@ class BrowserController:
         # (e.g. for voice-driven Q&A during a call) instead of stdin input().
         # Receives the question, returns the user's reply text (or raises on timeout).
         self.ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = ask_user_handler
+        # Per-run vault credentials (provisioned by the Cosmic orchestrator).
+        # Values never enter the LLM context — only CredentialFill consumes them.
+        self.credential_store = credential_store
         
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -1730,7 +1734,14 @@ class BrowserController:
                     error="DOM tools are disabled in vision interaction mode.",
                 )
 
-            if tool_call.action_type == ActionType.VISUAL_CLICK:
+            if tool_call.action_type == ActionType.PARSE_ERROR:
+                result = ActionResult(
+                    success=False,
+                    action_type=tool_call.action_type,
+                    description="Parse error",
+                    error="No action to execute — the decision was not valid JSON.",
+                )
+            elif tool_call.action_type == ActionType.VISUAL_CLICK:
                 result = await self._visual_click(screenshot_path, tool_call.parameters["description"], tool_call.parameters.get("region_hint"))
             elif tool_call.action_type == ActionType.VISUAL_TYPE:
                 result = await self._visual_type(
@@ -1751,6 +1762,12 @@ class BrowserController:
                 )
             elif tool_call.action_type == ActionType.DOM_EXTRACT:
                 result = await self._dom_extract(tool_call.parameters["query"], tool_call.parameters.get("schema"), tool_call.parameters.get("max_results", 10))
+            elif tool_call.action_type == ActionType.BATCH_EXTRACT:
+                result = await self._batch_extract(tool_call.parameters)
+            elif tool_call.action_type == ActionType.CREDENTIAL_FILL:
+                result = await self._credential_fill(tool_call.parameters)
+            elif tool_call.action_type == ActionType.REQUEST_CREDENTIALS:
+                result = await self._request_credentials(tool_call.parameters)
             elif tool_call.action_type == ActionType.SELECT_OPTION:
                 result = await self._dom_select(
                     tool_call.parameters["selector"],
@@ -1830,6 +1847,23 @@ class BrowserController:
             
             result.execution_time_ms = (time.time() - start_time) * 1000
             return result
+        except KeyError as e:
+            # LLM omitted a required parameter (e.g. VisualClick with empty
+            # parameters). Return an actionable error so the model can
+            # self-correct immediately instead of guessing at "KeyError: 'x'".
+            missing = str(e).strip("'\"")
+            return ActionResult(
+                success=False,
+                action_type=tool_call.action_type,
+                description=f"{tool_call.action_type.value} missing parameter",
+                error=(
+                    f"Missing required parameter {missing} for {tool_call.action_type.value}. "
+                    f"Re-issue the SAME action with that parameter filled in — e.g. VisualClick needs "
+                    f"'description' (what to click, with color/position/text cues), VisualType needs "
+                    f"'field_description' + 'text'."
+                ),
+                execution_time_ms=(time.time() - start_time) * 1000,
+            )
         except Exception as e:
             return ActionResult(success=False, action_type=tool_call.action_type, description=str(tool_call.parameters), error=str(e), execution_time_ms=(time.time() - start_time) * 1000)
 
@@ -3124,6 +3158,274 @@ class BrowserController:
                 error=(last_result or {}).get("error", "No visible enabled element found in main frame or any iframe."),
             )
         except Exception as e: return ActionResult(success=False, action_type=ActionType.DOM_TYPE, description=f"Type into {selector}", error=str(e))
+
+    async def _extract_js_results(self, page, query: str, schema: Optional[Dict], max_results: int):
+        """Run the DOM extraction script on the given page. Used by BatchExtract
+        on background tabs (mirrors the script embedded in _dom_extract)."""
+        js_script = """
+        (args) => {
+            const query = args.query;
+            const schema = args.schema;
+            const max_results = args.max_results;
+
+            const cleanText = (value) => {
+                if (value === null || value === undefined) return "";
+                return String(value).replace(/\\s+/g, " ").trim();
+            };
+
+            const extractText = (node) => {
+                if (!node) return null;
+                if (node.nodeType === Node.TEXT_NODE) return cleanText(node.textContent);
+                if (node.nodeType !== Node.ELEMENT_NODE) return cleanText(node.textContent);
+
+                const el = node;
+                const candidates = [
+                    el.innerText,
+                    el.textContent,
+                    el.value,
+                    el.getAttribute && el.getAttribute("content"),
+                    el.getAttribute && el.getAttribute("aria-label"),
+                    el.getAttribute && el.getAttribute("title"),
+                    el.getAttribute && el.getAttribute("alt"),
+                    el.getAttribute && el.getAttribute("placeholder"),
+                    el.getAttribute && el.getAttribute("href"),
+                    el.getAttribute && el.getAttribute("src"),
+                ];
+
+                for (const candidate of candidates) {
+                    const text = cleanText(candidate);
+                    if (text) return text;
+                }
+                return null;
+            };
+
+            const elements = Array.from(document.querySelectorAll(query)).slice(0, max_results);
+
+            const rows = elements.map(el => {
+                if (schema) {
+                    const item = {};
+                    for (const key in schema) {
+                        const selector = schema[key];
+                        let child = null;
+                        try {
+                            child = el.querySelector(selector);
+                        } catch (_) {
+                            child = null;
+                        }
+                        item[key] = extractText(child);
+                    }
+                    return item;
+                } else {
+                    return extractText(el);
+                }
+            });
+
+            return rows.filter(row => {
+                if (row === null || row === undefined) return false;
+                if (typeof row === "string") return row.length > 0;
+                if (typeof row === "object") return Object.values(row).some(value => cleanText(value).length > 0);
+                return true;
+            });
+        }
+        """
+        return await page.evaluate(js_script, {
+            "query": query,
+            "schema": schema,
+            "max_results": max_results,
+        })
+
+    async def _batch_extract(self, parameters: Dict[str, Any]) -> ActionResult:
+        """Parallel read-only fan-out: open each URL in a background tab and/or
+        run each query on the active page, extracting in one concurrent step.
+        Deterministic — no LLM call per page; the active page is untouched."""
+        import json as _json
+        self.dom_calls += 1
+        urls = [u.strip() for u in (parameters.get("urls") or [])
+                if isinstance(u, str) and u.strip()]
+        queries = [q.strip() for q in (parameters.get("queries") or
+                    ([parameters.get("query")] if isinstance(parameters.get("query"), str) and parameters.get("query").strip() else []))
+                if isinstance(q, str) and q.strip()]
+        schema = parameters.get("schema") if isinstance(parameters.get("schema"), dict) else None
+        max_urls = min(8, max(1, int(os.getenv("BATCH_EXTRACT_MAX_URLS", "4"))))
+        urls = urls[:max_urls]
+        max_results = max(1, min(50, int(parameters.get("max_results", 8))))
+        goto_timeout = max(5000, int(os.getenv("BATCH_EXTRACT_GOTO_TIMEOUT_MS", "15000")))
+        close_tabs = parameters.get("close_tabs", True)
+
+        if urls and not queries:
+            queries = ["main"]
+
+        if not urls and not queries:
+            return ActionResult(
+                success=False, action_type=ActionType.BATCH_EXTRACT, description="BatchExtract",
+                error="Provide 'urls' (list) and/or 'query'/'queries' (list) to batch-extract.",
+            )
+
+        async def one_url(url: str) -> Dict[str, Any]:
+            page = None
+            try:
+                page = await self.page.context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=goto_timeout)
+                await page.wait_for_timeout(300)
+                extracts = {q: await self._extract_js_results(page, q, schema, max_results) for q in queries}
+                return {"label": url, "ok": True, "extracts": extracts}
+            except Exception as e:
+                return {"label": url, "ok": False, "error": str(e)}
+            finally:
+                if page is not None and close_tabs:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+
+        async def one_query(query: str) -> Dict[str, Any]:
+            try:
+                return {"label": f"this page :: {query}", "ok": True,
+                        "extracts": {query: await self._extract_js_results(self.page, query, schema, max_results)}}
+            except Exception as e:
+                return {"label": f"this page :: {query}", "ok": False, "error": str(e)}
+
+        tasks = [one_url(u) for u in urls] + ([] if urls else [one_query(q) for q in queries])
+        outcomes = await asyncio.gather(*tasks)
+
+        sections: List[str] = []
+        ok_count = 0
+        for idx, item in enumerate(outcomes, 1):
+            label = item.get("label")
+            if item.get("ok"):
+                ok_count += 1
+                body = _json.dumps(item["extracts"], ensure_ascii=False, indent=2)
+                sections.append(f"[{idx}] {label}\n{body}")
+            else:
+                sections.append(f"[{idx}] {label}\nERROR: {item.get('error')}")
+
+        all_text = "\n\n".join(sections)
+        if len(all_text) > 100000:
+            all_text = all_text[:100000] + "... (truncated)"
+        success = ok_count > 0
+        return ActionResult(
+            success=success,
+            action_type=ActionType.BATCH_EXTRACT,
+            description=f"BatchExtract: {ok_count}/{len(outcomes)} target(s) extracted",
+            output=all_text if success else None,
+            error=None if success else "All batch extracts failed",
+        )
+
+    async def _credential_fill(self, parameters: Dict[str, Any]) -> ActionResult:
+        """Deterministically fill the login form on the current page using the
+        per-run vault credentials provisioned by the Cosmic orchestrator.
+
+        Values never appear in this ActionResult, in screenshots, or in any
+        LLM context — the model only learns whether the fill succeeded.
+        """
+        if self.page is None:
+            return ActionResult(success=False, action_type=ActionType.CREDENTIAL_FILL, description="CredentialFill", error="Browser page is not available.")
+        if self.credential_store is None or len(self.credential_store) == 0:
+            return ActionResult(
+                success=False, action_type=ActionType.CREDENTIAL_FILL, description="CredentialFill",
+                error="No credentials were provisioned for this run. If this site requires login to proceed, call RequestCredentials to ask the orchestrator.",
+            )
+        current_url = self.page.url
+        entry = self.credential_store.get(current_url)
+        if not entry:
+            available = ", ".join(self.credential_store.available_domains())
+            return ActionResult(
+                success=False, action_type=ActionType.CREDENTIAL_FILL, description="CredentialFill",
+                error=f"No credentials provisioned for this site ({current_url}). Available for: {available}. Call RequestCredentials if login is required here.",
+            )
+
+        do_submit = parameters.get("submit", True)
+        if isinstance(do_submit, str):
+            do_submit = do_submit.strip().lower() not in {"false", "0", "no", "off"}
+        js_script = """
+        (args) => {
+            const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.visibility === 'hidden' || style.display === 'none') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            };
+            const nativeFill = (el, value) => {
+                if (!el) return false;
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, value);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            };
+            const passwords = Array.from(document.querySelectorAll('input[type="password"]')).filter(visible);
+            if (!passwords.length) return { found: false, reason: 'no visible password field on this page' };
+            const pw = passwords[0];
+            const form = pw.closest('form');
+            const scope = form || document;
+            const hint = (el) => ((el.autocomplete || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase();
+            const candidates = Array.from(scope.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input:not([type])'))
+                .filter(el => el !== pw && visible(el) && !el.disabled && !el.readOnly);
+            const emailish = candidates.filter(el => /email|user|login|account/.test(hint(el)));
+            const user = emailish.length ? emailish[0] : (candidates.length ? candidates[candidates.length - 1] : null);
+            const totpField = Array.from(scope.querySelectorAll('input'))
+                .filter(el => el !== pw && el !== user && visible(el) && /totp|otp|2fa|code/.test(hint(el)))[0] || null;
+            const filled = [];
+            if (user && args.username) { nativeFill(user, args.username); filled.push('username'); }
+            if (pw && args.password) { nativeFill(pw, args.password); filled.push('password'); }
+            if (totpField && args.totp) { nativeFill(totpField, args.totp); filled.push('totp'); }
+            let submitted = false;
+            if (args.submit && pw && args.password) {
+                const submitBtn = form
+                    ? (form.querySelector('button[type="submit"], input[type="submit"]') || form.querySelector('button'))
+                    : document.querySelector('button[type="submit"]');
+                if (submitBtn) { submitBtn.click(); submitted = true; }
+                else if (form && form.requestSubmit) { form.requestSubmit(); submitted = true; }
+                else { pw.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true })); submitted = true; }
+            }
+            return { found: true, filled, submitted };
+        }
+        """
+        try:
+            fill_state = await self.page.evaluate(js_script, {
+                "username": entry.get("username", ""),
+                "password": entry.get("password", ""),
+                "totp": entry.get("totp_seed", ""),
+                "submit": bool(do_submit),
+            })
+        except Exception as exc:
+            return ActionResult(success=False, action_type=ActionType.CREDENTIAL_FILL, description="CredentialFill", error=f"Credential fill failed: {exc}")
+        if not fill_state or not fill_state.get("found"):
+            reason = (fill_state or {}).get("reason", "no login form found")
+            return ActionResult(
+                success=False, action_type=ActionType.CREDENTIAL_FILL, description="CredentialFill",
+                output=f'{{"status": "no_login_form", "reason": "{reason}"}}',
+                error=f"CredentialFill could not find a login form on this page: {reason}. If this page is not a login page, continue the task normally.",
+            )
+        filled = fill_state.get("filled", [])
+        description = f"CredentialFill: filled {', '.join(filled) if filled else 'nothing'}" + (" and submitted" if fill_state.get("submitted") else "")
+        return ActionResult(
+            success=bool(filled),
+            action_type=ActionType.CREDENTIAL_FILL,
+            description=description,
+            output='{"status": "filled", "fields": [' + ", ".join(f'"{f}"' for f in filled) + '], "submitted": ' + ("true" if fill_state.get("submitted") else "false") + "}",
+            error=None if filled else "No matching fields were filled; check the page state.",
+        )
+
+    async def _request_credentials(self, parameters: Dict[str, Any]) -> ActionResult:
+        """End the run asking the orchestrator for credentials for a site.
+
+        The structured output drives the orchestrator's credential-request
+        card; no secrets are involved — this is a request, not a transfer.
+        """
+        site = str(parameters.get("site") or "").strip()
+        if not site and self.page is not None:
+            site = self.page.url
+        if not site:
+            return ActionResult(success=False, action_type=ActionType.REQUEST_CREDENTIALS, description="RequestCredentials", error="No site could be determined for the credential request.")
+        reason = str(parameters.get("reason") or "Login is required to reach the goal.").strip()
+        return ActionResult(
+            success=True,
+            action_type=ActionType.REQUEST_CREDENTIALS,
+            description=f"RequestCredentials: asked the orchestrator for credentials",
+            output='{"status": "credentials_needed", "site": ' + json.dumps(site) + ', "reason": ' + json.dumps(reason) + "}",
+        )
 
     async def _dom_extract(self, query: str, schema: Optional[Dict], max_results: int) -> ActionResult:
         self.dom_calls += 1

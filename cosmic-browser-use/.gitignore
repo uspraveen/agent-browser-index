@@ -26,7 +26,7 @@ htmlcov/
 # Runtime/debug artifacts
 runs/
 data/smoke_supermemory/
-data/cosmic_memory_indexer_*/
+data/browser_memory_indexer_*/
 
 # OS / editor noise
 .DS_Store

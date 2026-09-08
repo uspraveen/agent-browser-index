@@ -20,8 +20,8 @@ from collections import deque
 from openai import OpenAI
 from cli_labels import display_provider_model, resolve_fireworks_default_model
 
-from cosmic_types import Step, BrowserState, ActionResult, TaskConfig
-from cosmic_memory.coordinates import build_visual_index
+from cosmic_types import Step, BrowserState, ActionResult, TaskConfig, VerificationStatus
+from browser_memory.coordinates import build_visual_index
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -457,6 +457,7 @@ this JSON object (no other text):
             "max_steps": self.config.max_steps,
             "cumulative_summary": self.cumulative_summary,
             "enable_dom_fallback": self.config.enable_dom_fallback,
+            "credentials_available_for": list(getattr(self.config, "credentials_available_for", ()) or ()),
         }
         
         if self.steps:
@@ -532,6 +533,16 @@ this JSON object (no other text):
         # Get last N steps
         window = self.config.loop_detection_window
         recent_steps = self.steps[-window:]
+        
+        # A verified SUCCESS anywhere in the window means real progress was
+        # made within it — e.g. two malformed attempts followed by a good
+        # click is self-correction, not a loop. Escalating on it wastes a
+        # frontier call right when the task is nearly done.
+        if any(
+            s.action and s.action.verification_status == VerificationStatus.SUCCESS
+            for s in recent_steps
+        ):
+            return False
         
         # Check if actions are similar
         action_types = [s.action.action_type for s in recent_steps if s.action]

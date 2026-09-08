@@ -38,8 +38,8 @@ if sys.platform == "win32":
 
 from cosmic_types import TaskConfig
 from browser_controller import BrowserController
-from cosmic_memory.recorder import WorkflowRecorder
-from cosmic_memory.runtime import CosmicMemoryRuntime
+from browser_memory.recorder import WorkflowRecorder
+from browser_memory.runtime import BrowserMemoryRuntime
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -112,7 +112,7 @@ async def run(args: argparse.Namespace) -> int:
         return 0
 
     print("\n📦 Compiling recorded trace into a workflow...")
-    runtime = CosmicMemoryRuntime(
+    runtime = BrowserMemoryRuntime(
         data_dir=args.memory_dir,
         user_id=args.cosmic_user_id,
         container_tag=args.cosmic_container_tag,
@@ -155,7 +155,7 @@ def main() -> int:
     parser.add_argument("--chrome-profile", required=True, metavar="PROFILE_DIR", help="Chrome profile directory name (e.g. 'Default', 'Profile 1') — see main.py --list-chrome-profiles.")
     parser.add_argument("--refresh-chrome-profile", action="store_true", help="Re-seed the agent's persistent Chrome data dir from the real profile before recording.")
     parser.add_argument("--url", default=None, help="Optional starting URL to navigate to once recording is active.")
-    parser.add_argument("--memory-dir", default=os.getenv("COSMIC_MEMORY_DIR", "./data/cosmic_memory"), help="Local workflow memory directory.")
+    parser.add_argument("--memory-dir", default=os.getenv("BROWSER_MEMORY_DIR") or os.getenv("COSMIC_MEMORY_DIR"), help="Local workflow memory directory.")
     parser.add_argument("--cosmic-user-id", default=os.getenv("COSMIC_USER_ID", "demo_user"), help="Supermemory user/container identity.")
     parser.add_argument("--cosmic-container-tag", default=os.getenv("COSMIC_CONTAINER_TAG", "cosmic-hackathon-demo"), help="Supermemory container tag.")
     parser.add_argument("--disable-supermemory", action="store_true", help="Write local workflow only; skip Supermemory upload.")

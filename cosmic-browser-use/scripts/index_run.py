@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cosmic_memory.indexer import load_run_steps
-from cosmic_memory.runtime import CosmicMemoryRuntime
+from browser_memory.indexer import load_run_steps
+from browser_memory.runtime import BrowserMemoryRuntime
 
 
 def infer_goal(run_dir: Path) -> str:
@@ -65,7 +65,7 @@ def main() -> int:
     parser.add_argument("--run-dir", required=True, help="Run directory containing log.json.")
     parser.add_argument("--goal", default=None, help="Goal for this run. Defaults to run.start goal when available.")
     parser.add_argument("--status", default=None, help="Run status. Defaults to run.final_stats task_status.")
-    parser.add_argument("--memory-dir", default=os.getenv("COSMIC_MEMORY_DIR", "./data/cosmic_memory"), help="Local workflow memory directory.")
+    parser.add_argument("--memory-dir", default=os.getenv("BROWSER_MEMORY_DIR") or os.getenv("COSMIC_MEMORY_DIR"), help="Local workflow memory directory.")
     parser.add_argument("--cosmic-user-id", default=os.getenv("COSMIC_USER_ID", "demo_user"), help="Supermemory user/container identity.")
     parser.add_argument("--cosmic-container-tag", default=os.getenv("COSMIC_CONTAINER_TAG", "cosmic-hackathon-demo"), help="Supermemory container tag.")
     parser.add_argument("--workflow-id", default=None, help="Optional explicit workflow ID.")
@@ -86,7 +86,7 @@ def main() -> int:
         return 2
     status = args.status or infer_status(run_dir)
 
-    runtime = CosmicMemoryRuntime(
+    runtime = BrowserMemoryRuntime(
         data_dir=args.memory_dir,
         user_id=args.cosmic_user_id,
         container_tag=args.cosmic_container_tag,

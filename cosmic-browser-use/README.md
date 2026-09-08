@@ -102,8 +102,8 @@ Enums/dataclasses for tool actions, action results, task config, LLM config, ste
 Standalone MiMo grounding/navigation utility + health check helper used by `main.py`.
 - `config.py`
 Central defaults for keys/models/limits/timing.
-- `cosmic_memory/`
-COSMIC traversal memory: replay, indexing, recording, optional Supermemory bridge. See `COSMIC_MEMORY.md`.
+- `browser_memory/`
+Browser workflow memory: replay, indexing, recording, optional Supermemory bridge. See BROWSER_MEMORY.md.
 - `scripts/`
 `record_workflow.py` (human-driven recording), `index_run.py` (post-run indexing), `smoke_supermemory.py`.
 
@@ -350,7 +350,7 @@ python main.py --help
 | `--ask-user-timeout` | int | `120` | Seconds to wait for `AskUser`. |
 | `--large-notes-path` | str | `<run_dir>/large_notes.jsonl` | External large-notes storage path. |
 | `--memory-mode` | enum | `off` | COSMIC mode: `off`, `learn`, `recall`, `auto`. |
-| `--memory-dir` | str | `./data/cosmic_memory` | Local workflow store directory. |
+| `--memory-dir` | str | `./data/browser_memory` | Local workflow store directory. |
 | `--cosmic-user-id` | str | `demo_user` | User identity for COSMIC memory partitioning. |
 | `--cosmic-container-tag` | str | `cosmic-hackathon-demo` | Container tag (used by optional Supermemory). |
 | `--disable-supermemory` | flag | off | Local workflow only; skip Supermemory reads/writes. |
@@ -518,7 +518,7 @@ Configure at minimum `FIREWORKS_API_KEY` and `MIMO_API_URL` in `.env`. See `.env
 
 ## Further Reading
 
-- [`COSMIC_MEMORY.md`](COSMIC_MEMORY.md) — memory modes, indexing pipeline, debug logs, replay behavior
+- [`BROWSER_MEMORY.md`](BROWSER_MEMORY.md) — memory modes, indexing pipeline, debug logs, replay behavior
 - [`../README.md`](../README.md) — project overview and quick start
 
 ## License

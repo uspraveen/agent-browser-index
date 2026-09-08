@@ -1,0 +1,1135 @@
+{
+  "workflow_id": "worldlabs_ai_find_out_jobs_oppurtunities_world_labs_success",
+  "name": "Find World Labs job openings via careers page",
+  "domain": "worldlabs.ai",
+  "intent": "find current job opportunities at World Labs",
+  "task_signature": "worldlabs_ai_find_out_jobs_oppurtunities_world_labs",
+  "created_at": "2026-09-06T02:53:13.704015+00:00",
+  "updated_at": "2026-09-06T02:53:13.704015+00:00",
+  "success_count": 1,
+  "avg_runtime_seconds": null,
+  "summary": "Navigates to worldlabs.ai, enters the careers page via the 'Join Us' nav link, jumps to the Open Roles section via the 'Explore open roles' button, expands a category accordion (e.g. Research) to reveal role titles, extracts the live roles list, and saves it as the answer. Reusable because the route is stable while the actual openings change over time.",
+  "route_strategy": "Replay follows the recorded gold path homepage -> Join Us -> Explore open roles -> expand category -> extract -> save note. Re-read role titles live rather than reusing the recorded note text.",
+  "replay_instructions": {
+    "do": [
+      "Navigate to https://www.worldlabs.ai and wait for the homepage to load",
+      "Click the 'Join Us' link in the top navigation bar (between 'Spark' and the 'Create with Marble' button) and verify the URL becomes worldlabs.ai/careers",
+      "Click the black 'Explore open roles' button below the paragraph text and verify the URL becomes worldlabs.ai/careers#open-roles with the Open Roles section visible",
+      "Click a category accordion row (e.g. 'Research' showing its role count with a chevron) to expand it and reveal role titles, locations, and Apply links",
+      "Run one DOMExtract on 'main' after expansion, then save a note using a parameterized template populated from the live extraction",
+      "Preserve goal-specific target hints: find, out, jobs, oppurtunities, world, labs.",
+      "Prefer the observed successful final URL when it still matches the goal: https://www.worldlabs.ai/careers#open-roles.",
+      "Patch: Always supply a full target description for visual clicks; use the 'Join Us' top-nav link to reach the careers page.",
+      "Patch: Click the category row (e.g. 'Research ... 4 roles' with chevron) using a complete description parameter to expand the accordion.",
+      "Patch: Expand the category accordion first, then run a single DOMExtract on 'main' to capture role titles, locations, and Apply links."
+    ],
+    "avoid": [
+      "Do not issue VisualClick steps with empty/missing description parameters — steps 2 and 9 failed exactly this way with a 'description' error and no page effect",
+      "Do not insert repeated 1-second waits between extraction attempts (steps 5, 7, 8, 10, 11 added no value)",
+      "Do not DOMExtract before expanding the category accordions — collapsed categories expose only headers like 'Research (4 roles)', not role titles (step 6 was insufficient)",
+      "Do not hardcode the recorded role list into the note; openings change over time",
+      "Do not replay source step 2: VisualClick executed with empty parameters ('description' error); no page effect, superseded by successful Join Us click at step 3.",
+      "Do not replay source step 5: TimedWait with no_change; redundant delay.",
+      "Do not replay source step 6: Premature DOMExtract before accordions were expanded; captured only category headers, not role titles.",
+      "Do not replay source step 7: TimedWait with no_change; redundant delay.",
+      "Do not replay source step 8: TimedWait with no_change; redundant delay.",
+      "Do not replay source step 9: VisualClick executed with empty parameters ('description' error), verification no_change; superseded by successful Research accordion click at step 12.",
+      "Do not replay source step 10: TimedWait with no_change; redundant delay.",
+      "Do not replay source step 11: TimedWait with no_change; redundant delay."
+    ],
+    "checkpoints": [
+      "After the Join Us click: URL is https://www.worldlabs.ai/careers and title is 'Careers | World Labs'",
+      "After the Explore open roles click: URL is https://www.worldlabs.ai/careers#open-roles and category rows with role counts are visible",
+      "After expanding a category: individual role titles with locations and 'Apply' links are visible",
+      "Target page title should resemble: [Tab 1/1] Careers | World Labs.",
+      "Pause after dynamic search/result-selection states unless the next action is replay-safe."
+    ],
+    "stop_conditions": [
+      "The 'Join Us' link or 'Explore open roles' button no longer exists on the page (site redesign) — hand back to the live agent",
+      "The Open Roles section renders no categories or role rows after expansion",
+      "Careers page fails to load or redirects away from worldlabs.ai/careers",
+      "If the current page no longer matches the workflow state, stop replay and hand back to the live planner.",
+      "If an answer text must be read from the current screenshot, stop before templated SaveNote and let the live answer finalizer read it."
+    ]
+  },
+  "generalization_level": "template",
+  "quality": {
+    "usable": true,
+    "confidence": 0.86,
+    "generalization_level": "template",
+    "reason": "Clean deterministic route to the careers Open Roles section; role listings are dynamic so the final note must be re-extracted live at replay time."
+  },
+  "variables": [
+    {
+      "name": "roles_summary",
+      "default": "Visible category: Research (4 roles), all located in San Francisco with 'Apply' links: 1) Research Engineer / Scientist (3D Tech Lead), 2) Research Engineer / Scientist (Robot Learning), 3) Research Engineer / Scientist (SLAM), 4) Research Scientist (Generative Modeling).",
+      "source": "live_extraction",
+      "applies_to_source_steps": [
+        13,
+        14
+      ]
+    }
+  ],
+  "acceptance_criteria": {
+    "must_match": [
+      "Careers | World Labs",
+      "worldlabs.ai/careers#open-roles",
+      "Open Roles",
+      "Research"
+    ],
+    "reject": [
+      "about:blank",
+      "404",
+      "Page Not Found"
+    ]
+  },
+  "observed_success": {
+    "final_url": "https://www.worldlabs.ai/careers#open-roles",
+    "final_title": "[Tab 1/1] Careers | World Labs",
+    "final_note": "World Labs job opportunities are listed on their careers page (worldlabs.ai/careers#open-roles) under 'Open Roles' — 'We're looking for curious, ambitious people who want their life's work to matter.' Visible category: Research (4 roles), all located in San Francisco with 'Apply' links: 1) Research Engineer / Scientist (3D Tech Lead), 2) Research Engineer / Scientist (Robot Learning), 3) Research Engineer / Scientist (SLAM), 4) Research Scientist (Generative Modeling). This is the visible/truncated portion of the list; additional roles or categories may exist further down the page.",
+    "note_source_step": 14
+  },
+  "source_run_dir": "runs\\20260905_214947",
+  "source_status": "success",
+  "indexer": {
+    "source": "llm",
+    "provider": "fireworks_kimi",
+    "model": "accounts/fireworks/models/glm-5p3-flash",
+    "version": "cosmic_run_indexer_v2"
+  },
+  "discarded_steps": [
+    {
+      "source_step": 2,
+      "reason": "VisualClick executed with empty parameters ('description' error); no page effect, superseded by successful Join Us click at step 3"
+    },
+    {
+      "source_step": 5,
+      "reason": "TimedWait with no_change; redundant delay"
+    },
+    {
+      "source_step": 6,
+      "reason": "Premature DOMExtract before accordions were expanded; captured only category headers, not role titles"
+    },
+    {
+      "source_step": 7,
+      "reason": "TimedWait with no_change; redundant delay"
+    },
+    {
+      "source_step": 8,
+      "reason": "TimedWait with no_change; redundant delay"
+    },
+    {
+      "source_step": 9,
+      "reason": "VisualClick executed with empty parameters ('description' error), verification no_change; superseded by successful Research accordion click at step 12"
+    },
+    {
+      "source_step": 10,
+      "reason": "TimedWait with no_change; redundant delay"
+    },
+    {
+      "source_step": 11,
+      "reason": "TimedWait with no_change; redundant delay"
+    }
+  ],
+  "trace_evidence": [
+    {
+      "source_step": 1,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "Navigate",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Navigated to https://www.worldlabs.ai",
+      "parameters": {
+        "url": "https://www.worldlabs.ai"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "about:blank",
+        "title": "[Tab 1/1] ",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/",
+        "title": "[Tab 1/1] World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 2,
+      "selected": false,
+      "discarded_reason": "VisualClick executed with empty parameters ('description' error); no page effect, superseded by successful Join Us click at step 3",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "incomplete",
+      "error": "'description'",
+      "description": "{}",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/",
+        "title": "[Tab 1/1] World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/",
+        "title": "[Tab 1/1] World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 3,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button",
+      "parameters": {
+        "description": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button"
+      },
+      "coordinates": [
+        995,
+        83
+      ],
+      "visual_index": {
+        "target_description": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button",
+        "normalized_coordinates": {
+          "x": 0.777344,
+          "y": 0.115278
+        },
+        "pixel_coordinates": {
+          "x": 995,
+          "y": 83
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/",
+        "page_title": "[Tab 1/1] World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/",
+        "title": "[Tab 1/1] World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      }
+    },
+    {
+      "source_step": 4,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "black 'Explore open roles' button located below the paragraph text on the left side of the page",
+      "parameters": {
+        "description": "black 'Explore open roles' button located below the paragraph text on the left side of the page"
+      },
+      "coordinates": [
+        129,
+        549
+      ],
+      "visual_index": {
+        "target_description": "black 'Explore open roles' button located below the paragraph text on the left side of the page",
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/careers",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 0
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 5,
+      "selected": false,
+      "discarded_reason": "TimedWait with no_change; redundant delay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 6,
+      "selected": false,
+      "discarded_reason": "Premature DOMExtract before accordions were expanded; captured only category headers, not role titles",
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 7,
+      "selected": false,
+      "discarded_reason": "TimedWait with no_change; redundant delay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 8,
+      "selected": false,
+      "discarded_reason": "TimedWait with no_change; redundant delay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 9,
+      "selected": false,
+      "discarded_reason": "VisualClick executed with empty parameters ('description' error), verification no_change; superseded by successful Research accordion click at step 12",
+      "action_type": "VisualClick",
+      "success": false,
+      "verification_status": "no_change",
+      "error": "'description'",
+      "description": "{}",
+      "parameters": {},
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 10,
+      "selected": false,
+      "discarded_reason": "TimedWait with no_change; redundant delay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 11,
+      "selected": false,
+      "discarded_reason": "TimedWait with no_change; redundant delay",
+      "action_type": "TimedWait",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Waited 1.0s",
+      "parameters": {
+        "seconds": 1
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 12,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "VisualClick",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+      "parameters": {
+        "description": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+        "region_hint": "center"
+      },
+      "coordinates": [
+        612,
+        422
+      ],
+      "visual_index": {
+        "target_description": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+        "normalized_coordinates": {
+          "x": 0.478125,
+          "y": 0.586111
+        },
+        "pixel_coordinates": {
+          "x": 612,
+          "y": 422
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_url": "https://www.worldlabs.ai/careers#open-roles",
+        "page_title": "[Tab 1/1] Careers | World Labs"
+      },
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 13,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "DOMExtract",
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "description": "Extracted 1 items",
+      "parameters": {
+        "query": "main"
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    },
+    {
+      "source_step": 14,
+      "selected": true,
+      "discarded_reason": null,
+      "action_type": "SaveNote",
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "description": "Saved note (132 tokens)",
+      "parameters": {
+        "note": "World Labs job opportunities are listed on their careers page (worldlabs.ai/careers#open-roles) under 'Open Roles' — 'We're looking for curious, ambitious people who want their life's work to matter.' Visible category: Research (4 roles), all located in San Francisco with 'Apply' links: 1) Research Engineer / Scientist (3D Tech Lead), 2) Research Engineer / Scientist (Robot Learning), 3) Research Engineer / Scientist (SLAM), 4) Research Scientist (Generative Modeling). This is the visible/truncated portion of the list; additional roles or categories may exist further down the page."
+      },
+      "coordinates": null,
+      "visual_index": null,
+      "before": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      },
+      "after": {
+        "url": "https://www.worldlabs.ai/careers#open-roles",
+        "title": "[Tab 1/1] Careers | World Labs",
+        "scroll_y": 2260.800048828125
+      }
+    }
+  ],
+  "page_states": [
+    {
+      "state_id": "worldlabs_ai_state_001_tab_1_1",
+      "name": "[Tab 1/1] ",
+      "url_pattern": "about:blank",
+      "page_summary": "[Tab 1/1]  at about:blank",
+      "visual_markers": [
+        "tab",
+        "world",
+        "labs",
+        "homepage",
+        "https",
+        "www",
+        "worldlabs"
+      ],
+      "screenshot_path": "runs\\20260905_214947\\screenshots\\step_001.webp",
+      "screenshot_hash": "0000000000000000"
+    },
+    {
+      "state_id": "worldlabs_ai_state_002_tab_1_1_world_labs",
+      "name": "[Tab 1/1] World Labs",
+      "url_pattern": "https://www.worldlabs.ai/",
+      "page_summary": "[Tab 1/1] World Labs at https://www.worldlabs.ai/",
+      "visual_markers": [
+        "tab",
+        "world",
+        "labs",
+        "join",
+        "link",
+        "top",
+        "navigation",
+        "bar",
+        "between",
+        "spark",
+        "create",
+        "marble"
+      ],
+      "screenshot_path": "runs\\20260905_214947\\screenshots\\step_003.webp",
+      "screenshot_hash": "00fffffbf0f0f3ff"
+    },
+    {
+      "state_id": "worldlabs_ai_state_003_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs",
+        "black",
+        "explore",
+        "roles",
+        "button",
+        "below",
+        "paragraph",
+        "text",
+        "left"
+      ],
+      "screenshot_path": "runs\\20260905_214947\\screenshots\\step_004.webp",
+      "screenshot_hash": "00fe0f3fff3f7fbf"
+    },
+    {
+      "state_id": "worldlabs_ai_state_004_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers#open-roles",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers#open-roles",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs",
+        "category",
+        "accordion",
+        "row",
+        "roles",
+        "list",
+        "research",
+        "showing",
+        "downward"
+      ],
+      "screenshot_path": "runs\\20260905_214947\\screenshots\\step_012.webp",
+      "screenshot_hash": "00fe3fffffffffff"
+    },
+    {
+      "state_id": "worldlabs_ai_state_005_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers#open-roles",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers#open-roles",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs",
+        "main",
+        "content",
+        "container",
+        "roles",
+        "section",
+        "containing",
+        "expanded",
+        "list"
+      ],
+      "screenshot_path": "runs\\20260905_214947\\screenshots\\step_013.webp",
+      "screenshot_hash": "00fe3fffffbfbfbf"
+    },
+    {
+      "state_id": "worldlabs_ai_state_006_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers#open-roles",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers#open-roles",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs",
+        "terminal",
+        "note",
+        "summarizing",
+        "job",
+        "opportunities",
+        "live",
+        "extraction"
+      ],
+      "screenshot_path": "runs\\20260905_214947\\screenshots\\step_014.webp",
+      "screenshot_hash": "00fe3fffffbfbfbf"
+    },
+    {
+      "state_id": "worldlabs_ai_state_007_tab_1_1_careers_world_labs",
+      "name": "[Tab 1/1] Careers | World Labs",
+      "url_pattern": "https://www.worldlabs.ai/careers#open-roles",
+      "page_summary": "[Tab 1/1] Careers | World Labs at https://www.worldlabs.ai/careers#open-roles",
+      "visual_markers": [
+        "tab",
+        "careers",
+        "world",
+        "labs"
+      ],
+      "screenshot_path": null,
+      "screenshot_hash": null
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "source_step": 1,
+      "source_evidence_steps": [
+        1
+      ],
+      "role": "navigation",
+      "from_state_id": "worldlabs_ai_state_001_tab_1_1",
+      "action_type": "Navigate",
+      "target_description": "World Labs homepage at https://www.worldlabs.ai",
+      "parameters_template": {
+        "url": "https://www.worldlabs.ai"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "World Labs homepage loads with title 'World Labs' and top navigation visible",
+      "to_state_id": "worldlabs_ai_state_002_tab_1_1_world_labs",
+      "delay_ms": 1200,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_002",
+      "source_step": 3,
+      "source_evidence_steps": [
+        3
+      ],
+      "role": "navigation",
+      "from_state_id": "worldlabs_ai_state_002_tab_1_1_world_labs",
+      "action_type": "VisualClick",
+      "target_description": "'Join Us' link in the top navigation bar, between 'Spark' and the 'Create with Marble' button",
+      "parameters_template": {
+        "description": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260905_214947\\screenshots\\step_003.webp",
+        "page_url": "https://www.worldlabs.ai/",
+        "page_title": "[Tab 1/1] World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 995,
+          "y": 83
+        },
+        "normalized_coordinates": {
+          "x": 0.777344,
+          "y": 0.115278
+        },
+        "mimo_grounding": {
+          "instruction": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 995,
+            "y": 83
+          },
+          "normalized_coordinates": {
+            "x": 0.777344,
+            "y": 0.115278
+          },
+          "raw_model_output": "<think>\n</think>\n\n[995, 83]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260905_214947\\screenshots\\step_003.webp",
+        "page_url": "https://www.worldlabs.ai/",
+        "page_title": "[Tab 1/1] World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 995,
+          "y": 83
+        },
+        "normalized_coordinates": {
+          "x": 0.777344,
+          "y": 0.115278
+        },
+        "mimo_grounding": {
+          "instruction": "Join Us link in top navigation bar, located between 'Spark' and the 'Create with Marble' button",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 995,
+            "y": 83
+          },
+          "normalized_coordinates": {
+            "x": 0.777344,
+            "y": 0.115278
+          },
+          "raw_model_output": "<think>\n</think>\n\n[995, 83]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        995,
+        83
+      ],
+      "expected_result": "URL changes to https://www.worldlabs.ai/careers and title becomes 'Careers | World Labs'",
+      "to_state_id": "worldlabs_ai_state_003_tab_1_1_careers_world_labs",
+      "delay_ms": 1200,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_003",
+      "source_step": 4,
+      "source_evidence_steps": [
+        4
+      ],
+      "role": "open_target",
+      "from_state_id": "worldlabs_ai_state_003_tab_1_1_careers_world_labs",
+      "action_type": "VisualClick",
+      "target_description": "Black 'Explore open roles' button below the paragraph text on the left side of the careers page",
+      "parameters_template": {
+        "description": "black 'Explore open roles' button located below the paragraph text on the left side of the page"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "black 'Explore open roles' button located below the paragraph text on the left side of the page",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260905_214947\\screenshots\\step_004.webp",
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "mimo_grounding": {
+          "instruction": "black 'Explore open roles' button located below the paragraph text on the left side of the page",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 129,
+            "y": 549
+          },
+          "normalized_coordinates": {
+            "x": 0.100781,
+            "y": 0.7625
+          },
+          "raw_model_output": "<think>\n</think>\n\n[129, 549]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "black 'Explore open roles' button located below the paragraph text on the left side of the page",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260905_214947\\screenshots\\step_004.webp",
+        "page_url": "https://www.worldlabs.ai/careers",
+        "page_title": "[Tab 1/1] Careers | World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 129,
+          "y": 549
+        },
+        "normalized_coordinates": {
+          "x": 0.100781,
+          "y": 0.7625
+        },
+        "mimo_grounding": {
+          "instruction": "black 'Explore open roles' button located below the paragraph text on the left side of the page",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 129,
+            "y": 549
+          },
+          "normalized_coordinates": {
+            "x": 0.100781,
+            "y": 0.7625
+          },
+          "raw_model_output": "<think>\n</think>\n\n[129, 549]",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        129,
+        549
+      ],
+      "expected_result": "URL becomes https://www.worldlabs.ai/careers#open-roles, page scrolls to the Open Roles section showing category rows with role counts",
+      "to_state_id": "worldlabs_ai_state_004_tab_1_1_careers_world_labs",
+      "delay_ms": 1200,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_004",
+      "source_step": 12,
+      "source_evidence_steps": [
+        12
+      ],
+      "role": "expand_content",
+      "from_state_id": "worldlabs_ai_state_004_tab_1_1_careers_world_labs",
+      "action_type": "VisualClick",
+      "target_description": "Category accordion row in the Open Roles list (e.g. 'Research' showing '4 roles' with a downward chevron)",
+      "parameters_template": {
+        "description": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+        "region_hint": "center"
+      },
+      "parameter_slots": {},
+      "visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260905_214947\\screenshots\\step_012.webp",
+        "page_url": "https://www.worldlabs.ai/careers#open-roles",
+        "page_title": "[Tab 1/1] Careers | World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 612,
+          "y": 422
+        },
+        "normalized_coordinates": {
+          "x": 0.478125,
+          "y": 0.586111
+        },
+        "mimo_grounding": {
+          "instruction": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 612,
+            "y": 422
+          },
+          "normalized_coordinates": {
+            "x": 0.478125,
+            "y": 0.586111
+          },
+          "raw_model_output": "<think>\n</think>\n\n```json\n[\n\t{\"x\": [612, 422], \"y\": [422]}\n]\n```",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "source_visual_index": {
+        "action_type": "VisualClick",
+        "target_description": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+        "coordinate_source": "mimo_grounded",
+        "screenshot_path": "runs\\20260905_214947\\screenshots\\step_012.webp",
+        "page_url": "https://www.worldlabs.ai/careers#open-roles",
+        "page_title": "[Tab 1/1] Careers | World Labs",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "pixel_coordinates": {
+          "x": 612,
+          "y": 422
+        },
+        "normalized_coordinates": {
+          "x": 0.478125,
+          "y": 0.586111
+        },
+        "mimo_grounding": {
+          "instruction": "Research category row showing '4 roles' with a downward chevron arrow on the right side of the Open Roles list",
+          "image_size": {
+            "width": 1280,
+            "height": 720
+          },
+          "pixel_coordinates": {
+            "x": 612,
+            "y": 422
+          },
+          "normalized_coordinates": {
+            "x": 0.478125,
+            "y": 0.586111
+          },
+          "raw_model_output": "<think>\n</think>\n\n```json\n[\n\t{\"x\": [612, 422], \"y\": [422]}\n]\n```",
+          "parser": "browser_controller.parse_coordinates",
+          "edge_guard": null
+        }
+      },
+      "visual_index_replay_policy": {
+        "stored": true,
+        "replay_safe": true,
+        "reason": "safe_source_visual_index"
+      },
+      "coordinates": [
+        612,
+        422
+      ],
+      "expected_result": "Accordion expands revealing individual role titles with locations and 'Apply' links",
+      "to_state_id": "worldlabs_ai_state_005_tab_1_1_careers_world_labs",
+      "delay_ms": 900,
+      "checkpoint": true,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_005",
+      "source_step": 13,
+      "source_evidence_steps": [
+        13
+      ],
+      "role": "extract_answer",
+      "from_state_id": "worldlabs_ai_state_005_tab_1_1_careers_world_labs",
+      "action_type": "DOMExtract",
+      "target_description": "Main content container of the Open Roles section containing the expanded roles list",
+      "parameters_template": {
+        "query": "main"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Role titles, categories, locations, and Apply links captured from the live page",
+      "to_state_id": "worldlabs_ai_state_006_tab_1_1_careers_world_labs",
+      "delay_ms": 900,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "success",
+      "error": null,
+      "mutation": "as_recorded",
+      "needs_grounding_on_replay": false
+    },
+    {
+      "step_id": "step_006",
+      "source_step": 14,
+      "source_evidence_steps": [
+        14
+      ],
+      "role": "extract_answer",
+      "from_state_id": "worldlabs_ai_state_006_tab_1_1_careers_world_labs",
+      "action_type": "SaveNote",
+      "target_description": "Terminal note summarizing World Labs job opportunities from the live extraction",
+      "parameters_template": {
+        "note": "World Labs job opportunities are listed on their careers page (worldlabs.ai/careers#open-roles) under 'Open Roles'. Live extraction of visible roles: {{roles_summary}}"
+      },
+      "parameter_slots": {},
+      "visual_index": null,
+      "source_visual_index": null,
+      "visual_index_replay_policy": {
+        "stored": false,
+        "replay_safe": false,
+        "reason": "not_a_visual_action"
+      },
+      "coordinates": null,
+      "expected_result": "Answer note saved listing current open roles; note content must be populated from the live DOMExtract, not the recorded text",
+      "to_state_id": "worldlabs_ai_state_007_tab_1_1_careers_world_labs",
+      "delay_ms": 500,
+      "checkpoint": false,
+      "success": true,
+      "verification_status": "no_change",
+      "error": null,
+      "mutation": "parameterized",
+      "needs_grounding_on_replay": false
+    }
+  ],
+  "failure_patches": [
+    {
+      "patch_id": "patch_indexer_001",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 2,
+      "failure": "VisualClick fired with empty parameters causing a 'description' KeyError; click had no effect and navigation to careers did not happen",
+      "fix": "Always supply a full target description for visual clicks; use the 'Join Us' top-nav link to reach the careers page",
+      "confidence": 0.9
+    },
+    {
+      "patch_id": "patch_indexer_002",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 9,
+      "failure": "VisualClick fired with empty parameters causing a 'description' KeyError; accordion did not expand (no_change)",
+      "fix": "Click the category row (e.g. 'Research ... 4 roles' with chevron) using a complete description parameter to expand the accordion",
+      "confidence": 0.9
+    },
+    {
+      "patch_id": "patch_indexer_003",
+      "domain": "worldlabs.ai",
+      "applies_to_source_step": 6,
+      "failure": "DOMExtract on 'main' before expanding accordions returned only category headers (Research 4, Engineering 3, Business 1, Operations 1) without role titles",
+      "fix": "Expand the category accordion first, then run a single DOMExtract on 'main' to capture role titles, locations, and Apply links",
+      "confidence": 0.85
+    }
+  ],
+  "user_preferences": []
+}

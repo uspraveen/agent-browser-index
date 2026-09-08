@@ -31,7 +31,7 @@ from cosmic_types import (
     LLMProvider, LLMTier, LLMConfig
 )
 from cli_labels import FIREWORKS_KIMI_LABEL
-from cosmic_memory.replay import build_default_replay_plan
+from browser_memory.replay import build_default_replay_plan
 import os
 from dotenv import load_dotenv
 
@@ -475,6 +475,7 @@ class FireworksKimiProvider(BaseLLMProvider):
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_mode: bool = True,
     ) -> Dict[str, Any]:
         global _fireworks_http2_preference
         await self._ensure_openai_client()
@@ -510,13 +511,27 @@ class FireworksKimiProvider(BaseLLMProvider):
             "max_tokens": self.config.max_tokens,
             "extra_body": extra_body,
         }
+        if json_mode:
+            # Structured JSON mode: the decision parser requires a JSON
+            # object; without this the model occasionally replied in prose
+            # (which the old fallback silently converted to a wait). If the
+            # endpoint rejects the parameter we retry without it below.
+            kwargs["response_format"] = {"type": "json_object"}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
         undecided = _fireworks_http2_preference is None
         try:
-            result = await self._chat_completion_to_result(kwargs)
+            try:
+                result = await self._chat_completion_to_result(kwargs)
+            except APIStatusError as e:
+                if "response_format" in kwargs and "response_format" in str(e):
+                    # Endpoint rejected JSON mode — retry without it.
+                    kwargs.pop("response_format", None)
+                    result = await self._chat_completion_to_result(kwargs)
+                else:
+                    raise
             if undecided and self._client_uses_http2:
                 _fireworks_http2_preference = True
             elif undecided and not self._client_uses_http2:
@@ -1235,9 +1250,9 @@ Recent search-result loop steps:
         except Exception as e:
             # Fallback to slower model on error
             if tier != LLMTier.SLOW:
-                print(f"\n⚠️  [Orchestrator] {type(e).__name__} in {tier.value} tier — escalating to SLOW tier.")
+                print(f"\n⚠️  [Orchestrator] {type(e).__name__} in {tier.value} tier — failing over to the frontier brain.")
                 return await self.decide_action(context, screenshot_base64, 0.0, LLMTier.SLOW)
-            print(f"\n❌ [Orchestrator] SLOW tier also failed: {e}")
+            print(f"\n❌ [Orchestrator] Frontier brain also failed: {e}")
             raise
         
         latency_ms = (time.time() - start_time) * 1000
@@ -1248,6 +1263,52 @@ Recent search-result loop steps:
         
         # Parse response
         llm_response = self._parse_response(result["content"])
+        if llm_response.parse_failed:
+            # The model replied in prose (or an empty object) instead of a
+            # usable JSON decision. One corrective retry — in PLAIN mode,
+            # since json mode itself may be what produced the empty object.
+            # Never silently substitute an action for it.
+            raw_snippet = (result.get("content") or "")[:160]
+            print("   ⚠️  [Orchestrator] Decision was not valid JSON — retrying once with a format correction.")
+            print(f"   ↳ raw reply: {raw_snippet!r}")
+            repair_messages = list(messages) + [
+                {"role": "assistant", "content": (result.get("content") or "")[:2000]},
+                {"role": "user", "content": (
+                    f"Your previous reply was not a valid decision JSON (it was: {raw_snippet!r}). "
+                    "Decide the next action again and respond with ONLY the complete JSON object — "
+                    "a single {...} with action_type, parameters, reasoning, confidence, "
+                    "estimated_completion — no prose, no markdown fences, and never an empty object."
+                )},
+            ]
+            try:
+                retry_kwargs: Dict[str, Any] = {
+                    "messages": repair_messages,
+                    "system_prompt": system_prompt,
+                    "json_mode": False,
+                }
+                retry_result = await provider.generate(**retry_kwargs)
+                retry_latency = (time.time() - start_time) * 1000
+                self.call_counts[tier] += 1
+                self.total_latency_ms[tier] += retry_latency
+                retried = self._parse_response(retry_result["content"])
+                if not retried.parse_failed:
+                    retried.tier_used = tier.value
+                    return retried
+                llm_response = retried
+            except TypeError:
+                # Provider without json_mode support — retry in its default mode.
+                try:
+                    retry_result = await provider.generate(messages=repair_messages, system_prompt=system_prompt)
+                    self.call_counts[tier] += 1
+                    retried = self._parse_response(retry_result["content"])
+                    if not retried.parse_failed:
+                        retried.tier_used = tier.value
+                        return retried
+                    llm_response = retried
+                except Exception as retry_err:
+                    print(f"   ⚠️  [Orchestrator] Format-correction retry failed: {retry_err}")
+            except Exception as retry_err:
+                print(f"   ⚠️  [Orchestrator] Format-correction retry failed: {retry_err}")
         llm_response.tier_used = tier.value
         
         return llm_response
@@ -1335,6 +1396,9 @@ Recent search-result loop steps:
                 "- SelectOption(selector, value|label|index, values|labels for multi-select) - Select option(s) in a native <select> dropdown (DETERMINISTIC — use this for DETECTED DROPDOWNS instead of clicking invisible options). Fires real change events, works in iframes and shadow DOM.",
                 "- DomType(selector, text, press_enter) - Type into an input/textarea matched by a CSS selector. Use this instead of VisualType when you already know a stable selector for the field (e.g. from a prior DOMExtract) — it's faster and more reliable than visual grounding.",
                 "- DOMExtract(query) - Extract text/data from DOM. Limit 100k chars. Prefer semantic selectors: 'main', 'article', '[role=\"main\"]', '.readme', '.model-card', '#content', '.post-body' etc. Only use 'body' if no semantic container exists.",
+                "- BatchExtract(urls=[...], query|queries=[...], max_results) - PARALLEL extraction: opens each URL in its own background tab (they load simultaneously), runs the query/queries on every page, and returns one combined output. Does NOT disturb the current page. Use it INSTEAD of serial Navigate→DOMExtract cycles when you already know the N page URLs you need (job posts, product pages, docs, articles). Max 8 URLs.",
+                "- CredentialFill(submit) - Fill and (optionally) submit the login form on the current page using provisioned vault credentials. You never see or type the values. Only works when credentials were provisioned for this site.",
+                "- RequestCredentials(site, reason) - End the run asking the orchestrator to provision credentials for a site (e.g. a login wall blocks the goal and no credentials are provisioned).",
             ]
             save_note_idx = available_tools_definitions.index("- SaveNote(note) - Save important information to memory. NOTE MUST NOT BE EMPTY.")
             available_tools_definitions[save_note_idx + 1:save_note_idx + 1] = [
@@ -1361,6 +1425,9 @@ Recent search-result loop steps:
     -   *Rule*: If the goal is "Get list of X" and you are on the page, try `DOMExtract` with the most specific semantic selector you can identify (e.g. 'main', 'article', '.content') BEFORE scrolling. Avoid 'body' unless no semantic container exists.
     -   *Stop Rule*: If a successful `DOMExtract` output contains a plausible answer to a get/find/extract/report goal, your next action should be `SaveNote` with that answer and `estimated_completion=1.0`. Do not run another extraction just to verify.
     -   *Selector Loop Rule*: Do not run more than 2 DOMExtract attempts for the same information when prior outputs are non-empty. Save the best answer you have, or save that the page only exposes partial text."""
+            parallel_rule = """**Parallel vs Serial**: Decide deliberately whether work is independent or ordered.
+    -   *Parallel-safe (use BatchExtract)*: gathering the SAME read-only information from N known pages (e.g. each job posting's salary, each product's price, each doc section). One `BatchExtract(urls=[...], query='main')` call replaces N serial Navigate→DOMExtract round-trips.
+    -   *Serial (one action per step)*: anything that mutates shared state (clicks, typing, forms, scrolling the active tab) or where the next action depends on the previous result (search → results → detail). Never batch mutating actions."""
             visible_answer_rule = """## VISIBLE TEXT COMPLETION
 - If visible page text directly answers a get/read/extract/description goal, save that visible answer immediately.
 - Do not chase a hidden "fuller" version unless the user explicitly asks for exact/all/full text.
@@ -1401,6 +1468,17 @@ Recent search-result loop steps:
 
         escalation_rule = """- **Self-Escalation (use SPARINGLY — default false)**: `request_escalation: true` hands the NEXT step to a stronger frontier model with deeper reasoning. Only use it when you are genuinely stuck: at least 2 different approaches to the same sub-goal already failed, the page state contradicts what you expected and you cannot explain why, or the remaining task clearly needs deeper reasoning than you can provide. NEVER use it for routine steps, a single failure, slow tool responses, or minor uncertainty — those are normal. When true, put a one-line reason in `escalation_reason`."""
 
+        available_credential_domains = list(context.get("credentials_available_for") or [])
+        if available_credential_domains:
+            domains_csv = ", ".join(available_credential_domains)
+            credential_rule = f"""## CREDENTIALS (vault-backed, values never shown)
+- Login credentials are provisioned for these sites: {domains_csv}.
+- When a login form blocks the goal on one of these sites, call `CredentialFill` — it deterministically fills and submits the login form. You will never see or type the values.
+- If CredentialFill fails or the site is NOT in the list above and login is required to proceed, call `RequestCredentials(site, reason)` — it ends the run and asks the orchestrator to provision credentials. Do not guess or brute-force credentials."""
+        else:
+            credential_rule = """## CREDENTIALS
+- No credentials are provisioned for this run. If you hit a login wall that blocks the goal, call `RequestCredentials(site, reason)` — it ends the run and asks the orchestrator to provision credentials. Do not guess or brute-force credentials."""
+
         escalated = bool(context.get("escalated_tier"))
         escalation_line = (
             "## ESCALATION MODE (frontier brain)\n"
@@ -1419,6 +1497,7 @@ You control a browser by calling atomic tools. Each tool call is executed immedi
 ## CORE RULES
 1.  **Vision First**: Use Vision (VisualClick, VisualType) for navigation and interaction (>90% of time). "See" the page like a human.
 {extraction_rule}
+{parallel_rule}
 3.  **State**: Your memory is short. If you find important info, use `SaveNote` IMMEDIATELY.
 4.  **SaveNote Rule**: CRITICAL - `SaveNote` MUST have a non-empty `note` parameter. Never send empty params.
 {large_note_rules}
@@ -1492,7 +1571,7 @@ Rules:
 - **Extract-Then-Click Rule**: If a DOMExtract call already surfaced the exact text/link/title you need to click (it's visible in TOOL_OUTPUT_DATA), do NOT switch to VisualClick to re-find it visually — that throws away the structural information you just got and pays a fresh MiMo call for something you already located. Build a DOMClick selector directly from the extracted text instead (e.g. `a:has-text("ML Ops Engineer")` or `[role="button"]:has-text("...")`) — it's faster, and DOMClick now auto-tries several tag variants and searches iframes if the first guess doesn't match.
 - **Repeated-Click Rule**: If you are about to issue a VisualClick/DOMClick with the SAME description/target you already clicked in the last 2-3 steps and the URL hasn't changed, that click is not accomplishing anything — clicking it again won't either. Stop, reassess from the current screenshot what's actually different, and either try a different element/approach or conclude the action had no real effect and pick another route.
 {escalation_rule}
-
+{credential_rule}
 Current progress: {context['estimated_progress']:.0%} complete
 """
     
@@ -1504,6 +1583,7 @@ Current progress: {context['estimated_progress']:.0%} complete
         last_output_action = last_action.get("action_type")
         output_can_drive_text_only_decision = dom_enabled and bool(last_action.get("output")) and last_output_action in {
             ActionType.DOM_EXTRACT.value,
+            ActionType.BATCH_EXTRACT.value,
             ActionType.READ_HISTORY.value,
             ActionType.LIST_LARGE_NOTES.value,
             ActionType.SEARCH_LARGE_NOTES.value,
@@ -1653,14 +1733,49 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
             "render their menus on-page — open and click those normally."
         )
 
+    def _resolve_action_type(self, raw: Any) -> Optional[ActionType]:
+        """Resolve an action_type string to the enum, tolerating case and
+        snake_case / spacing drift from the models."""
+        if not isinstance(raw, str):
+            return None
+        raw = raw.strip()
+        if not raw:
+            return None
+        try:
+            return ActionType(raw)
+        except ValueError:
+            pass
+        import re as _re
+        norm = _re.sub(r"[^a-z0-9]", "", raw.lower())
+        for member in ActionType:
+            if _re.sub(r"[^a-z0-9]", "", member.value.lower()) == norm:
+                return member
+        aliases = {
+            "click": ActionType.VISUAL_CLICK,
+            "type": ActionType.VISUAL_TYPE,
+            "scroll": ActionType.VISUAL_SCROLL,
+            "extract": ActionType.DOM_EXTRACT,
+            "note": ActionType.SAVE_NOTE,
+            "goto": ActionType.NAVIGATE,
+            "login": ActionType.CREDENTIAL_FILL,
+            "fillcredentials": ActionType.CREDENTIAL_FILL,
+            "askforcredentials": ActionType.REQUEST_CREDENTIALS,
+            "needcredentials": ActionType.REQUEST_CREDENTIALS,
+        }
+        return aliases.get(norm)
+
     def _parse_response(self, content: str) -> LLMResponse:
         """Parse LLM response into structured format."""
         data = self._extract_json_object(content)
         if data:
             try:
+                action_type = self._resolve_action_type(data.get("action_type"))
+                if action_type is None:
+                    raise ValueError(f"Unknown action_type: {data.get('action_type')!r}")
+                confidence = float(data.get("confidence", 1.0) or 0.0)
                 tool_call = ToolCall(
-                    action_type=ActionType(data["action_type"]),
-                    parameters=data.get("parameters", {}),
+                    action_type=action_type,
+                    parameters=data.get("parameters", {}) or {},
                     fallback=data.get("fallback"),
                     verification_hint=data.get("verification_hint"),
                 )
@@ -1668,39 +1783,47 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
                 return LLMResponse(
                     tool_call=tool_call,
                     reasoning=data.get("reasoning"),
-                    confidence=data.get("confidence", 1.0),
-                    requires_escalation=data.get("confidence", 1.0) < 0.5,
-                    estimated_completion=data.get("estimated_completion", 0.0),
+                    confidence=confidence,
+                    requires_escalation=confidence < 0.5,
+                    estimated_completion=float(data.get("estimated_completion", 0.0) or 0.0),
                     request_escalation=bool(data.get("request_escalation")),
                     escalation_reason=data.get("escalation_reason"),
                     hand_back_to_base=bool(data.get("hand_back_to_base")),
                 )
-            except (json.JSONDecodeError, KeyError, ValueError) as e:
-                # Fallback parsing
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 pass
-        
-        # Fallback: extract action from text
-        action_type = ActionType.TIMED_WAIT
-        parameters = {"seconds": 1}
-        
+
+        # Parse failure: surface it honestly. The old fallback silently
+        # substituted TimedWait{seconds:1} — invisible before the wait
+        # breaker existed, then the driver of whole wait-loop spirals once
+        # the breaker started refusing those phantom waits (both base and
+        # frontier outputs hit this path when the model replied in prose).
         return LLMResponse(
-            tool_call=ToolCall(action_type=action_type, parameters=parameters),
+            tool_call=ToolCall(action_type=ActionType.PARSE_ERROR, parameters={}),
             reasoning=content,
-            confidence=0.3,
-            requires_escalation=True,
+            confidence=0.0,
+            requires_escalation=False,
+            parse_failed=True,
         )
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get orchestrator statistics."""
+        """Get orchestrator statistics. FAST/MEDIUM are the base brain
+        (same model); SLOW is the escalation/frontier brain."""
+        base_calls = self.call_counts[LLMTier.FAST] + self.call_counts[LLMTier.MEDIUM]
+        base_latency = self.total_latency_ms[LLMTier.FAST] + self.total_latency_ms[LLMTier.MEDIUM]
+        total_calls = sum(self.call_counts.values())
         return {
-            "call_counts": {tier.value: count for tier, count in self.call_counts.items()},
+            "call_counts": {
+                "base": base_calls,
+                "frontier": self.call_counts[LLMTier.SLOW],
+            },
             "avg_latency_ms": {
-                tier.value: (self.total_latency_ms[tier] / self.call_counts[tier] if self.call_counts[tier] > 0 else 0)
-                for tier in LLMTier
+                "base": (base_latency / base_calls if base_calls > 0 else 0),
+                "frontier": (self.total_latency_ms[LLMTier.SLOW] / self.call_counts[LLMTier.SLOW] if self.call_counts[LLMTier.SLOW] > 0 else 0),
             },
             "tier_distribution": {
-                tier.value: f"{(self.call_counts[tier] / sum(self.call_counts.values()) * 100) if sum(self.call_counts.values()) > 0 else 0:.1f}%"
-                for tier in LLMTier
+                "base": f"{(base_calls / total_calls * 100) if total_calls > 0 else 0:.1f}%",
+                "frontier": f"{(self.call_counts[LLMTier.SLOW] / total_calls * 100) if total_calls > 0 else 0:.1f}%",
             }
         }
     
