@@ -179,6 +179,7 @@ async def run_goal(
         "steps_taken": int(raw_result.get("steps_taken") or 0),
         "duration_sec": round(time.time() - started, 1),
         "run_dir": str(raw_result.get("working_dir") or ""),
+        "recall_summary": str(raw_result.get("recall_summary") or ""),
         "cosmic_replay": raw_result.get("cosmic_replay"),
         "llm_usage": raw_result.get("llm_usage") or {},
         "needs_credentials": needs,

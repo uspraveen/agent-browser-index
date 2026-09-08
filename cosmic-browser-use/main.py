@@ -1368,7 +1368,18 @@ async def run_task(
             await orchestrator.close()
         except Exception as _e:
             print(f"⚠️  orchestrator.close() error (non-fatal): {_e}")
-    
+
+    final_answer = _extract_final_answer(memory)
+    # One short recall-ledger line for the Cosmic-OS wrapper's session index —
+    # reuses the same compression LLM already configured for cumulative_summary
+    # (see MemoryManager.build_recall_summary). Fails soft: an empty string
+    # here just means the caller falls back to final_answer/goal text itself.
+    try:
+        recall_summary = await memory.build_recall_summary(goal=goal, final_answer=final_answer)
+    except Exception as _e:
+        print(f"⚠️  recall summary build failed (non-fatal): {_e}")
+        recall_summary = ""
+
     return {
         "success": True,
         "task_status": task_status,
@@ -1378,7 +1389,8 @@ async def run_task(
         "checkpoint_path": str(checkpoint_path),
         "working_dir": str(working_dir),
         "cosmic_replay": replay_summary,
-        "final_answer": _extract_final_answer(memory),
+        "final_answer": final_answer,
+        "recall_summary": recall_summary,
         "credentials_needed": credentials_request.output if credentials_request else None,
         "llm_usage": orchestrator.get_stats().get("llm_usage"),
     }

@@ -327,6 +327,40 @@ this JSON object (no other text):
             return None
         return remainder
 
+    async def build_recall_summary(self, *, goal: str, final_answer: str) -> str:
+        """One short line summarizing this run, for the Cosmic-OS session
+        recall ledger (browser.recall_session) — reuses the same compression
+        LLM already configured for cumulative_summary via _call_summary_model,
+        no separate client/provider wiring needed.
+
+        Fails soft: returns "" on any error (no client configured, empty
+        result, model produced instructions instead of a summary) rather than
+        raising — callers should fall back to final_answer/goal text
+        themselves, exactly like _compress_summary never lets a bad response
+        corrupt the run's own state.
+        """
+        if not self.client:
+            return ""
+        basis = (final_answer or "").strip() or self.cumulative_summary.strip()
+        if not basis or basis == "Task Started.":
+            return ""
+        prompt = (
+            "Write ONE short sentence (under 30 words) summarizing what this browser run found or did, "
+            "suitable as a search-result snippet for someone deciding later whether to reuse it. "
+            "Plain prose, no headers, no surrounding quotes.\n\n"
+            f"GOAL: {goal}\n\nRESULT:\n{basis[:2000]}"
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            text = await loop.run_in_executor(None, lambda: self._call_summary_model(prompt))
+            text = self._strip_summary_thinking(text).strip().strip('"')
+            if self._looks_like_echoed_instructions(text):
+                return ""
+            return text[:400]
+        except Exception as e:
+            print(f"⚠️  [Recall Summary] failed (non-fatal): {e}")
+            return ""
+
     def _call_summary_model(self, prompt: str) -> str:
         if not self.client:
             raise RuntimeError(f"No summary LLM client configured for provider={self.summary_provider}")
