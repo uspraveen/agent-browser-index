@@ -267,6 +267,36 @@ def resolve_chrome_profile_dir(chrome_profile: str) -> Path:
     return _chrome_user_data_dir() / chrome_profile
 
 
+def _build_matching_user_agent(browser_version: str) -> str:
+    """Build a UA string for the launched-Chromium default browser path
+    (never used for the real-Chrome-via-CDP path in _start_via_cdp, which
+    doesn't need this).
+
+    The version always comes from the actually-running browser.version —
+    never hardcoded — so this can't silently drift out of sync the way a
+    fixed string did (it was 21 major versions stale by the time that was
+    caught: hardcoded as Chrome/128 while the deployed browser had moved to
+    149, contradicting the Sec-Ch-Ua Client Hints header, which Playwright
+    derives from the real binary and cannot be overridden by this string
+    alone). The platform token matches the host actually running the
+    browser rather than always claiming Windows: navigator.platform and
+    similar JS-visible properties reflect the true host regardless of what
+    this string claims, so a mismatched claim (Windows here, Linux
+    everywhere else) is itself a detectable inconsistency — truthful is
+    also simplest.
+    """
+    if sys.platform == "win32":
+        platform_token = "Windows NT 10.0; Win64; x64"
+    elif sys.platform == "darwin":
+        platform_token = "Macintosh; Intel Mac OS X 10_15_7"
+    else:
+        platform_token = "X11; Linux x86_64"
+    return (
+        f"Mozilla/5.0 ({platform_token}) AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{browser_version} Safari/537.36"
+    )
+
+
 def _agent_data_root() -> Path:
     """Root for the agent's persistent per-profile Chrome user-data dirs."""
     env = os.environ.get("COSMIC_AGENT_DATA_DIR")
@@ -872,8 +902,20 @@ class BrowserController:
             return
 
         # --- Default: Playwright bundled Chromium ---
+        # channel="chromium" opts into "new headless mode": the real, full
+        # Chrome-for-Testing binary instead of Playwright's default headless
+        # target, chromium-headless-shell — a stripped build whose Client
+        # Hints (the Sec-Ch-Ua request header) report brand "HeadlessChrome"
+        # on every single request, completely independent of any UA string
+        # passed to new_context() below. That header is what actually gave
+        # this away to bot detection, not the JS-visible navigator.webdriver
+        # flag (already handled below) — confirmed by capturing real outbound
+        # headers under both modes. Both browser packages are already
+        # fetched together by `playwright install chromium`, so this needs
+        # no deploy/install changes.
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
+            channel="chromium",
             args=[
                 "--disable-background-networking",
                 "--disable-background-timer-throttling",
@@ -901,7 +943,7 @@ class BrowserController:
         self.context = await self.browser.new_context(
             viewport={"width": self.config.screenshot_max_width, "height": 720},
             locale="en-US",
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            user_agent=_build_matching_user_agent(self.browser.version),
         )
         await self.context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
