@@ -1852,7 +1852,13 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
             },
             "llm_usage": {
                 "base": dict(getattr(self.models.get(LLMTier.FAST), "usage_totals", {}) or {}),
-                "frontier": dict(getattr(self.models.get(LLMTier.SLOW), "usage_totals", {}) or {}),
+                # When no frontier brain is configured, SLOW aliases the FAST
+                # provider — reporting it again would double-count base usage.
+                "frontier": (
+                    dict(getattr(self.models.get(LLMTier.SLOW), "usage_totals", {}) or {})
+                    if self.models.get(LLMTier.SLOW) is not self.models.get(LLMTier.FAST)
+                    else {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                ),
             },
         }
     
