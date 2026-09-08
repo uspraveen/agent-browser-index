@@ -10,7 +10,7 @@ import time
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 # Windows Asyncio Fix
 if sys.platform == 'win32':
