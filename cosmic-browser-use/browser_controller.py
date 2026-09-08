@@ -506,6 +506,13 @@ class BrowserController:
         # never be mistaken for — or interfere with — the streaming session.
         self._screencast_session: Optional[Any] = None
         self._screencast_ack_tasks: set = set()
+        # Which page the live feed is currently attached to, and the
+        # on_frame/quality/size it was started with — kept so a tab switch
+        # can re-attach the same feed to the new active page instead of
+        # leaving it frozen on whichever tab was active when it started
+        # (see _schedule_live_screencast_retarget).
+        self._screencast_target_page: Optional[Page] = None
+        self._screencast_opts: Optional[Dict[str, Any]] = None
         
         # Tab management
         self.pages: List[Page] = []
@@ -832,6 +839,7 @@ class BrowserController:
         if make_active:
             self.active_tab_index = self.pages.index(page)
             self.page = page
+            self._schedule_live_screencast_retarget()
 
     def _on_page_closed(self, page: Page) -> None:
         if page not in self.pages:
@@ -845,6 +853,7 @@ class BrowserController:
         elif idx < self.active_tab_index:
             self.active_tab_index -= 1
         self.page = self.pages[self.active_tab_index]
+        self._schedule_live_screencast_retarget()
 
     async def _on_popup_page(self, page: Page) -> None:
         """Fires for ANY new page opened in this context that we didn't
@@ -1581,17 +1590,23 @@ class BrowserController:
         silently — cosmic-browser-use runs fine without it (step_callback's
         own per-step screenshot still gives a coarser fallback).
 
-        Known limitation: targets self.page at call time only. If the agent
-        switches active tabs mid-run, re-call this after the switch to follow
-        the new tab — the feed does not auto-retarget.
+        Targets self.page at call time. If the agent switches active tabs
+        after this, the feed re-attaches itself automatically — see
+        _schedule_live_screencast_retarget, called from every place that
+        actually changes the active tab (_register_page, _on_page_closed,
+        _switch_tab). Calling this method directly again also works, same
+        as before.
         """
         page = self.page
         if page is None or on_frame is None:
             return
+        opts = {"on_frame": on_frame, "quality": quality, "max_width": max_width, "max_height": max_height}
         try:
             await self.stop_live_screencast()
             session = await self.context.new_cdp_session(page)
             self._screencast_session = session
+            self._screencast_target_page = page
+            self._screencast_opts = opts
 
             def _handle_frame(params: Dict[str, Any]) -> None:
                 frame_task = asyncio.create_task(self._ack_and_forward_frame(session, params, on_frame))
@@ -1612,6 +1627,33 @@ class BrowserController:
         except Exception as e:
             print(f"⚠️  start_live_screencast failed (non-fatal, live view disabled): {e}")
             self._screencast_session = None
+            self._screencast_target_page = None
+            self._screencast_opts = None
+
+    def _schedule_live_screencast_retarget(self) -> None:
+        """Hop the live feed to whatever page just became active, if a feed
+        is running and the active page actually changed.
+
+        Fire-and-forget: every caller of this (_register_page,
+        _on_page_closed, _switch_tab) is either sync or can't afford to
+        block the tab-switch on a CDP round-trip. Same non-fatal-by-design
+        posture as the rest of the live view — a failed retarget just means
+        the feed stays on the old tab (or drops, per start_live_screencast's
+        own error handling) rather than breaking the switch itself.
+        """
+        if self._screencast_opts is None or self.page is None:
+            return
+        if self._screencast_target_page is self.page:
+            return
+        opts = self._screencast_opts
+        asyncio.create_task(
+            self.start_live_screencast(
+                opts["on_frame"],
+                quality=opts["quality"],
+                max_width=opts["max_width"],
+                max_height=opts["max_height"],
+            )
+        )
 
     async def _ack_and_forward_frame(self, session, params: Dict[str, Any], on_frame) -> None:
         session_id = params.get("sessionId")
@@ -1636,6 +1678,8 @@ class BrowserController:
     async def stop_live_screencast(self) -> None:
         session = self._screencast_session
         self._screencast_session = None
+        self._screencast_target_page = None
+        self._screencast_opts = None
         if session is None:
             return
         try:
@@ -2137,6 +2181,7 @@ class BrowserController:
             if 0 <= index < len(self.pages):
                 self.active_tab_index = index
                 self.page = self.pages[index]
+                self._schedule_live_screencast_retarget()
                 await self.page.bring_to_front()
                 return ActionResult(success=True, action_type=ActionType.SWITCH_TAB, description=f"Switched to tab {index}")
             else:
@@ -2166,6 +2211,7 @@ class BrowserController:
                         # If we closed current or previous tab, shift left
                         self.active_tab_index = max(0, self.active_tab_index - 1)
                         self.page = self.pages[self.active_tab_index]
+                        self._schedule_live_screencast_retarget()
 
                 await self.page.bring_to_front()
                 return ActionResult(success=True, action_type=ActionType.CLOSE_TAB, description=f"Closed tab {target_index}")
