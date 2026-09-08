@@ -422,6 +422,7 @@ async def run_task(
     refresh_chrome_profile: bool = False,
     credentials: Optional[Dict[str, Dict[str, str]]] = None,
     step_callback=None,
+    live_frame_callback=None,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -594,6 +595,8 @@ async def run_task(
     )
 
     await browser.start(initial_url)
+    if live_frame_callback is not None:
+        await browser.start_live_screencast(live_frame_callback)
     task_start_time = time.time()
 
     cosmic_runtime = None
@@ -1180,6 +1183,11 @@ async def run_task(
                         "tier_used": llm_response.tier_used,
                         "steps_taken": len(memory.steps),
                         "max_steps": config.max_steps,
+                        # Live-view fields for the Cosmic desktop: the latest
+                        # rendered screenshot plus where the page is now.
+                        "screenshot_path": after_screenshot_path or screenshot_path,
+                        "url": new_browser_state.url if new_browser_state else browser_state.url,
+                        "page_title": new_browser_state.title if new_browser_state else browser_state.title,
                     }
                     hook_result = step_callback(progress_info)
                     if asyncio.iscoroutine(hook_result):
@@ -1348,6 +1356,10 @@ async def run_task(
 
         # Cleanup — errors here are non-fatal (browser/LLM clients closing);
         # swallow them so they don't shadow the task result in main().
+        try:
+            await browser.stop_live_screencast()
+        except Exception:
+            pass
         try:
             await browser.close()
         except Exception as _e:

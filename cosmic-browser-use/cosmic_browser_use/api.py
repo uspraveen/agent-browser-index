@@ -93,6 +93,7 @@ async def run_goal(
     credentials: Optional[Dict[str, Dict[str, str]]] = None,
     on_progress: Optional[ProgressCallback] = None,
     ask_user_handler=None,
+    on_live_frame=None,
     working_dir_root: Optional[str] = None,
     run_timeout_sec: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -101,6 +102,14 @@ async def run_goal(
     credentials maps site domain (or URL) -> {username, password, totp_seed?}.
     Values stay in memory for this run only and are never logged or sent to
     any LLM; the model only learns the covered domains.
+
+    on_live_frame, if given, receives each frame as a base64-encoded JPEG
+    string (sync or async) from a CDP Page.startScreencast feed of the active
+    tab — a true live view driven by actual repaints, not a fixed-interval
+    poll. Caller is responsible for any throttling/transport; a slow
+    on_live_frame only drops frame fidelity, it never blocks the browser
+    (frames are ACKed immediately regardless of on_live_frame's own
+    progress).
 
     Returns a normalized dict:
         status: success | incomplete | failed | credentials_needed
@@ -144,6 +153,7 @@ async def run_goal(
         headless=headless,
         ask_user_handler=ask_user_handler,
         step_callback=_progress_bridge,
+        live_frame_callback=on_live_frame,
         supermemory_enabled=_env("SUPERMEMORY_API_KEY") != "" and _env("BROWSER_SUPERMEMORY_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
     )
     mimo_url = _env("MIMO_API_URL")

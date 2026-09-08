@@ -467,6 +467,11 @@ class BrowserController:
         # Per-page CDP sessions used by fast_screenshot() to bypass Playwright's
         # font/stability wait. Keyed by Page; lazily created, dropped on error.
         self._cdp_screenshot_sessions: Dict[Any, Any] = {}
+        # Dedicated CDP session for the live view screencast (start_live_screencast).
+        # Kept separate from _cdp_screenshot_sessions so an ad-hoc capture can
+        # never be mistaken for — or interfere with — the streaming session.
+        self._screencast_session: Optional[Any] = None
+        self._screencast_ack_tasks: set = set()
         
         # Tab management
         self.pages: List[Page] = []
@@ -1499,6 +1504,98 @@ class BrowserController:
                 )
             except Exception:
                 return None
+
+    async def start_live_screencast(
+        self,
+        on_frame,
+        *,
+        quality: int = 45,
+        max_width: int = 1024,
+        max_height: int = 640,
+    ) -> None:
+        """Stream the active page live via CDP Page.startScreencast.
+
+        This is the same primitive Chrome DevTools' own Inspect view (and
+        remote-browser products like Browserbase) use for a live tab preview:
+        Chrome pushes a new JPEG frame whenever it actually repaints, instead
+        of us polling page.screenshot() on a fixed interval. During a mostly
+        static page (e.g. waiting on a CAPTCHA) it's near-silent; during a
+        load or animation it streams smoothly.
+
+        on_frame receives each frame as a base64-encoded JPEG string (CDP's
+        native wire format — passed through as-is since consumers typically
+        want it as a data: URI anyway) and may be sync or async.
+
+        Every frame MUST be acked (Page.screencastFrameAck) or Chrome stops
+        sending more — we ack immediately in the frame handler regardless of
+        how long the caller's on_frame takes, so a slow consumer only drops
+        fidelity, it never stalls the browser or the agent loop.
+
+        Non-fatal by design: any CDP failure here disables the live feed
+        silently — cosmic-browser-use runs fine without it (step_callback's
+        own per-step screenshot still gives a coarser fallback).
+
+        Known limitation: targets self.page at call time only. If the agent
+        switches active tabs mid-run, re-call this after the switch to follow
+        the new tab — the feed does not auto-retarget.
+        """
+        page = self.page
+        if page is None or on_frame is None:
+            return
+        try:
+            await self.stop_live_screencast()
+            session = await self.context.new_cdp_session(page)
+            self._screencast_session = session
+
+            def _handle_frame(params: Dict[str, Any]) -> None:
+                frame_task = asyncio.create_task(self._ack_and_forward_frame(session, params, on_frame))
+                self._screencast_ack_tasks.add(frame_task)
+                frame_task.add_done_callback(self._screencast_ack_tasks.discard)
+
+            session.on("Page.screencastFrame", _handle_frame)
+            await session.send(
+                "Page.startScreencast",
+                {
+                    "format": "jpeg",
+                    "quality": int(quality),
+                    "maxWidth": int(max_width),
+                    "maxHeight": int(max_height),
+                    "everyNthFrame": 1,
+                },
+            )
+        except Exception as e:
+            print(f"⚠️  start_live_screencast failed (non-fatal, live view disabled): {e}")
+            self._screencast_session = None
+
+    async def _ack_and_forward_frame(self, session, params: Dict[str, Any], on_frame) -> None:
+        session_id = params.get("sessionId")
+        if session_id is not None:
+            try:
+                await session.send("Page.screencastFrameAck", {"sessionId": session_id})
+            except Exception:
+                pass
+        # CDP already hands us base64 JPEG data — pass it straight through
+        # (callers embedding it as a data: URI want base64 anyway; decoding
+        # to raw bytes here would just mean re-encoding it downstream).
+        data_b64 = params.get("data")
+        if not data_b64:
+            return
+        try:
+            result = on_frame(data_b64)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            pass
+
+    async def stop_live_screencast(self) -> None:
+        session = self._screencast_session
+        self._screencast_session = None
+        if session is None:
+            return
+        try:
+            await session.send("Page.stopScreencast")
+        except Exception:
+            pass
 
     async def _safe_evaluate(self, js: str, fallback=None):
         """Run page.evaluate(), waiting for navigation to settle if the context is destroyed."""
