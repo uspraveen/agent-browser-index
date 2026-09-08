@@ -1195,7 +1195,9 @@ Recent search-result loop steps:
         return LLMResponse(
             tool_call=ToolCall(
                 action_type=ActionType.ASK_USER,
-                parameters={"question": question},
+                # Deterministic, not model-guessed: this governor already
+                # knows exactly which case it is from the DOM probe.
+                parameters={"question": question, "kind": "password" if reason == "password" else "verification_code"},
                 verification_hint="credential_handoff_forced",
             ),
             reasoning=f"Forced credential-handoff governor: detected a visible {reason} field — the agent cannot and should not attempt this itself.",
@@ -1442,7 +1444,7 @@ Recent search-result loop steps:
         available_tools_definitions += [
             "- PressKey(key) - Press keyboard key",
             "- ReadHistory(start_step, end_step) - Read detailed history of past steps",
-            "- AskUser(question) - Ask the user a question if you are stuck, need clarification, or need to know what to do next. Returns user's answer.",
+            "- AskUser(question, kind) - Ask the user a question if you are stuck, need clarification, or need to know what to do next. kind is optional: verification_code (a code/OTP they'll type back), confirm (nothing to type back - they do something like sign in or approve on their phone, then tell you when done), blocked (a CAPTCHA/bot-check you cannot solve yourself), or omit it for anything else. Returns user's answer.",
         ]
         
         if dom_enabled:

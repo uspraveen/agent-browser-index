@@ -92,6 +92,10 @@ async def run_goal(
     headless: bool = True,
     credentials: Optional[Dict[str, Dict[str, str]]] = None,
     on_progress: Optional[ProgressCallback] = None,
+    # async (question: str, kind: str) -> str. kind is the agent's own hint
+    # for what kind of answer it needs (verification_code/confirm/blocked/
+    # password/""), set by the model itself or the deterministic credential
+    # governor — not something the caller needs to re-derive from the text.
     ask_user_handler=None,
     on_live_frame=None,
     working_dir_root: Optional[str] = None,

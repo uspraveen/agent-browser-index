@@ -419,7 +419,10 @@ class BrowserController:
         large_notes_path: Optional[Path] = None,
         headless: bool = False,
         demo_overlay: Optional[DemoOverlayManager] = None,
-        ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = None,
+        # (question, kind) -> answer. kind is one of the hint strings the
+        # model (or the deterministic credential governor) attaches to an
+        # AskUser call — "" when the caller doesn't recognize/use it.
+        ask_user_handler: Optional[Callable[[str, str], Awaitable[str]]] = None,
         human_driven: bool = False,
         credential_store: Optional[Any] = None,
     ):
@@ -446,8 +449,9 @@ class BrowserController:
         )
         # Optional async hook for AskUser. When provided, _ask_user() delegates here
         # (e.g. for voice-driven Q&A during a call) instead of stdin input().
-        # Receives the question, returns the user's reply text (or raises on timeout).
-        self.ask_user_handler: Optional[Callable[[str], Awaitable[str]]] = ask_user_handler
+        # Receives (question, kind), returns the user's reply text (or raises
+        # on timeout).
+        self.ask_user_handler: Optional[Callable[[str, str], Awaitable[str]]] = ask_user_handler
         # Per-run vault credentials (provisioned by the Cosmic orchestrator).
         # Values never enter the LLM context — only CredentialFill consumes them.
         self.credential_store = credential_store
@@ -1938,7 +1942,10 @@ class BrowserController:
             elif tool_call.action_type == ActionType.EDIT_NOTE:
                 result = await self._edit_note(tool_call.parameters["index"], tool_call.parameters["new_note"])
             elif tool_call.action_type == ActionType.ASK_USER:
-                result = await self._ask_user(tool_call.parameters["question"])
+                result = await self._ask_user(
+                    tool_call.parameters["question"],
+                    str(tool_call.parameters.get("kind") or ""),
+                )
             else:
                 result = ActionResult(success=False, action_type=tool_call.action_type, description="Unknown action", error=f"Unsupported: {tool_call.action_type}")
             
@@ -2602,7 +2609,15 @@ class BrowserController:
         except Exception as e:
             return ActionResult(success=False, action_type=ActionType.EDIT_NOTE, description=f"Edit note {index}", error=str(e))
 
-    async def _ask_user(self, question: str) -> ActionResult:
+    # Kinds the model may voluntarily attach to an AskUser call, hinting what
+    # kind of answer widget the desktop should show (a code field vs. a
+    # plain "done" button vs. free text). "password" is deliberately not
+    # offered here — the credential governor (force_credential_handoff)
+    # already forces that one deterministically from the DOM, which is more
+    # reliable than asking the model to self-report it.
+    _ASK_USER_MODEL_KINDS = {"verification_code", "confirm", "blocked", "generic"}
+
+    async def _ask_user(self, question: str, kind: str = "") -> ActionResult:
         """Ask the user a question.
 
         Routing:
@@ -2612,8 +2627,17 @@ class BrowserController:
 
         In both paths we also annotate the demo overlay so reviewers see exactly
         when the agent asked and what the user said.
+
+        `kind` is an optional hint for how the caller should present the
+        question (its own decision loop already knows why it's asking — this
+        just carries that along instead of making a caller re-guess it from
+        the question text). Anything the caller doesn't recognize is safe to
+        ignore; unset/invalid values are simply passed through as "".
         """
         question_text = (question or "").strip()
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in self._ASK_USER_MODEL_KINDS and normalized_kind != "password":
+            normalized_kind = ""
         truncated_q = question_text if len(question_text) <= 60 else question_text[:57] + "..."
 
         # Always reflect the ask in the overlay (no-op when overlay is disabled).
@@ -2632,7 +2656,7 @@ class BrowserController:
             try:
                 print(f"\n❓ [Agent Asks]: {question}", flush=True)
                 response = await asyncio.wait_for(
-                    self.ask_user_handler(question),
+                    self.ask_user_handler(question, normalized_kind),
                     timeout=self.config.ask_user_timeout,
                 )
             except asyncio.TimeoutError:

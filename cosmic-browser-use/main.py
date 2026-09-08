@@ -1727,10 +1727,10 @@ async def main():
         bridge_url = args.ask_user_bridge_url.rstrip("/")
         import httpx as _httpx  # local import keeps the default path dependency-free
 
-        async def _bridge_ask_user(question: str) -> str:
+        async def _bridge_ask_user(question: str, kind: str = "") -> str:
             poll_timeout = max(15.0, float(args.ask_user_timeout))
             async with _httpx.AsyncClient(timeout=poll_timeout + 5.0) as http:
-                ask_resp = await http.post(f"{bridge_url}/ask", json={"question": question})
+                ask_resp = await http.post(f"{bridge_url}/ask", json={"question": question, "kind": kind})
                 ask_resp.raise_for_status()
                 while True:
                     try:
