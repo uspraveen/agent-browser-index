@@ -144,6 +144,29 @@ class BaseLLMProvider(ABC):
     def __init__(self, config: LLMConfig):
         self.config = config
         self.client = httpx.AsyncClient(timeout=config.timeout_ms / 1000)
+        # Cumulative token usage for this provider instance (one run). Consumed
+        # by get_stats() for Cosmic-OS usage/cost reporting.
+        self.usage_totals: Dict[str, int] = {
+            "requests": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
+    def accumulate_usage(self, raw_usage: Any) -> None:
+        """Accumulate OpenAI-style usage from a completion response."""
+        if not isinstance(raw_usage, dict):
+            usage_obj = getattr(raw_usage, "model_dump", None)
+            raw_usage = usage_obj() if callable(usage_obj) else None
+        if not isinstance(raw_usage, dict):
+            return
+        prompt = int(raw_usage.get("prompt_tokens") or 0)
+        completion = int(raw_usage.get("completion_tokens") or 0)
+        total = int(raw_usage.get("total_tokens") or (prompt + completion))
+        self.usage_totals["requests"] += 1
+        self.usage_totals["prompt_tokens"] += max(0, prompt)
+        self.usage_totals["completion_tokens"] += max(0, completion)
+        self.usage_totals["total_tokens"] += max(0, total)
     
     @abstractmethod
     async def generate(
@@ -356,6 +379,7 @@ class OpenAIProvider(BaseLLMProvider):
         response.raise_for_status()
         
         data = response.json()
+        self.accumulate_usage(data.get("usage"))
         return {
             "content": data["choices"][0]["message"]["content"],
             "raw_response": data,
@@ -446,6 +470,7 @@ class FireworksKimiProvider(BaseLLMProvider):
     async def _chat_completion_to_result(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         assert self._openai is not None
         response = await self._openai.chat.completions.create(**kwargs)
+        self.accumulate_usage(getattr(response, "usage", None))
         msg = response.choices[0].message
         content_raw = self._normalize_openai_message_content(getattr(msg, "content", None))
         reasoning_raw = str(getattr(msg, "reasoning_content", None) or "")
@@ -1824,7 +1849,11 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
             "tier_distribution": {
                 "base": f"{(base_calls / total_calls * 100) if total_calls > 0 else 0:.1f}%",
                 "frontier": f"{(self.call_counts[LLMTier.SLOW] / total_calls * 100) if total_calls > 0 else 0:.1f}%",
-            }
+            },
+            "llm_usage": {
+                "base": dict(getattr(self.models.get(LLMTier.FAST), "usage_totals", {}) or {}),
+                "frontier": dict(getattr(self.models.get(LLMTier.SLOW), "usage_totals", {}) or {}),
+            },
         }
     
     async def close(self):

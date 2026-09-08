@@ -1368,6 +1368,7 @@ async def run_task(
         "cosmic_replay": replay_summary,
         "final_answer": _extract_final_answer(memory),
         "credentials_needed": credentials_request.output if credentials_request else None,
+        "llm_usage": orchestrator.get_stats().get("llm_usage"),
     }
 
 def _extract_final_answer(memory) -> str:

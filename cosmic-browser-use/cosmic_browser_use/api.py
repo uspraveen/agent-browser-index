@@ -170,5 +170,6 @@ async def run_goal(
         "duration_sec": round(time.time() - started, 1),
         "run_dir": str(raw_result.get("working_dir") or ""),
         "cosmic_replay": raw_result.get("cosmic_replay"),
+        "llm_usage": raw_result.get("llm_usage") or {},
         "needs_credentials": needs,
     }
