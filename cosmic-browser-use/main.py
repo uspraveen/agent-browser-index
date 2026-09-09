@@ -537,9 +537,20 @@ async def run_task(
     )
     
     # Initialize components
+    # Fireworks may power the cheap summarizer even when it isn't the fast
+    # tier (e.g. the "bu" model set puts browser-use cloud on fast and GLM/
+    # Fireworks on slow as the escalation brain) — check both tiers so
+    # compression doesn't silently fall back to an unconfigured OpenAI key.
     summary_provider = (
         os.getenv("SUMMARY_LLM_PROVIDER")
-        or ("fireworks_kimi" if fast_model_config.provider == LLMProvider.FIREWORKS_KIMI else "openai")
+        or (
+            "fireworks_kimi"
+            if LLMProvider.FIREWORKS_KIMI in {
+                getattr(fast_model_config, "provider", None),
+                getattr(slow_model_config, "provider", None),
+            }
+            else "openai"
+        )
     ).strip().lower()
     if summary_provider in {"fireworks", "fireworks_kimi", "kimi"}:
         summary_model = os.getenv("SUMMARY_LLM_MODEL") or resolve_fireworks_default_model()

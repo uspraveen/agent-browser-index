@@ -32,22 +32,74 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _resolve_model_configs():
-    """Build fast/medium/slow LLMConfig triple from env, mirroring main.py's CLI defaults."""
-    from cosmic_types import LLMConfig, LLMProvider, LLMTier
-    from cli_labels import resolve_fireworks_default_model, resolve_escalation_model, XAI_BASE_URL
+    """Build fast/medium/slow LLMConfig triple from env, mirroring main.py's CLI defaults.
 
-    api_key = _env("FIREWORKS_API_KEY") or _env("SLIDE_AGENT_FIREWORKS_API_KEY")
-    if not api_key:
+    Two model sets, selected by BROWSER_AGENT_MODEL_SET (default "bu"):
+      - "bu" (default): browser-use's hosted bu-2-0 as the base brain (fast
+        tier), GLM 5.3 Flash on Fireworks — the previous default — as the
+        escalation brain (slow tier). Falls back to "legacy" automatically
+        if BROWSER_USE_API_KEY isn't set, so a deploy that hasn't received
+        the key yet keeps working exactly as before.
+      - "legacy": GLM 5.3 Flash (Fireworks) as the base brain, xAI grok-4.6
+        as escalation — the pre-BU default, reachable via
+        BROWSER_AGENT_MODEL_SET=legacy.
+    """
+    from cosmic_types import LLMConfig, LLMProvider, LLMTier
+    from cli_labels import (
+        resolve_fireworks_default_model,
+        resolve_escalation_model,
+        resolve_browser_use_model,
+        resolve_browser_agent_model_set,
+        XAI_BASE_URL,
+        BROWSER_USE_BASE_URL,
+    )
+
+    fireworks_key = _env("FIREWORKS_API_KEY") or _env("SLIDE_AGENT_FIREWORKS_API_KEY")
+    browser_use_key = _env("BROWSER_USE_API_KEY")
+    model_set = resolve_browser_agent_model_set()
+
+    if model_set == "bu" and not browser_use_key:
+        model_set = "legacy"
+
+    fast_timeout_ms = int(_env("BROWSER_AGENT_TIMEOUT_MS", "45000"))
+    fast_max_tokens = int(_env("BROWSER_AGENT_MAX_TOKENS", "2048"))
+    slow_timeout_ms = int(_env("BROWSER_AGENT_SLOW_TIMEOUT_MS", "120000"))
+    slow_max_tokens = int(_env("BROWSER_AGENT_SLOW_MAX_TOKENS", "4096"))
+
+    if model_set == "bu":
+        fast_config = LLMConfig(
+            provider=LLMProvider.BROWSER_USE,
+            model_id=_env("BROWSER_USE_MODEL") or resolve_browser_use_model(),
+            api_key=browser_use_key,
+            api_base=_env("BROWSER_USE_LLM_URL") or BROWSER_USE_BASE_URL,
+            tier=LLMTier.FAST,
+            timeout_ms=fast_timeout_ms,
+            max_tokens=fast_max_tokens,
+        )
+        medium_config = None
+        slow_config: Optional[LLMConfig] = None
+        if fireworks_key:
+            slow_config = LLMConfig(
+                provider=LLMProvider.FIREWORKS_KIMI,
+                model_id=_env("ESCALATION_FIREWORKS_MODEL") or resolve_fireworks_default_model(),
+                api_key=fireworks_key,
+                api_base=_env("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1",
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=slow_max_tokens,
+            )
+        return fast_config, medium_config, slow_config
+
+    # legacy: GLM 5.3 Flash (Fireworks) base + xAI grok escalation — unchanged.
+    if not fireworks_key:
         raise BrowserRunError("FIREWORKS_API_KEY is not set — the browser agent cannot run without its base brain.")
     base_url = _env("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1"
     fast_model = _env("BROWSER_AGENT_MODEL") or _env("FIREWORKS_DEFAULT_MODEL") or resolve_fireworks_default_model()
-    fast_timeout_ms = int(_env("BROWSER_AGENT_TIMEOUT_MS", "45000"))
-    fast_max_tokens = int(_env("BROWSER_AGENT_MAX_TOKENS", "2048"))
 
     fast_config = LLMConfig(
         provider=LLMProvider.FIREWORKS_KIMI,
         model_id=fast_model,
-        api_key=api_key,
+        api_key=fireworks_key,
         api_base=base_url,
         tier=LLMTier.FAST,
         timeout_ms=fast_timeout_ms,
@@ -65,8 +117,8 @@ def _resolve_model_configs():
             api_key=xai_key,
             api_base=_env("XAI_BASE_URL") or XAI_BASE_URL,
             tier=LLMTier.SLOW,
-            timeout_ms=int(_env("BROWSER_AGENT_SLOW_TIMEOUT_MS", "120000")),
-            max_tokens=int(_env("BROWSER_AGENT_SLOW_MAX_TOKENS", "4096")),
+            timeout_ms=slow_timeout_ms,
+            max_tokens=slow_max_tokens,
         )
     return fast_config, medium_config, slow_config
 

@@ -452,6 +452,14 @@ this JSON object (no other text):
                 return obj["updated_summary"].strip()
         return None
 
+    # ReadHistory is the model's designated recovery path when it needs to
+    # look back at extraction output it didn't SaveNote in time (that output
+    # otherwise vanishes from context after one decision cycle — see
+    # get_context_for_llm/_recent_steps_for_prompt, neither of which carries
+    # action.output either). Cap per-step so a wide range (e.g. 18 steps)
+    # can't blow up the context the way an uncapped dump would.
+    READ_HISTORY_OUTPUT_CHARS = 1500
+
     def read_history(self, start_step: int, end_step: int) -> str:
         """Retrieve detailed history for a range of steps."""
         start_idx = max(0, start_step - 1)
@@ -472,6 +480,11 @@ this JSON object (no other text):
                     output += f"Verification: {step.action.verification_status.value}\n"
                 if step.action.error:
                     output += f"Error: {step.action.error}\n"
+                if step.action.output:
+                    extracted = step.action.output
+                    if len(extracted) > self.READ_HISTORY_OUTPUT_CHARS:
+                        extracted = extracted[: self.READ_HISTORY_OUTPUT_CHARS] + "... (truncated)"
+                    output += f"Output: {extracted}\n"
             else:
                 output += f"Action: None\n"
             if step.browser_state.notes:

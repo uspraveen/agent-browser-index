@@ -6,7 +6,9 @@ Supports:
 - Gemini (Flash, Pro, Experimental)
 - Claude (Sonnet, Opus, Haiku)
 - OpenAI (GPT-4, GPT-3.5)
-- Fireworks GLM 5.3 Flash (default) / Kimi K2.6 (OpenAI SDK, OpenAI-compatible endpoint)
+- Fireworks GLM 5.3 Flash / Kimi K2.6 (OpenAI SDK, OpenAI-compatible endpoint)
+- xAI Grok (OpenAI-compatible endpoint)
+- browser-use cloud (bu-2-0, default base brain — bespoke response envelope)
 - Local models (via vLLM, Ollama)
 - Automatic fast/slow tiering
 - Streaming support
@@ -30,7 +32,7 @@ from cosmic_types import (
     LLMResponse, ToolCall, ActionType,
     LLMProvider, LLMTier, LLMConfig
 )
-from cli_labels import FIREWORKS_KIMI_LABEL
+from cli_labels import FIREWORKS_KIMI_LABEL, BROWSER_USE_BASE_URL, BROWSER_USE_DEFAULT_MODEL_ID
 from browser_memory.replay import build_default_replay_plan
 import os
 from dotenv import load_dotenv
@@ -597,9 +599,65 @@ class FireworksKimiProvider(BaseLLMProvider):
         await super().close()
 
 
+class BrowserUseProvider(BaseLLMProvider):
+    """browser-use's hosted cloud model (default: bu-2-0).
+
+    Takes OpenAI-shaped messages (role/content, including multimodal
+    image_url parts for screenshots) but does NOT speak the OpenAI
+    chat-completions response envelope: POST {base}/v1/chat/completions
+    returns {"completion": <string>, "usage": {...}, "cost": {...}} directly,
+    not a {"choices": [...]} wrapper. That's why this is a thin bespoke
+    client instead of routing through FireworksKimiProvider's AsyncOpenAI
+    SDK path. No temperature/max_tokens knobs — the API doesn't accept them
+    (confirmed against the real endpoint; unlike sampling params, unknown
+    top-level fields there are not silently ignored).
+    """
+
+    async def generate(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Call the browser-use cloud API."""
+        base = (self.config.api_base or BROWSER_USE_BASE_URL).rstrip("/")
+        url = f"{base}/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        chat_messages = list(messages)
+        if system_prompt:
+            chat_messages = [{"role": "system", "content": system_prompt}] + chat_messages
+
+        payload: Dict[str, Any] = {
+            "model": self.config.model_id or BROWSER_USE_DEFAULT_MODEL_ID,
+            "messages": chat_messages,
+            "fast": False,
+            "request_type": "browser_agent",
+            "anonymized_telemetry": False,
+        }
+
+        response = await self.client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+
+        data = response.json()
+        self.accumulate_usage(data.get("usage"))
+
+        content_raw = data.get("completion")
+        content = content_raw if isinstance(content_raw, str) else json.dumps(content_raw)
+
+        return {
+            "content": strip_fireworks_kimi_thinking_markers(content),
+            "raw_response": data,
+        }
+
+
 class VLLMProvider(BaseLLMProvider):
     """vLLM (local) provider"""
-    
+
     async def generate(
         self,
         messages: List[Dict[str, Any]],
@@ -675,6 +733,8 @@ class Orchestrator:
             return FireworksKimiProvider(config)
         elif config.provider == LLMProvider.VLLM:
             return VLLMProvider(config)
+        elif config.provider == LLMProvider.BROWSER_USE:
+            return BrowserUseProvider(config)
         else:
             raise ValueError(f"Unsupported provider: {config.provider}")
 
@@ -1450,7 +1510,8 @@ Recent search-result loop steps:
         if dom_enabled:
             extraction_rule = """2.  **DOM for Extraction**: Use `DOMExtract` PROACTIVELY when you need to extract text/lists that are likely present on the page. Do NOT scroll repeatedly to "read" long text visually.
     -   *Rule*: If the goal is "Get list of X" and you are on the page, try `DOMExtract` with the most specific semantic selector you can identify (e.g. 'main', 'article', '.content') BEFORE scrolling. Avoid 'body' unless no semantic container exists.
-    -   *Stop Rule*: If a successful `DOMExtract` output contains a plausible answer to a get/find/extract/report goal, your next action should be `SaveNote` with that answer and `estimated_completion=1.0`. Do not run another extraction just to verify.
+    -   *Stop Rule*: If a successful `DOMExtract` or `BatchExtract` output contains a plausible answer to a get/find/extract/report goal, your next action should be `SaveNote` with that answer and `estimated_completion=1.0`. Do not run another extraction just to verify.
+    -   *Partial-Findings Rule*: For a multi-part goal, `SaveNote` each part the instant an extraction confirms it — even if other parts are still unconfirmed and you're about to keep investigating. Extraction output does not persist to your next decision; anything not saved now is gone, and you will have to re-extract it.
     -   *Selector Loop Rule*: Do not run more than 2 DOMExtract attempts for the same information when prior outputs are non-empty. Save the best answer you have, or save that the page only exposes partial text."""
             parallel_rule = """**Parallel vs Serial**: Decide deliberately whether work is independent or ordered.
     -   *Parallel-safe (use BatchExtract)*: gathering the SAME read-only information from N known pages (e.g. each job posting's salary, each product's price, each doc section). One `BatchExtract(urls=[...], query='main')` call replaces N serial Navigate→DOMExtract round-trips.
@@ -1833,6 +1894,20 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
             parse_failed=True,
         )
     
+    def _tagged_usage(self, tier: LLMTier) -> Dict[str, Any]:
+        """usage_totals for a tier, tagged with which provider/model actually
+        served it. The base/escalation model pair varies by model set (see
+        cosmic_browser_use/api.py's "bu" vs "legacy"), so callers that report
+        cost (Cosmic-OS agent.py::_post_run_usage) need this instead of
+        guessing provider/model from env vars that may no longer match."""
+        provider_instance = self.models.get(tier)
+        usage = dict(getattr(provider_instance, "usage_totals", {}) or {})
+        config = getattr(provider_instance, "config", None)
+        provider = getattr(config, "provider", None)
+        usage["provider"] = getattr(provider, "value", provider)
+        usage["model"] = getattr(config, "model_id", None)
+        return usage
+
     def get_stats(self) -> Dict[str, Any]:
         """Get orchestrator statistics. FAST/MEDIUM are the base brain
         (same model); SLOW is the escalation/frontier brain."""
@@ -1853,13 +1928,13 @@ Note: Large notes persist even if their pointers are removed from SAVED NOTES du
                 "frontier": f"{(self.call_counts[LLMTier.SLOW] / total_calls * 100) if total_calls > 0 else 0:.1f}%",
             },
             "llm_usage": {
-                "base": dict(getattr(self.models.get(LLMTier.FAST), "usage_totals", {}) or {}),
+                "base": self._tagged_usage(LLMTier.FAST),
                 # When no frontier brain is configured, SLOW aliases the FAST
                 # provider — reporting it again would double-count base usage.
                 "frontier": (
-                    dict(getattr(self.models.get(LLMTier.SLOW), "usage_totals", {}) or {})
+                    self._tagged_usage(LLMTier.SLOW)
                     if self.models.get(LLMTier.SLOW) is not self.models.get(LLMTier.FAST)
-                    else {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    else {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "provider": None, "model": None}
                 ),
             },
         }

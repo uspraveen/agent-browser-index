@@ -21,6 +21,15 @@ FIREWORKS_KIMI_MODEL_ID = "accounts/fireworks/models/kimi-k2p6"
 XAI_ESCALATION_MODEL_ID = "grok-4.6"
 XAI_BASE_URL = "https://api.x.ai/v1"
 
+# browser-use's hosted cloud model — vision-capable, optimized/fast for
+# browser-automation-style decisions. Default base brain for the "bu" model set.
+BROWSER_USE_DEFAULT_MODEL_ID = "bu-2-0"
+BROWSER_USE_BASE_URL = "https://llm.api.browser-use.com"
+
+# BROWSER_AGENT_MODEL_SET values that mean "use the pre-BU pair" (GLM base +
+# xAI escalation). Anything else (including unset) resolves to "bu".
+_LEGACY_MODEL_SET_ALIASES = {"legacy", "glm", "glm_xai", "fireworks_xai", "classic", "old"}
+
 
 def resolve_escalation_model() -> str:
     """Frontier/escalation model for the SLOW tier.
@@ -28,6 +37,28 @@ def resolve_escalation_model() -> str:
     Priority: ESCALATION_MODEL env -> XAI_ESCALATION_MODEL_ID.
     """
     return (os.getenv("ESCALATION_MODEL") or XAI_ESCALATION_MODEL_ID).strip().strip('"')
+
+
+def resolve_browser_use_model() -> str:
+    """Base-brain model id for the browser-use cloud provider.
+
+    Priority: BROWSER_USE_MODEL env -> BROWSER_USE_DEFAULT_MODEL_ID (bu-2-0).
+    """
+    return (os.getenv("BROWSER_USE_MODEL") or BROWSER_USE_DEFAULT_MODEL_ID).strip().strip('"')
+
+
+def resolve_browser_agent_model_set() -> str:
+    """Which base/escalation model pair powers the browser agent.
+
+    'bu' (default): browser-use's hosted bu-2-0 as the base brain (fast tier),
+    GLM 5.3 Flash on Fireworks — the previous default — as escalation (slow tier).
+    'legacy': GLM 5.3 Flash (Fireworks) as the base brain, xAI grok-4.6 as
+    escalation — the pre-BU default, kept reachable via BROWSER_AGENT_MODEL_SET=legacy.
+    """
+    raw = (os.getenv("BROWSER_AGENT_MODEL_SET") or "").strip().lower()
+    if raw in _LEGACY_MODEL_SET_ALIASES:
+        return "legacy"
+    return "bu"
 
 
 def resolve_fireworks_default_model() -> str:

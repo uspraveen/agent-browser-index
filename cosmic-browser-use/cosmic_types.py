@@ -66,6 +66,10 @@ class LLMProvider(str, Enum):
     FIREWORKS_KIMI = "fireworks_kimi"
     # xAI OpenAI-compatible API (grok-4.6) — used as the escalation/frontier brain
     XAI = "xai"
+    # browser-use's hosted cloud model (default: bu-2-0) — OpenAI-shaped messages,
+    # but its own response envelope ({"completion": ..., "usage": ...}), not the
+    # OpenAI chat-completions schema. See BrowserUseProvider in orchestrator.py.
+    BROWSER_USE = "browser_use"
     VLLM = "vllm"
     OLLAMA = "ollama"
 
