@@ -403,7 +403,7 @@ def _paused_sec(takeover_session) -> float:
     return float(getattr(takeover_session, "total_paused_sec", 0.0) or 0.0)
 
 
-async def _record_takeover_step(*, memory, browser, record, cosmic_log=None) -> None:
+async def _record_takeover_step(*, memory, record, cosmic_log=None) -> None:
     """Write the handover into history as an ordinary step.
 
     This is the whole point of the feature working rather than merely
@@ -413,9 +413,11 @@ async def _record_takeover_step(*, memory, browser, record, cosmic_log=None) -> 
     a real Step, the working set, the loop detector and the progress test all
     see it without any of them needing to know a human exists.
     """
-    try:
-        after_state = await browser.capture_state()
-    except Exception:
+    # Both states came from the takeover itself. Re-capturing here would
+    # describe whatever the page has become since the resume, not what the
+    # human handed back.
+    after_state = record.state_after or record.state_before
+    if after_state is None:
         after_state = memory.steps[-1].browser_state if memory.steps else None
     action = ActionResult(
         success=True,
@@ -431,13 +433,14 @@ async def _record_takeover_step(*, memory, browser, record, cosmic_log=None) -> 
     try:
         memory.add_step(
             screenshot_path=record.screenshot_before or "",
-            screenshot_hash="",
+            screenshot_hash=record.screenshot_before_hash or "",
             browser_state=after_state,
             action=action,
             summary=record.summary,
-            before_browser_state=None,
+            before_browser_state=record.state_before,
             after_browser_state=after_state,
             after_screenshot_path=record.screenshot_after or "",
+            after_screenshot_hash=record.screenshot_after_hash or "",
         )
     except Exception as exc:
         print(f"⚠️  takeover step not recorded (non-fatal): {exc}")
@@ -1458,11 +1461,9 @@ async def run_task(
                     session=takeover_session,
                     browser=browser,
                     on_state=takeover_state_callback,
-                    screenshot_dir=str(working_dir / "screenshots"),
                 )
                 await _record_takeover_step(
                     memory=memory,
-                    browser=browser,
                     record=takeover_record,
                     cosmic_log=cosmic_log,
                 )

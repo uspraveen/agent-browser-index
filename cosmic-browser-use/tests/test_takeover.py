@@ -47,24 +47,32 @@ class FakeContext:
 
 
 class FakeBrowser:
-    """Stands in for BrowserController: records what was dispatched."""
+    """Stands in for BrowserController.
+
+    capture_state mirrors the real signature deliberately: it takes a
+    screenshot name and returns (path, hash, state), not a bare state. An
+    earlier version of this fake accepted no arguments and returned the state
+    directly, which made the tests pass against a contract BrowserController
+    does not have - every real capture would have raised, been swallowed, and
+    recorded a takeover with no evidence in it.
+    """
 
     def __init__(self, states, storage=None, fail_input=False):
         self._states = list(states)
         self.context = FakeContext(storage or [{}, {}])
         self.dispatched = []
         self.fail_input = fail_input
+        self.captures = []
 
-    async def capture_state(self):
-        return self._states.pop(0) if self._states else FakeState("", "")
+    async def capture_state(self, screenshot_name: str):
+        self.captures.append(screenshot_name)
+        state = self._states.pop(0) if self._states else FakeState("", "")
+        return (f"/runs/screenshots/{screenshot_name}.webp", f"hash-{screenshot_name}", state)
 
     async def dispatch_human_input(self, event):
         if self.fail_input:
             raise RuntimeError("cdp is gone")
         self.dispatched.append(event)
-        return True
-
-    async def fast_screenshot(self, path):
         return True
 
 
@@ -208,6 +216,77 @@ def test_takeover_relays_input_then_records_what_changed():
     assert record.new_origins == ["a.test"]
     assert record.human_note == "signed in for you"
     assert "signed in for you" in record.summary
+
+
+def test_takeover_captures_evidence_through_the_real_capture_signature():
+    # capture_state(name) -> (path, hash, state). Calling it any other way
+    # raises into _safe and yields a takeover record with no evidence, which
+    # is silent: the run continues and the agent simply learns nothing about
+    # what the human did.
+    session = TakeoverSession()
+    browser = FakeBrowser(states=[FakeState("https://a.test/1", "One"), FakeState("https://a.test/2", "Two")])
+
+    async def scenario():
+        session.request_pause()
+        task = asyncio.ensure_future(run_takeover(session=session, browser=browser))
+        await asyncio.sleep(0.03)
+        session.resume()
+        return await task
+
+    record = asyncio.run(scenario())
+    assert len(browser.captures) == 2
+    assert browser.captures[0].startswith("takeover_before_")
+    assert browser.captures[1].startswith("takeover_after_")
+    assert record.screenshot_before.endswith(".webp")
+    assert record.screenshot_after_hash.startswith("hash-takeover_after_")
+    assert record.state_before is not None and record.state_after is not None
+    assert record.url_before == "https://a.test/1"
+    assert record.url_after == "https://a.test/2"
+
+
+def test_a_browser_that_cannot_capture_still_hands_control_back():
+    class Unavailable(FakeBrowser):
+        async def capture_state(self, screenshot_name: str):
+            raise RuntimeError("page is gone")
+
+    session = TakeoverSession()
+    browser = Unavailable(states=[])
+
+    async def scenario():
+        session.request_pause()
+        task = asyncio.ensure_future(run_takeover(session=session, browser=browser))
+        await asyncio.sleep(0.03)
+        session.resume()
+        return await task
+
+    record = asyncio.run(scenario())
+    assert record.ended_at > 0
+    assert session.active is False
+    assert record.summary  # a thin record, but a record
+
+
+def test_a_synchronously_raising_browser_call_cannot_kill_the_run():
+    # The original _safe took the *result* of a call, so the call happened
+    # outside its try. A signature mismatch (or a closed page) therefore raised
+    # straight through run_takeover - which has no except - and out into the
+    # step loop, killing a run that was only trying to hand over.
+    class WrongArity(FakeBrowser):
+        async def capture_state(self):  # no screenshot_name: raises at call time
+            return None
+
+    session = TakeoverSession()
+    browser = WrongArity(states=[])
+
+    async def scenario():
+        session.request_pause()
+        task = asyncio.ensure_future(run_takeover(session=session, browser=browser))
+        await asyncio.sleep(0.03)
+        session.resume()
+        return await task
+
+    record = asyncio.run(scenario())  # must not raise
+    assert record.ended_at > 0
+    assert session.active is False
 
 
 def test_takeover_ends_on_timeout_without_losing_the_run():

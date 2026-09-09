@@ -26,6 +26,7 @@ handful of bytes, so that is what gets captured and summarised.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -55,6 +56,8 @@ class TakeoverRecord:
     title_after: str = ""
     screenshot_before: str = ""
     screenshot_after: str = ""
+    screenshot_before_hash: str = ""
+    screenshot_after_hash: str = ""
     # Origins present in storage state afterwards but not before. This is the
     # signal that says "they logged in", and the reason we snapshot storage
     # rather than the DOM.
@@ -64,6 +67,11 @@ class TakeoverRecord:
     human_note: str = ""
     summary: str = ""
     timed_out: bool = False
+    # The live BrowserState objects either side, kept off to_dict(): the step
+    # recorder needs them, and re-capturing after the resume would describe a
+    # page the agent has already started changing.
+    state_before: Any = None
+    state_after: Any = None
 
     @property
     def duration_sec(self) -> float:
@@ -268,7 +276,6 @@ async def run_takeover(
     session: TakeoverSession,
     browser: Any,
     on_state: Optional[Callable[[str, TakeoverRecord], Any]] = None,
-    screenshot_dir: Optional[str] = None,
 ) -> TakeoverRecord:
     """Park the run, relay the human's input, then record what changed.
 
@@ -279,13 +286,15 @@ async def run_takeover(
     record = TakeoverRecord(started_at=time.time())
     session._begin()
     before_storage = None
-    try:
-        state = await _safe(browser.capture_state())
-        if state is not None:
+    stamp = int(record.started_at * 1000)
+    try:  # noqa: TRY300 - the except below is the "never raises" guarantee
+        captured = await _safe_call(browser.capture_state, f"takeover_before_{stamp}")
+        if captured is not None:
+            record.screenshot_before, record.screenshot_before_hash, state = captured
             record.url_before = getattr(state, "url", "") or ""
             record.title_before = getattr(state, "title", "") or ""
-        record.screenshot_before = await _safe_screenshot(browser, screenshot_dir, "takeover_before")
-        before_storage = await _safe(_storage_state(browser))
+            record.state_before = state
+        before_storage = await _safe_call(_storage_state, browser)
         await _notify(on_state, "paused", record)
 
         deadline = record.started_at + session.timeout_sec
@@ -296,20 +305,24 @@ async def run_takeover(
                 record.timed_out = True
                 break
             for event in session._drain():
-                if await _safe(browser.dispatch_human_input(event)):
+                if await _safe_call(browser.dispatch_human_input, event):
                     record.input_events += 1
             await session._wait_for_resume_or_input()
+    except Exception as exc:
+        # Control must come back to the agent no matter what broke in here.
+        print(f"\u26a0\ufe0f  takeover aborted (non-fatal): {exc}")
     finally:
         record.human_note = session._end()
         record.ended_at = time.time()
         session.paused_sec += record.duration_sec
         try:
-            state = await _safe(browser.capture_state())
-            if state is not None:
+            captured = await _safe_call(browser.capture_state, f"takeover_after_{stamp}")
+            if captured is not None:
+                record.screenshot_after, record.screenshot_after_hash, state = captured
                 record.url_after = getattr(state, "url", "") or ""
                 record.title_after = getattr(state, "title", "") or ""
-            record.screenshot_after = await _safe_screenshot(browser, screenshot_dir, "takeover_after")
-            after_storage = await _safe(_storage_state(browser))
+                record.state_after = state
+            after_storage = await _safe_call(_storage_state, browser)
             delta = diff_storage_origins(before_storage, after_storage)
             record.new_origins = delta["new"]
             record.dropped_origins = delta["dropped"]
@@ -328,25 +341,22 @@ async def _storage_state(browser: Any) -> Optional[Dict[str, Any]]:
     return await context.storage_state()
 
 
-async def _safe(awaitable_or_value: Any) -> Any:
-    """Await if awaitable, swallow anything that goes wrong."""
+async def _safe_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Call fn and await it if needed, swallowing anything that goes wrong.
+
+    Takes the callable rather than its result on purpose. Passing the result
+    means the call itself is evaluated outside this try, so anything that
+    raises synchronously - a signature that does not match, a page that has
+    closed - escapes entirely. That is how a helper documented as "never
+    raises" ends up killing the run it was meant to protect.
+    """
     try:
-        if asyncio.iscoroutine(awaitable_or_value) or isinstance(awaitable_or_value, asyncio.Future):
-            return await awaitable_or_value
-        return awaitable_or_value
+        result = fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
     except Exception:
         return None
-
-
-async def _safe_screenshot(browser: Any, screenshot_dir: Optional[str], name: str) -> str:
-    if not screenshot_dir:
-        return ""
-    try:
-        path = "{}/{}_{}.jpg".format(screenshot_dir.rstrip("/"), name, int(time.time() * 1000))
-        result = await browser.fast_screenshot(path)
-        return path if result is not False else ""
-    except Exception:
-        return ""
 
 
 async def _notify(
