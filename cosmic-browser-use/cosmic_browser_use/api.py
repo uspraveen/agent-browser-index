@@ -19,6 +19,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from . import get_repo_home  # noqa: F401 - also bootstraps sys.path
 
+# Re-exported so a consumer has one import site for the whole run surface.
+# `takeover` is a top-level module in the repo root, reachable only because
+# importing this package bootstraps sys.path - a caller importing it directly
+# would be depending on that side effect having already happened.
+from takeover import TakeoverSession  # noqa: E402
+
 
 class BrowserRunError(RuntimeError):
     """Raised when a browser run cannot be started or fails hard."""
