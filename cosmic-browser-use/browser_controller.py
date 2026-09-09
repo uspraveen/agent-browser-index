@@ -702,6 +702,35 @@ class BrowserController:
         return None
 
 
+    _LARGE_NOTES_INDEX_SNAPSHOT_LIMIT = 20
+
+    def _large_notes_index_snapshot(self) -> List[Dict[str, Any]]:
+        """Catalogue of this run's large notes, newest last, for the prompt.
+
+        The agent's durable memory is supposed to work in two layers: a short
+        pointer in SAVED NOTES says "you wrote this and here is roughly what is
+        in it", and ReadLargeNote fetches the body when the detail is actually
+        needed. That only holds up if the catalogue is visible — otherwise the
+        agent's knowledge of its own archive is whatever pointers happen to
+        survive the notes token budget, and it re-extracts data it already has.
+        """
+        entries: List[Dict[str, Any]] = []
+        for note_id, metadata in list(self.large_notes_index.items())[-self._LARGE_NOTES_INDEX_SNAPSHOT_LIMIT:]:
+            if not isinstance(metadata, dict):
+                continue
+            entries.append(
+                {
+                    "id": str(metadata.get("id") or note_id),
+                    "title": self._clip_single_line(str(metadata.get("title") or ""), 70),
+                    "contains": self._clip_single_line(str(metadata.get("contains") or ""), 90),
+                    "summary": self._clip_single_line(str(metadata.get("summary") or ""), 140),
+                    "source_domain": self._clip_single_line(str(metadata.get("source_domain") or ""), 40),
+                    "lines": metadata.get("lines"),
+                    "chars": metadata.get("chars"),
+                }
+            )
+        return entries
+
     def _init_token_encoder(self):
         if not tiktoken:
             return None
@@ -1881,6 +1910,7 @@ class BrowserController:
             dom_signature=await self._safe_evaluate(_DOM_SIGNATURE_JS, fallback=""),
             dropdowns=dropdowns,
             notes = list(self.notes),  # Shallow copy — prevents DeleteNote/EditNote from mutating historical states
+            large_notes_index = self._large_notes_index_snapshot(),
             tabs = tabs_info,
             dialogs = recent_dialogs,
         )

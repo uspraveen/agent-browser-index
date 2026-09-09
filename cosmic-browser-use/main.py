@@ -811,13 +811,19 @@ async def run_task(
             )
             
             # 2. Check loop detection
-            if memory.detect_loop():
+            stuck_signal = memory.detect_loop()
+            if stuck_signal:
                 print("\n⚠️  Stuck-signal detected — escalating to the frontier brain")
                 previous_confidence = 0.0
             
             # 3. Get LLM decision
             llm_start = time.time()
             context = memory.get_context_for_llm(screenshot_path)
+            # Routed to the tier selector AND shown to the model. Setting
+            # previous_confidence alone was not enough: _select_tier's
+            # read-only fast path sits above the confidence rule, and a
+            # stuck agent's last action is almost always a read.
+            context["stuck_signal"] = stuck_signal
             
             # Load screenshot as base64
             with open(screenshot_path, 'rb') as f:
@@ -1051,6 +1057,38 @@ async def run_task(
                     ),
                     execution_time_ms=0,
                 )
+
+            # ReadLargeNote circuit breaker: the whole point of the notes
+            # system is that the agent writes something down once and can come
+            # back to it. Re-reading a note whose text is already sitting in
+            # WORKING SET is not coming back to it — it is the loop that burns
+            # a run. Refuse and say where the content already is; the error
+            # text teaches, exactly like the TimedWait breaker above.
+            if (
+                llm_response.tool_call.action_type == ActionType.READ_LARGE_NOTE
+                and not llm_response.tool_call.parameters.get("start_line")
+                and not llm_response.tool_call.parameters.get("end_line")
+                and not action_result
+            ):
+                requested_note = str(llm_response.tool_call.parameters.get("note_id") or "").strip()
+                already_visible = bool(requested_note) and any(
+                    str(entry.get("label") or "") == f"note_id={requested_note}"
+                    for entry in (context.get("working_set") or [])
+                )
+                if already_visible:
+                    action_result = ActionResult(
+                        success=False,
+                        action_type=ActionType.READ_LARGE_NOTE,
+                        description="ReadLargeNote refused",
+                        error=(
+                            f"{requested_note} is already shown in full under WORKING SET in this "
+                            "prompt - read it there. Re-reading returns the same text and wastes a "
+                            "step. Act on it now: SaveNote the answer it contains, navigate to what "
+                            "it points at, or extract the one thing still missing. Use ReadLargeNote "
+                            "again only with start_line/end_line for a part that was truncated."
+                        ),
+                        execution_time_ms=0,
+                    )
 
             # Normal execution
             if not action_result:

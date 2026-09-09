@@ -20,7 +20,7 @@ from collections import deque
 from openai import OpenAI
 from cli_labels import display_provider_model, resolve_fireworks_default_model
 
-from cosmic_types import Step, BrowserState, ActionResult, TaskConfig, VerificationStatus
+from cosmic_types import Step, BrowserState, ActionResult, ActionType, TaskConfig, VerificationStatus
 from browser_memory.coordinates import build_visual_index
 import os
 from dotenv import load_dotenv
@@ -492,6 +492,92 @@ this JSON object (no other text):
 
         return output
     
+    # Actions that only read — their output is information the agent gathered,
+    # not a change it made to the page.
+    READ_ONLY_OUTPUT_ACTIONS = {
+        ActionType.DOM_EXTRACT,
+        ActionType.BATCH_EXTRACT,
+        ActionType.READ_HISTORY,
+        ActionType.READ_LARGE_NOTE,
+        ActionType.LIST_LARGE_NOTES,
+        ActionType.SEARCH_LARGE_NOTES,
+    }
+
+    WORKING_SET_MAX_ENTRIES = 3
+    WORKING_SET_TOTAL_CHARS = 7000
+    WORKING_SET_ENTRY_CHARS = 3000
+
+    def _working_set_for_prompt(self) -> List[Dict[str, Any]]:
+        """The few most recent read-only results, still readable.
+
+        Only the single latest action's output was ever put in front of the
+        model (as TOOL_OUTPUT_DATA), so anything the agent read became
+        unreachable the moment it acted again. That is what made its own notes
+        useless to it: a large note could be re-read, but the content
+        evaporated before it could be acted on, so the agent read it again, and
+        again. Keeping the last few read results in view — deduplicated, newest
+        first, under a hard character budget — is the layer that was missing
+        between "I remember writing this" and "I can use it".
+
+        The newest read is excluded: it is already rendered as TOOL_OUTPUT_DATA
+        and must not appear twice.
+        """
+        entries: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        budget = self.WORKING_SET_TOTAL_CHARS
+        # steps[-1] supplies TOOL_OUTPUT_DATA, so start one before it.
+        for step in reversed(self.steps[:-1]):
+            if len(entries) >= self.WORKING_SET_MAX_ENTRIES or budget <= 0:
+                break
+            action = step.action
+            if not action or action.action_type not in self.READ_ONLY_OUTPUT_ACTIONS:
+                continue
+            output = str(action.output or "").strip()
+            if not output:
+                continue
+            key = self._working_set_key(step)
+            if key in seen:
+                # An older read of the same thing is strictly redundant.
+                continue
+            seen.add(key)
+            clipped = output[: self.WORKING_SET_ENTRY_CHARS]
+            truncated = len(output) > len(clipped)
+            if len(clipped) > budget:
+                clipped = clipped[:budget]
+                truncated = True
+            budget -= len(clipped)
+            entries.append(
+                {
+                    "step": step.step_number,
+                    "action_type": action.action_type.value,
+                    "label": self._working_set_label(step),
+                    "output": clipped,
+                    "truncated": truncated,
+                }
+            )
+        entries.reverse()  # oldest first reads naturally in the prompt
+        return entries
+
+    @staticmethod
+    def _working_set_key(step: "Step") -> str:
+        """Identity of what a read fetched, so the same fetch is kept once."""
+        action_type = step.action.action_type.value if step.action else "?"
+        params = (step.tool_call or {}).get("parameters") or {}
+        for field_name in ("note_id", "selector", "query", "url"):
+            value = params.get(field_name)
+            if value:
+                return f"{action_type}:{field_name}={value}"
+        return f"{action_type}:{json.dumps(params, sort_keys=True, ensure_ascii=False)[:200]}"
+
+    @staticmethod
+    def _working_set_label(step: "Step") -> str:
+        params = (step.tool_call or {}).get("parameters") or {}
+        for field_name in ("note_id", "selector", "query", "url"):
+            value = params.get(field_name)
+            if value:
+                return f"{field_name}={value}"
+        return str(step.action.description or "")[:80] if step.action else ""
+
     def get_context_for_llm(
         self,
         current_screenshot_path: str,
@@ -512,6 +598,7 @@ this JSON object (no other text):
             context["browser_state"] = last_step.browser_state.to_dict()
             context["last_action"] = last_step.action.to_dict() if last_step.action else None
             context["recent_steps"] = self._recent_steps_for_prompt(limit=8)
+            context["working_set"] = self._working_set_for_prompt()
             
             if include_screenshots:
                 context["screenshots"] = {
@@ -522,6 +609,7 @@ this JSON object (no other text):
             context["browser_state"] = None
             context["last_action"] = None
             context["recent_steps"] = []
+            context["working_set"] = []
             if include_screenshots:
                 context["screenshots"] = {"current": current_screenshot_path}
         
@@ -585,10 +673,13 @@ this JSON object (no other text):
         # made within it — e.g. two malformed attempts followed by a good
         # click is self-correction, not a loop. Escalating on it wastes a
         # frontier call right when the task is nearly done.
-        if any(
-            s.action and s.action.verification_status == VerificationStatus.SUCCESS
-            for s in recent_steps
-        ):
+        #
+        # Read-only actions are excluded from that reprieve. They report
+        # SUCCESS whenever the read itself worked, which is true even when the
+        # agent is re-reading the same note for the fourth time — so counting
+        # them as progress let a loop switch off its own detector. This guard
+        # was always about actions that change something.
+        if self._made_real_progress(recent_steps):
             return False
         
         # Check if actions are similar
@@ -629,7 +720,20 @@ this JSON object (no other text):
             # If URLs or screenshots changed, it's legitimate progress
             return False
         
-        # Pattern 2: Alternating actions (A-B-A-B)
+        # Pattern 2: Alternating actions (A-B-A-B). This needs four steps to
+        # see the repeat, but loop_detection_window is 3 — so the check could
+        # never run on `recent_steps` and the commonest stuck shape (read /
+        # extract / read / extract) went unnoticed. Scanned over its own,
+        # wider slice instead, with the same no-progress requirement applied
+        # to that slice.
+        alternating_steps = self.steps[-max(window, self.ALTERNATING_LOOP_WINDOW):]
+        if (
+            len(alternating_steps) >= self.ALTERNATING_LOOP_WINDOW
+            and not self._made_real_progress(alternating_steps)
+            and self._is_alternating_loop(alternating_steps)
+        ):
+            return True
+
         if len(set(action_types)) == 2 and len(action_types) >= 4:
             pattern = [at.value for at in action_types]
             # Check if it's alternating
@@ -648,6 +752,34 @@ this JSON object (no other text):
         
         return False
     
+    ALTERNATING_LOOP_WINDOW = 4
+
+    def _made_real_progress(self, steps: List["Step"]) -> bool:
+        """Did any step in this slice change something and verify it?
+
+        Deliberately ignores read-only actions: reading successfully is not
+        the same as getting anywhere, and treating it as progress is what
+        blinded the loop detector.
+        """
+        return any(
+            step.action
+            and step.action.verification_status == VerificationStatus.SUCCESS
+            and step.action.action_type not in self.READ_ONLY_OUTPUT_ACTIONS
+            for step in steps
+        )
+
+    @staticmethod
+    def _is_alternating_loop(steps: List["Step"]) -> bool:
+        """A-B-A-B over the same page with nothing moving."""
+        action_types = [s.action.action_type for s in steps if s.action]
+        if len(action_types) < len(steps) or len(set(action_types)) != 2:
+            return False
+        if any(action_types[i] == action_types[i + 1] for i in range(len(action_types) - 1)):
+            return False
+        urls = {s.browser_state.url for s in steps if s.browser_state}
+        screenshots = {s.screenshot_hash for s in steps}
+        return len(urls) == 1 and len(screenshots) <= 2
+
     @staticmethod
     def _hash_action(action: ActionResult) -> str:
         """Create hash for action that includes URL context.

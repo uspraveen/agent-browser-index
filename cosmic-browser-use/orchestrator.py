@@ -1411,6 +1411,13 @@ Recent search-result loop steps:
         last_action = context.get("last_action") or {}
         dom_enabled = bool(context.get("enable_dom_fallback", True))
 
+        # The loop detector fired for this step. That has to be checked before
+        # anything below, because the shortcut that follows would otherwise
+        # veto it: a stuck agent is usually stuck in a read/extract cycle, so
+        # the last action is exactly the kind this function would fast-path.
+        if context.get("stuck_signal"):
+            return LLMTier.SLOW
+
         # A read-only tool output usually needs a cheap base follow-up
         # decision such as SaveNote, not the frontier model.
         if (
@@ -1430,7 +1437,8 @@ Recent search-result loop steps:
         recent = context.get("recent_steps") or []
         verifs = [str(s.get("verification_status") or "") for s in recent]
 
-        # 1. Hard loop — the loop detector already fired. Escalate.
+        # 1. Hard loop — kept for the replay path, which does stamp this
+        #    status on an action it re-executes.
         if last_action.get("verification_status") == "loop_detected":
             return LLMTier.SLOW
 
@@ -1656,6 +1664,7 @@ Rules:
 - **Wrong-SSO-Provider Rule**: If a step's verification status is `wrong_state`, your last click landed on a DIFFERENT sign-in provider's button than you intended (e.g. you meant to click "Continue with Google" but landed on Microsoft's OAuth page). GoBack, then do NOT repeat the same VisualClick with a similar description — it will pick the wrong button again. Switch to DOMClick instead; DOMClick now searches inside iframes too, which is where these SSO buttons often live.
 - **SSO Selector Rule**: SSO sign-in buttons (Google, Microsoft, Apple, etc.) are almost always rendered as `<div role="button">`, NOT a literal `<button>` tag — this is standard for Google's official Identity Services widget specifically. When using DOMClick on an SSO button, use `[role="button"]:has-text("Continue with Google")` (attribute selector, not a tag name). A `button:has-text(...)` selector will silently match nothing for these widgets even though the button is clearly visible on screen.
 - **Search-Bar Shortcut Rule**: If clicking/typing into a SITE SEARCH bar fails to produce any change (`no_change`) 2 times in a row — via any combination of VisualClick, VisualType, or DOMClick — STOP fighting the input field. Most major sites support a direct search URL (e.g. `linkedin.com/search/results/all/?keywords=TERM`, `youtube.com/results?search_query=TERM`, `google.com/search?q=TERM`, `github.com/search?q=TERM`, `twitter.com/search?q=TERM`). Construct that URL with the search term and use Navigate directly instead of continuing to click/type. This is faster and far more reliable than fighting a JS-heavy search widget.
+- **Working-Set Rule**: WORKING SET holds results you already fetched in earlier steps and they are still valid. Before any DOMExtract, BatchExtract or ReadLargeNote, check whether the data is already there — re-fetching something you can already see is the single most common way to waste a run. Re-read only when you need a part that was truncated.
 - **Extract-Then-Click Rule**: If a DOMExtract call already surfaced the exact text/link/title you need to click (it's visible in TOOL_OUTPUT_DATA), do NOT switch to VisualClick to re-find it visually — that throws away the structural information you just got and pays a fresh MiMo call for something you already located. Build a DOMClick selector directly from the extracted text instead (e.g. `a:has-text("ML Ops Engineer")` or `[role="button"]:has-text("...")`) — it's faster, and DOMClick now auto-tries several tag variants and searches iframes if the first guess doesn't match.
 - **Repeated-Click Rule**: If you are about to issue a VisualClick/DOMClick with the SAME description/target you already clicked in the last 2-3 steps and the URL hasn't changed, that click is not accomplishing anything — clicking it again won't either. Stop, reassess from the current screenshot what's actually different, and either try a different element/approach or conclude the action had no real effect and pick another route.
 {escalation_rule}
@@ -1677,6 +1686,17 @@ Current progress: {context['estimated_progress']:.0%} complete
             ActionType.SEARCH_LARGE_NOTES.value,
         }
 
+        stuck_banner = (
+            "\n## STUCK — BREAK THE PATTERN\n"
+            "Your last few steps repeated the same actions without getting anywhere.\n"
+            "Do NOT repeat them. Re-read WORKING SET and SAVED NOTES: if the answer is\n"
+            "already there, SaveNote it and finish. If it is genuinely not there, take a\n"
+            "materially different route (a different URL, a different element, a\n"
+            "different tool) — not another attempt at the one that just failed.\n"
+            if context.get("stuck_signal")
+            else ""
+        )
+
         content = [
             {"type": "text", "text": f"""Current state:
 URL: {context['browser_state']['url'] if context['browser_state'] else 'N/A'}
@@ -1688,11 +1708,13 @@ Step: {context['current_step']}/{context['max_steps']}
 ## SAVED NOTES (Your Knowledge Base)
 {self._format_notes(context.get('browser_state'))}
 {self._format_large_notes_index(context.get('browser_state')) if dom_enabled else ''}
+{self._format_working_set(context.get('working_set'))}
 {self._format_dialogs(context.get('browser_state'))}{self._format_dropdowns(context.get('browser_state')) if dom_enabled else ''}
 ## RECENT DETAILED STEPS
 {self._format_recent_steps(context.get('recent_steps'))}
 History: {context['cumulative_summary']}
 
+{stuck_banner}
 What is the next action to achieve the goal: {context['goal']}?
 """},
         ]
@@ -1760,14 +1782,76 @@ What is the next action to achieve the goal: {context['goal']}?
         return "\n".join(output)
     
     def _format_large_notes_index(self, browser_state: Optional[Dict[str, Any]]) -> str:
-        """Format large notes index for the prompt - shows ALL available large notes."""
-        # Access index from browser state if available
-        # Note: We'll need to pass this from browser_controller
-        # For now, show instruction to use ListLargeNotes
-        return """## LARGE NOTES INDEX
-Use ListLargeNotes() to see all available large notes.
-Use SearchLargeNotes(query) to find specific notes.
-Note: Large notes persist even if their pointers are removed from SAVED NOTES due to budget limits."""
+        """The run's large-note catalogue, rendered from live browser state.
+
+        This used to be a placeholder that told the agent to call
+        ListLargeNotes — which meant the only durable record of its own
+        archive was whatever pointers survived the notes token budget, and
+        finding out what it already knew cost a step. The catalogue is cheap;
+        show it.
+        """
+        entries = (browser_state or {}).get("large_notes_index") or []
+        if not entries:
+            return ""
+
+        lines = [
+            "",
+            "## LARGE NOTES (your archive — you wrote these, they are still there)",
+            "This catalogue is complete and survives even when a note's pointer is",
+            "dropped from SAVED NOTES to stay inside the note budget — so it, not",
+            "SAVED NOTES, is the real record of what you have already gathered.",
+            "Read one with ReadLargeNote(note_id) when you need its detail. Anything",
+            "already shown under WORKING SET is in front of you — do not re-read it.",
+        ]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            note_id = str(entry.get("id") or "").strip()
+            if not note_id:
+                continue
+            parts = [f"- {note_id}"]
+            for label in ("title", "contains", "summary"):
+                value = str(entry.get(label) or "").strip()
+                if value:
+                    parts.append(f"{label}: {value}")
+            size_bits = []
+            if entry.get("lines"):
+                size_bits.append(f"{entry['lines']} lines")
+            if entry.get("chars"):
+                size_bits.append(f"{entry['chars']} chars")
+            if size_bits:
+                parts.append(", ".join(size_bits))
+            source = str(entry.get("source_domain") or "").strip()
+            if source:
+                parts.append(f"from {source}")
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
+
+    def _format_working_set(self, working_set: Optional[List[Dict[str, Any]]]) -> str:
+        """Recent read results that are still usable.
+
+        Without this the agent could only ever see the output of its single
+        most recent action, so data it had already fetched went out of reach
+        the moment it did anything else.
+        """
+        if not working_set:
+            return ""
+        lines = [
+            "",
+            "## WORKING SET (results you already fetched — still valid, use them)",
+        ]
+        for entry in working_set:
+            if not isinstance(entry, dict):
+                continue
+            header = f"### From step {entry.get('step')}: {entry.get('action_type')}"
+            label = str(entry.get("label") or "").strip()
+            if label:
+                header += f" ({label})"
+            lines.append(header)
+            lines.append(str(entry.get("output") or ""))
+            if entry.get("truncated"):
+                lines.append("[...truncated — re-read only if the missing tail is what you need]")
+        return "\n".join(lines)
 
     def _format_recent_steps(self, recent_steps: Optional[List[Dict[str, Any]]]) -> str:
         if not recent_steps:

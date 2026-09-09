@@ -103,6 +103,11 @@ class BrowserState:
     dom_signature: str = ""  # Structural DOM fingerprint (no raw text) — see BrowserController._DOM_SIGNATURE_JS
     dropdowns: List[str] = field(default_factory=list)  # Deterministic scan: likely dropdown controls (native selects + custom comboboxes)
     notes: List[str] = field(default_factory=list)  # Persistent knowledge base
+    # Metadata for every large note offloaded this run (id/title/contains/
+    # summary/size). The pointer left in `notes` tells the agent a note exists;
+    # this is the catalogue it can consult without spending a step on
+    # ListLargeNotes just to remember what it already wrote.
+    large_notes_index: List[Dict[str, Any]] = field(default_factory=list)
     tabs: List[TabInfo] = field(default_factory=list)  # List of all open tabs
     dialogs: List[Dict[str, str]] = field(default_factory=list)  # Auto-handled browser dialogs since last capture
     
@@ -118,6 +123,7 @@ class BrowserState:
             "dom_signature": self.dom_signature,
             "dropdowns": self.dropdowns,
             "notes": self.notes,
+            "large_notes_index": self.large_notes_index,
             "tabs": [
                 {"page_id": t.page_id, "url": t.url, "title": t.title}
                 for t in self.tabs
