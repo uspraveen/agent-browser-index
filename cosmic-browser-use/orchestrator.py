@@ -1106,6 +1106,88 @@ Recent same-page steps that caused forced finalization:
             estimated_completion=1.0,
         )
 
+    async def decide_step_extension(
+        self,
+        report: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Judge whether a run that has used its step budget deserves more.
+
+        Called only when the deterministic guards in the run loop have already
+        passed (there is budget left to grant, and recent steps show real
+        progress). This is the judgement call on top of them: a run two clicks
+        from the answer should get more room, and a run that has been circling
+        should be stopped even though it technically could continue.
+
+        Uses the escalation tier deliberately — this decision is worth more
+        reasoning than the routine step that ran out of budget, and it happens
+        at most a couple of times per run.
+
+        Returns {"grant": bool, "reason": str}. Any failure returns grant=False:
+        the run stops with what it has, which is the pre-existing behaviour.
+        """
+        system_prompt = """You decide whether a browser agent that has used up its step budget should be given more steps.
+
+Be neither timid nor generous. Two questions only:
+1. Is the agent close to the goal, on evidence rather than optimism? Concrete findings already gathered, or a clear next page it has identified, count as evidence. "It is still trying" does not.
+2. Would more steps be spent differently from the last ones? If the recent steps repeat the same reads and extractions, more steps buy more of the same and the answer is no.
+
+Grant when the remaining work is small and specific. Refuse when the agent is circling, when what it has is already enough to answer, or when the remaining work is clearly larger than the extension would cover — in those cases stopping now and returning partial findings is the better outcome.
+
+CRITICAL JSON CONTRACT:
+- Your entire response must be one JSON object.
+- The first character must be { and the last character must be }.
+- No analysis, markdown, prose, or code fences.
+
+Return exactly:
+{"grant": true, "reason": "one short sentence"}
+"""
+
+        user_text = f"""Goal:
+{report.get('goal')}
+
+Budget: used {report.get('steps_used')} of {report.get('step_ceiling')} steps ({report.get('extensions_used')} extension(s) already granted).
+If granted, this adds {report.get('extension_size')} steps, up to a hard ceiling of {report.get('max_total_steps')}.
+Elapsed: {report.get('elapsed_sec')}s of a {report.get('time_budget_sec')}s limit.
+Agent's own progress estimate: {report.get('estimated_progress')}
+
+Current page: {report.get('url')}
+Title: {report.get('title')}
+
+What it has already gathered (its saved notes):
+{json.dumps(report.get('notes') or [], ensure_ascii=False)[:3000]}
+
+Its archive of longer extracts:
+{json.dumps(report.get('large_notes_index') or [], ensure_ascii=False)[:2000]}
+
+Its last steps:
+{json.dumps(report.get('recent_steps') or [], ensure_ascii=False)[:4000]}
+"""
+
+        provider = self.models[LLMTier.SLOW] or self.models[LLMTier.MEDIUM] or self.models[LLMTier.FAST]
+        if provider is None:
+            return {"grant": False, "reason": "no model available to decide"}
+
+        start_time = time.time()
+        try:
+            result = await provider.generate(
+                messages=[{"role": "user", "content": [{"type": "text", "text": user_text}]}],
+                system_prompt=system_prompt,
+            )
+        except Exception as exc:
+            print(f"   [Step budget] adjudicator failed ({type(exc).__name__}: {exc}) - not granting")
+            return {"grant": False, "reason": f"adjudicator unavailable ({type(exc).__name__})"}
+        finally:
+            self.call_counts[LLMTier.SLOW] += 1
+            self.total_latency_ms[LLMTier.SLOW] += (time.time() - start_time) * 1000
+
+        parsed = self._extract_json_object(result.get("content", ""))
+        if not parsed:
+            return {"grant": False, "reason": "adjudicator returned non-JSON"}
+        return {
+            "grant": bool(parsed.get("grant")),
+            "reason": str(parsed.get("reason") or "").strip()[:200] or "no reason given",
+        }
+
     async def force_search_result_decision(
         self,
         context: Dict[str, Any],

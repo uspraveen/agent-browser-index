@@ -78,7 +78,28 @@ def _resolve_model_configs():
         )
         medium_config = None
         slow_config: Optional[LLMConfig] = None
-        if fireworks_key:
+        # Escalation has to point *up*. Pairing bu-2-0 with GLM 5.3 Flash made
+        # "escalate" mean falling back to the model that used to be the routine
+        # brain, so a genuinely stuck step got no more reasoning than the step
+        # that got stuck. Prefer the frontier model whenever its key is
+        # present — the same one the legacy set escalated to — and keep GLM as
+        # the fallback for a deploy that has no xAI key.
+        xai_key = _env("XAI_API_KEY")
+        prefer_fireworks_escalation = _env("BROWSER_AGENT_ESCALATION", "").strip().lower() in {
+            "fireworks",
+            "glm",
+        }
+        if xai_key and not prefer_fireworks_escalation:
+            slow_config = LLMConfig(
+                provider=LLMProvider.XAI,
+                model_id=_env("XAI_MODEL") or resolve_escalation_model(),
+                api_key=xai_key,
+                api_base=_env("XAI_BASE_URL") or XAI_BASE_URL,
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=slow_max_tokens,
+            )
+        elif fireworks_key:
             slow_config = LLMConfig(
                 provider=LLMProvider.FIREWORKS_KIMI,
                 model_id=_env("ESCALATION_FIREWORKS_MODEL") or resolve_fireworks_default_model(),
@@ -151,6 +172,9 @@ async def run_goal(
     ask_user_handler=None,
     on_live_frame=None,
     working_dir_root: Optional[str] = None,
+    max_step_extensions: int = 0,
+    step_extension_size: int = 0,
+    max_total_steps: int = 0,
     run_timeout_sec: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run one browser goal to completion.
@@ -211,6 +235,11 @@ async def run_goal(
         step_callback=_progress_bridge,
         live_frame_callback=on_live_frame,
         supermemory_enabled=_env("SUPERMEMORY_API_KEY") != "" and _env("BROWSER_SUPERMEMORY_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
+        # Step-budget extension policy. Zeroes keep the old behaviour: the run
+        # stops the moment it reaches max_steps.
+        max_step_extensions=max(0, int(max_step_extensions or 0)),
+        step_extension_size=max(0, int(step_extension_size or 0)),
+        max_total_steps=max(0, int(max_total_steps or 0)),
     )
     mimo_url = _env("MIMO_API_URL")
     mimo_key = _env("MIMO_API_KEY")
@@ -222,6 +251,9 @@ async def run_goal(
         run_kwargs["credentials"] = credentials
 
     timeout = int(run_timeout_sec or _env("BROWSER_AGENT_RUN_TIMEOUT_SEC", "840"))
+    # The guard refuses an extension it has no time to spend, so it needs to
+    # know the same deadline this wait_for enforces.
+    run_kwargs["time_budget_sec"] = float(timeout)
     try:
         raw_result = await asyncio.wait_for(browser_main.run_task(**run_kwargs), timeout=timeout)
     except asyncio.TimeoutError as exc:
@@ -235,6 +267,9 @@ async def run_goal(
         "steps_taken": int(raw_result.get("steps_taken") or 0),
         "duration_sec": round(time.time() - started, 1),
         "run_dir": str(raw_result.get("working_dir") or ""),
+        "stop_reason": str(raw_result.get("stop_reason") or ""),
+        "step_extensions": raw_result.get("step_extensions") or [],
+        "step_ceiling": raw_result.get("step_ceiling"),
         "recall_summary": str(raw_result.get("recall_summary") or ""),
         "cosmic_replay": raw_result.get("cosmic_replay"),
         "llm_usage": raw_result.get("llm_usage") or {},

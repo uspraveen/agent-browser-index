@@ -268,3 +268,144 @@ def test_a_successful_read_still_stays_cheap_when_not_stuck():
         "recent_steps": [],
     }
     assert Orchestrator._select_tier(_tier_orchestrator(), context, 0.9) == LLMTier.FAST
+
+
+# ── Step-budget negotiation ──────────────────────────────────────────────
+# Running out of steps used to end a run mid-thought, with the same
+# "incomplete" status any other non-completion produced.
+
+import asyncio  # noqa: E402
+
+from main import _consider_step_extension  # noqa: E402
+
+
+class _FakeOrchestrator:
+    """Stands in for the escalation-tier adjudicator."""
+
+    def __init__(self, grant: bool, reason: str = "because"):
+        self._grant = grant
+        self.reason = reason
+        self.calls = 0
+
+    async def decide_step_extension(self, report):
+        self.calls += 1
+        self.report = report
+        return {"grant": self._grant, "reason": self.reason}
+
+
+def _progressing_memory():
+    return _memory([
+        _step(1, ActionType.DOM_EXTRACT, output="rows", params={"selector": ".a"}),
+        _step(2, ActionType.VISUAL_CLICK, params={"description": "open posting"}),
+    ])
+
+
+def _circling_memory():
+    return _memory([
+        _step(1, ActionType.READ_LARGE_NOTE, params={"note_id": "ln_1"}),
+        _step(2, ActionType.DOM_EXTRACT, params={"selector": ".jobs"}),
+        _step(3, ActionType.READ_LARGE_NOTE, params={"note_id": "ln_1"}),
+        _step(4, ActionType.DOM_EXTRACT, params={"selector": ".jobs"}),
+    ])
+
+
+def _extend(memory, orchestrator, **overrides):
+    kwargs = dict(
+        orchestrator=orchestrator,
+        memory=memory,
+        goal="find 3 jobs and salaries",
+        step_ceiling=30,
+        extension_size=10,
+        extension_limit=2,
+        hard_step_cap=60,
+        decision_log=[],
+        elapsed_sec=100.0,
+        time_budget_sec=840.0,
+        browser_state=memory.steps[-1].browser_state if memory.steps else None,
+    )
+    kwargs.update(overrides)
+    log = kwargs["decision_log"]
+    result = asyncio.run(_consider_step_extension(**kwargs))
+    return result, log
+
+
+def test_extension_is_off_by_default():
+    orch = _FakeOrchestrator(grant=True)
+    result, log = _extend(_progressing_memory(), orch, extension_size=0, extension_limit=0)
+    assert result is None
+    assert orch.calls == 0, "the adjudicator must not be consulted when the policy is off"
+    assert log == [], "a disabled feature should not log refusals"
+
+
+def test_a_progressing_run_can_be_granted_more_room():
+    orch = _FakeOrchestrator(grant=True, reason="two clicks from the salaries")
+    result, log = _extend(_progressing_memory(), orch)
+    assert result == 40
+    assert log[0]["granted"] is True
+    assert log[0]["steps_added"] == 10
+    assert log[0]["reason"] == "two clicks from the salaries"
+
+
+def test_a_circling_run_is_refused_without_asking():
+    # The guard that matters: an extension must never buy more of a loop.
+    orch = _FakeOrchestrator(grant=True)
+    result, log = _extend(_circling_memory(), orch)
+    assert result is None
+    assert orch.calls == 0, "no verified progress means the model is never consulted"
+    assert "no verified progress" in log[0]["reason"]
+
+
+def test_the_adjudicator_can_still_say_no():
+    orch = _FakeOrchestrator(grant=False, reason="what it has is already enough")
+    result, log = _extend(_progressing_memory(), orch)
+    assert result is None
+    assert orch.calls == 1
+    assert log[0]["granted"] is False
+    assert log[0]["reason"] == "what it has is already enough"
+
+
+def test_extensions_stop_at_the_limit():
+    orch = _FakeOrchestrator(grant=True)
+    spent = [{"granted": True}, {"granted": True}]
+    result, log = _extend(_progressing_memory(), orch, decision_log=spent, extension_limit=2)
+    assert result is None
+    assert orch.calls == 0
+    assert "extension limit reached" in log[-1]["reason"]
+
+
+def test_the_hard_ceiling_wins():
+    orch = _FakeOrchestrator(grant=True)
+    result, log = _extend(_progressing_memory(), orch, step_ceiling=60, hard_step_cap=60)
+    assert result is None
+    assert orch.calls == 0
+    assert "hard ceiling" in log[0]["reason"]
+
+
+def test_a_grant_is_clipped_to_the_hard_ceiling():
+    orch = _FakeOrchestrator(grant=True)
+    result, log = _extend(_progressing_memory(), orch, step_ceiling=55, hard_step_cap=60)
+    assert result == 60
+    assert log[0]["steps_added"] == 5
+
+
+def test_no_extension_when_there_is_no_time_to_spend_it():
+    orch = _FakeOrchestrator(grant=True)
+    result, log = _extend(_progressing_memory(), orch, elapsed_sec=800.0, time_budget_sec=840.0)
+    assert result is None
+    assert orch.calls == 0
+    assert "time budget" in log[0]["reason"]
+
+
+def test_an_unavailable_adjudicator_stops_the_run_rather_than_guessing():
+    # decide_step_extension catches its own failures and returns grant=False,
+    # so a model outage degrades to the old behaviour: stop with what you have.
+    class Unavailable:
+        calls = 0
+
+        async def decide_step_extension(self, report):
+            return {"grant": False, "reason": "adjudicator unavailable (RuntimeError)"}
+
+    result, log = _extend(_progressing_memory(), Unavailable())
+    assert result is None
+    assert log[0]["granted"] is False
+    assert "unavailable" in log[0]["reason"]

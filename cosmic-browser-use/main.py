@@ -392,6 +392,112 @@ def _should_try_replay_checkpoint_finalizer(replay_summary: dict) -> bool:
     }
 
 
+# Steps of history the extension guard looks at when asking "is this run
+# actually getting anywhere, or has it been circling?"
+_EXTENSION_PROGRESS_WINDOW = 6
+
+
+async def _consider_step_extension(
+    *,
+    orchestrator,
+    memory,
+    goal: str,
+    step_ceiling: int,
+    extension_size: int,
+    extension_limit: int,
+    hard_step_cap: int,
+    decision_log: list,
+    elapsed_sec: float,
+    time_budget_sec: float,
+    browser_state,
+) -> Optional[int]:
+    """Decide whether a run that just hit its step ceiling gets more room.
+
+    Running out of steps used to end a run mid-thought: the loop simply fell
+    out, the status was the same "incomplete" any other non-completion
+    produces, and a run two clicks from the answer was indistinguishable from
+    one that had been going nowhere for twenty steps.
+
+    Two gates. Deterministic guards first — is there budget left to grant, is
+    there time to spend it, and has the run made real progress recently (the
+    same page-changing-success test the loop detector uses, so an extension
+    can never simply buy more of a loop). Only if those pass is the judgement
+    call made, by the escalation model, on the evidence.
+
+    Returns the new ceiling, or None to stop. Every decision is appended to
+    `decision_log` so the orchestrator can see afterwards what was asked for
+    and what happened.
+    """
+    def _refuse(reason: str) -> None:
+        decision_log.append(
+            {
+                "at_step": step_ceiling,
+                "granted": False,
+                "reason": reason,
+                "elapsed_sec": round(elapsed_sec, 1),
+            }
+        )
+        print(f"   [Step budget] not extending: {reason}")
+        return None
+
+    if extension_size <= 0 or extension_limit <= 0:
+        return None  # feature off; stay silent, this is the default
+    if len(decision_log) >= extension_limit:
+        return _refuse(f"extension limit reached ({extension_limit})")
+    if step_ceiling >= hard_step_cap:
+        return _refuse(f"hard ceiling reached ({hard_step_cap} steps)")
+    if time_budget_sec > 0 and elapsed_sec >= time_budget_sec * 0.9:
+        return _refuse(f"only {max(0, time_budget_sec - elapsed_sec):.0f}s of the time budget left")
+
+    recent = memory.steps[-_EXTENSION_PROGRESS_WINDOW:]
+    if recent and not memory._made_real_progress(recent):
+        return _refuse(
+            f"no verified progress in the last {len(recent)} steps - more steps would repeat them"
+        )
+
+    grant_size = min(extension_size, hard_step_cap - step_ceiling)
+    if grant_size <= 0:
+        return _refuse(f"hard ceiling reached ({hard_step_cap} steps)")
+
+    state_dict = browser_state.to_dict() if browser_state else {}
+    report = {
+        "goal": goal,
+        "steps_used": len(memory.steps),
+        "step_ceiling": step_ceiling,
+        "extensions_used": len(decision_log),
+        "extension_size": grant_size,
+        "max_total_steps": hard_step_cap,
+        "elapsed_sec": round(elapsed_sec, 1),
+        "time_budget_sec": round(time_budget_sec, 1),
+        "estimated_progress": round(float(memory.get_context_for_llm("").get("estimated_progress") or 0.0), 2),
+        "url": state_dict.get("url"),
+        "title": state_dict.get("title"),
+        "notes": state_dict.get("notes") or [],
+        "large_notes_index": state_dict.get("large_notes_index") or [],
+        "recent_steps": memory._recent_steps_for_prompt(limit=_EXTENSION_PROGRESS_WINDOW),
+    }
+
+    print(f"\n⏳ Step budget exhausted at {step_ceiling} - asking whether to continue...")
+    verdict = await orchestrator.decide_step_extension(report)
+    reason = str(verdict.get("reason") or "").strip() or "no reason given"
+    if not verdict.get("grant"):
+        return _refuse(reason)
+
+    new_ceiling = step_ceiling + grant_size
+    decision_log.append(
+        {
+            "at_step": step_ceiling,
+            "granted": True,
+            "steps_added": grant_size,
+            "new_ceiling": new_ceiling,
+            "reason": reason,
+            "elapsed_sec": round(elapsed_sec, 1),
+        }
+    )
+    print(f"   [Step budget] +{grant_size} steps (now {new_ceiling}): {reason}")
+    return new_ceiling
+
+
 async def run_task(
     goal: str,
     initial_url: str = None, # Optional
@@ -408,6 +514,13 @@ async def run_task(
     screenshot_quality: int = None,
     ask_user_timeout: int = None,
     large_notes_path: str = None,
+    # Step-budget extension policy, set by the caller (the orchestrator, at
+    # dispatch time, when it knows how hard the goal is). All zero by default,
+    # which is exactly the old behaviour: the run stops at max_steps.
+    max_step_extensions: int = 0,
+    step_extension_size: int = 0,
+    max_total_steps: int = 0,
+    time_budget_sec: float = 0,
     memory_mode: str = "off",
     memory_dir: str = None,
     cosmic_user_id: str = "demo_user",
@@ -747,6 +860,13 @@ async def run_task(
     escalation_cooldown = 0  # steps forced back onto the base brain after a frontier handback
     checkpoint_path = None
     task_status = "incomplete"
+    stop_reason = ""
+    # Running ceiling — raised, never lowered, by a granted extension.
+    step_ceiling = max_steps
+    extensions_granted: list[dict] = []
+    extension_size = max(0, int(step_extension_size or 0))
+    extension_limit = max(0, int(max_step_extensions or 0))
+    hard_step_cap = max(0, int(max_total_steps or 0)) or max_steps
     credentials_request = None
     last_visible_answer_governor_step = 0
     last_search_results_governor_step = 0
@@ -781,14 +901,40 @@ async def run_task(
             memory.cumulative_summary = handoff_note + " " + memory.cumulative_summary
 
         loop_start = max_steps + 1 if task_status == "success" else len(memory.steps) + 1
-        for step_num in range(loop_start, max_steps + 1):
+        # A while loop rather than a range, because the ceiling can move: see
+        # _consider_step_extension. With the extension policy left at its
+        # defaults this behaves exactly like the old `for step_num in
+        # range(loop_start, max_steps + 1)`.
+        step_num = loop_start - 1
+        while True:
+            if step_num >= step_ceiling:
+                if task_status == "success":
+                    break
+                extended_ceiling = await _consider_step_extension(
+                    orchestrator=orchestrator,
+                    memory=memory,
+                    goal=goal,
+                    step_ceiling=step_ceiling,
+                    extension_size=extension_size,
+                    extension_limit=extension_limit,
+                    hard_step_cap=hard_step_cap,
+                    decision_log=extensions_granted,
+                    elapsed_sec=time.time() - task_start_time,
+                    time_budget_sec=float(time_budget_sec or 0),
+                    browser_state=memory.steps[-1].browser_state if memory.steps else None,
+                )
+                if extended_ceiling is None:
+                    stop_reason = "step_budget_exhausted"
+                    break
+                step_ceiling = extended_ceiling
+            step_num += 1
             # Track step execution time
             step_start_time = time.time()
             
             print(f"\n{'='*80}")
-            print(f"STEP {step_num}/{max_steps}")
+            print(f"STEP {step_num}/{step_ceiling}")
             print(f"{'='*80}")
-            cosmic_log.step(step_num, "start", max_steps=max_steps)
+            cosmic_log.step(step_num, "start", max_steps=step_ceiling)
             
             # 1. Capture current state
             capture_start = time.time()
@@ -1432,6 +1578,9 @@ async def run_task(
     return {
         "success": True,
         "task_status": task_status,
+        "stop_reason": stop_reason,
+        "step_extensions": extensions_granted,
+        "step_ceiling": step_ceiling,
         "steps_taken": len(memory.steps),
         "total_time_sec": total_duration_sec,
         "avg_time_per_step_sec": total_duration_sec / len(memory.steps) if memory.steps else 0,
