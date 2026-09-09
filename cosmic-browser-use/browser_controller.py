@@ -55,6 +55,115 @@ _SSO_PROVIDER_DOMAINS = {
     "github": ("github.com/login",),
 }
 
+# Resolves the visible label of a form field (the text a human would read).
+# Injected into the DomType/SelectOption JS so an action result can NAME the
+# field its text actually landed in — a wrong-target type is silent by
+# construction (the value lands somewhere, the page "changed"), and the model
+# never re-derives intent from page state afterwards. This is an expression,
+# not a statement block: embed as `(el) => ...` and call it.
+_FIELD_LABEL_JS = """
+(el) => {
+  if (!el || el.nodeType !== 1) return '';
+  try {
+    const labelledby = el.getAttribute('aria-labelledby');
+    if (labelledby) {
+      const txt = labelledby.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean)
+        .map((n) => (n.textContent || '').trim()).join(' ').trim();
+      if (txt) return txt.slice(0, 120);
+    }
+    if (el.labels && el.labels.length && el.labels[0].textContent) {
+      const clone = el.labels[0].cloneNode(true);
+      clone.querySelectorAll('input, textarea, select').forEach((n) => n.remove());
+      const txt = (clone.textContent || '').trim();
+      if (txt) return txt.slice(0, 120);
+    }
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim().slice(0, 120);
+    const wrap = el.closest && el.closest('label');
+    if (wrap) {
+      const clone = wrap.cloneNode(true);
+      clone.querySelectorAll('input, textarea, select').forEach((n) => n.remove());
+      const txt = (clone.textContent || '').trim();
+      if (txt) return txt.slice(0, 120);
+    }
+    if (el.id) {
+      try {
+        const forLabel = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (forLabel) {
+          const txt = (forLabel.textContent || '').trim();
+          if (txt) return txt.slice(0, 120);
+        }
+      } catch (e) {}
+    }
+    if (el.name) return String(el.name).slice(0, 120);
+    const placeholder = el.getAttribute && el.getAttribute('placeholder');
+    if (placeholder && placeholder.trim()) return placeholder.trim().slice(0, 120);
+  } catch (e) {}
+  return '';
+}
+"""
+
+# Read back what the keyboard actually landed in: focus was set inside the
+# target frame, so document.activeElement there is the field that received
+# every keystroke — regardless of which selector produced it.
+_TYPE_ECHO_JS = """
+() => {
+  const el = document.activeElement;
+  if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && !el.isContentEditable)) return null;
+  return {label: (%s)(el), value: String(el.value == null ? '' : el.value)};
+}
+""" % _FIELD_LABEL_JS
+
+# Refuse-to-guess guard: a selector matching several visible fields is how one
+# field's value ends up in another (same placeholder reused across a form).
+# Names + current values of the matches go back to the model so it can
+# disambiguate in one step instead of experimenting.
+def _ambiguous_type_error(selector: str, count: int, fields: List[Dict[str, Any]]) -> str:
+    lines = []
+    for f in list(fields or [])[:8]:
+        label = str(f.get("label") or "").strip() or "(unlabeled)"
+        value = str(f.get("value") or "").strip()
+        shown = f", currently '{value[:40]}'" if value else ""
+        lines.append(f"  - '{label}'{shown}")
+    if count > len(lines):
+        lines.append(f"  - ... and {count - len(lines)} more")
+    listing = "\n".join(lines) if lines else "  (could not read the matched fields)"
+    return (
+        f"Ambiguous selector: matched {count} visible fields — refusing to guess which one you meant, "
+        f"because typing into the wrong one silently destroys whatever it held. Matched fields:\n{listing}\n"
+        "Re-issue with a selector matching exactly one visible field: anchor it to the field's label text "
+        "(e.g. input[placeholder='Type here...']:below(:text(\"Legal Name\"))), its id, or its name attribute. "
+        "If unsure which selector is right, DOMExtract the form region first and read the field's actual markup."
+    )
+
+
+def _type_echo_description(
+    selector: str, label: str, text: str, previous_value: str, frame_note: str = ""
+) -> Tuple[str, Optional[str]]:
+    """Description for a completed type action, plus an overwrite warning.
+
+    The echo names the field the text landed in (read back from the focused
+    element, not inferred from the selector) and shouts when it replaced a
+    value that was already there — the one signal that catches 'I filled the
+    name field, then a later step quietly rewrote it with something else'.
+    """
+    base = f"Typed into visible element for selector{frame_note}: {selector}: '{str(text)[:120]}'"
+    clean_label = str(label or "").strip()
+    if clean_label:
+        base += f" — field labeled '{clean_label[:80]}'"
+    warning: Optional[str] = None
+    prev = str(previous_value or "").strip()
+    if prev and prev != text.strip():
+        warning = f"overwrote the field's existing value '{prev[:60]}'"
+        base += f" (WARNING: {warning} — if this is not the field you meant, refill the correct field and restore this one)"
+    return base, warning
+
+
+class _AmbiguousTargetError(Exception):
+    """A type/select selector matched more than one visible target. Carries
+    the model-facing refusal message (with the matched fields' labels) as its
+    str()."""
+
 # Structural DOM fingerprint captured with every BrowserState. Deliberately
 # excludes raw text (passwords/PII must not leak into logs or memory): input
 # values are represented only as length + polynomial checksum. Together with
@@ -3201,6 +3310,56 @@ class BrowserController:
         others = [f for f in self.page.frames if f is not main][:9]
         return [main] + others
 
+    async def _unique_visible_locator(self, frame, selector: str):
+        """Resolve a Playwright selector to the locator for a UNIQUELY visible
+        match — the same one-visible-field rule the CSS path enforces.
+
+        More than one visible match raises _AmbiguousTargetError carrying the
+        model-facing refusal (with the matched fields' labels). Exactly one
+        visible match returns THAT element's locator — not .first, whose
+        target can be a hidden template copy while the real field sits
+        elsewhere in the DOM. Zero visible matches returns .first so the
+        ordinary scroll/click path raises its usual not-found error.
+        """
+        locator_all = frame.locator(selector)
+        try:
+            total = await locator_all.count()
+        except Exception:
+            return locator_all.first
+        if total <= 1:
+            return locator_all.first
+        visible: List[int] = []
+        for i in range(min(total, 12)):
+            try:
+                if await locator_all.nth(i).is_visible():
+                    visible.append(i)
+            except Exception:
+                continue
+        if len(visible) > 1:
+            fields: List[Dict[str, Any]] = []
+            for i in visible[:8]:
+                try:
+                    info = await locator_all.nth(i).evaluate(
+                        "el => ({label: (%s)(el), value: String(el.value == null ? '' : el.value)})" % _FIELD_LABEL_JS
+                    )
+                except Exception:
+                    info = {}
+                fields.append(info if isinstance(info, dict) else {})
+            raise _AmbiguousTargetError(_ambiguous_type_error(selector, len(visible), fields))
+        if visible:
+            return locator_all.nth(visible[0])
+        return locator_all.first
+
+    async def _read_type_echo(self, frame) -> Optional[Dict[str, Any]]:
+        """Label + value of whatever element keyboard focus actually landed on.
+        Best effort: a page that moved focus out from under the typed element
+        (Enter submitted a form, an SPA re-rendered) yields None and the
+        action result simply carries no echo."""
+        try:
+            return await frame.evaluate(_TYPE_ECHO_JS)
+        except Exception:
+            return None
+
     @staticmethod
     def _has_text_query(selector: str) -> Optional[str]:
         """Pull the quoted string out of a :has-text("...") clause, if present."""
@@ -3365,7 +3524,7 @@ class BrowserController:
         frames = self._frame_search_order()
         try:
             async def _try_select(frame):
-                loc = frame.locator(selector).first
+                loc = await self._unique_visible_locator(frame, selector)
                 if not await loc.is_visible():
                     return None
                 if values:
@@ -3400,9 +3559,18 @@ class BrowserController:
                     await self.cursor_overlay.show_click(self.page, int(box["x"] + 20), int(box["y"] + box["height"] / 2))
                 return chosen
             last_err: Optional[str] = "no visible <select> matched the selector in any frame"
+            ambiguity_err: Optional[str] = None
             for frame in frames:
                 try:
                     chosen = await _try_select(frame)
+                except _AmbiguousTargetError as amb:
+                    # A selector matching several visible dropdowns must not
+                    # resolve to .first — the wrong dropdown silently accepts
+                    # the option. Prefer this refusal over a plain not-found
+                    # when no frame resolves the selector uniquely.
+                    if ambiguity_err is None:
+                        ambiguity_err = str(amb)
+                    continue
                 except Exception as exc:
                     last_err = str(exc) or repr(exc)
                     continue
@@ -3418,7 +3586,7 @@ class BrowserController:
                 success=False,
                 action_type=ActionType.SELECT_OPTION,
                 description=f"Select {selector}",
-                error=f"Could not select in main frame or any iframe: {last_err}",
+                error=ambiguity_err or f"Could not select in main frame or any iframe: {last_err}",
             )
         except Exception as e:
             return ActionResult(success=False, action_type=ActionType.SELECT_OPTION, description=f"Select {selector}", error=str(e))
@@ -3428,7 +3596,15 @@ class BrowserController:
         _dom_click's frame-search + tag-fallback structure, but types with
         real keyboard events (like _visual_type) rather than setting .value
         directly — more broadly compatible with JS-framework-driven inputs
-        that rely on input/keydown listeners for validation or autocomplete."""
+        that rely on input/keydown listeners for validation or autocomplete.
+
+        Wrong-target discipline: typing is destructive (it clears whatever the
+        field held), and forms routinely reuse one placeholder across many
+        fields, so a selector matching several VISIBLE fields is refused with
+        their labels rather than resolved to the first match — that guess is
+        how one field's value ends up in another. A unique match types, then
+        the result echoes the label of the field the keystrokes actually
+        landed in and what value it replaced."""
         self.dom_calls += 1
         await self._human_dwell_after_load()
         frames = self._frame_search_order()
@@ -3436,12 +3612,20 @@ class BrowserController:
             if self._is_playwright_selector(selector):
                 selectors_to_try = [selector] + self._tag_fallback_selectors(selector)
                 last_err = None
+                ambiguous_err = None
                 tried_count = 0
                 for sel in selectors_to_try:
                     for frame in frames:
                         tried_count += 1
                         try:
-                            locator = frame.locator(sel).first
+                            locator = await self._unique_visible_locator(frame, sel)
+                        except _AmbiguousTargetError as amb:
+                            ambiguous_err = amb
+                            continue
+                        except Exception as count_err:
+                            last_err = count_err
+                            continue
+                        try:
                             await locator.scroll_into_view_if_needed(timeout=2000)
                             box = await locator.bounding_box(timeout=2000)
                             if box:
@@ -3449,6 +3633,11 @@ class BrowserController:
                             await locator.click(timeout=2000)
                             if box:
                                 await self.cursor_overlay.show_typing_start(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+                            previous_value = ""
+                            try:
+                                previous_value = await locator.input_value()
+                            except Exception:
+                                previous_value = ""
                             await self.page.keyboard.press("Control+A")
                             await self.page.keyboard.press("Backspace")
                             await self._human_type(text)
@@ -3458,20 +3647,46 @@ class BrowserController:
                                 await self.page.keyboard.press("Enter")
                                 try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
                                 except: pass
+                            echo = await self._read_type_echo(frame)
                             x = int(box["x"] + box["width"] / 2) if box else 0
                             y = int(box["y"] + box["height"] / 2) if box else 0
                             frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
                             tag_note = "" if sel == selector else f" (auto-corrected tag: {sel})"
+                            label = (echo or {}).get("label") or ""
+                            description, warning = _type_echo_description(selector, label, text, previous_value, frame_note + tag_note)
                             return ActionResult(
                                 success=True,
                                 action_type=ActionType.DOM_TYPE,
-                                description=f"Typed (locator){frame_note}{tag_note} into {selector}: '{text}'",
+                                description=description,
                                 coordinates=(x, y),
+                                output=json.dumps({
+                                    "typed_into": {
+                                        "label": label or None,
+                                        "previous_value": (previous_value or "")[:60] or None,
+                                        "value": ((echo or {}).get("value") or "")[:60] or None,
+                                        **({"warning": warning} if warning else {}),
+                                    }
+                                }),
+                                metadata={
+                                    "typed_into_label": label or None,
+                                    "previous_value": (previous_value or "")[:60] or None,
+                                    "overwrite_warning": warning,
+                                },
                             )
+                        except _AmbiguousTargetError as amb:
+                            ambiguous_err = amb
+                            continue
                         except Exception as pw_err:
                             last_err = pw_err
                             continue
                 variant_note = f" across {len(selectors_to_try)} tag variant(s)" if len(selectors_to_try) > 1 else ""
+                if ambiguous_err is not None:
+                    return ActionResult(
+                        success=False,
+                        action_type=ActionType.DOM_TYPE,
+                        description=f"Type into {selector}",
+                        error=str(ambiguous_err),
+                    )
                 return ActionResult(
                     success=False,
                     action_type=ActionType.DOM_TYPE,
@@ -3480,7 +3695,10 @@ class BrowserController:
                 )
 
             # Standard CSS selector path — find + focus via querySelectorAll,
-            # then type with real keyboard events.
+            # then type with real keyboard events. The same evaluate also
+            # enforces the one-visible-match guard and reads the field's
+            # label and current value, so the result can name what it typed
+            # into and what it replaced.
             js_script = """
             (selector) => {
                 const isVisible = (el) => {
@@ -3492,6 +3710,7 @@ class BrowserController:
                     const rect = el.getBoundingClientRect();
                     return rect.width > 0 && rect.height > 0;
                 };
+                const labelFor = %s;
 
                 let elements = [];
                 try {
@@ -3500,19 +3719,29 @@ class BrowserController:
                     return {ok: false, error: `Invalid selector: ${error.message || error}`};
                 }
 
-                for (const el of elements) {
-                    if (!isVisible(el)) continue;
-                    if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
-                    el.scrollIntoView({block: "center", inline: "center", behavior: "auto"});
-                    el.focus();
-                    const rect = el.getBoundingClientRect();
-                    return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+                const fields = elements.filter((el) => isVisible(el) && !(el.disabled || el.getAttribute("aria-disabled") === "true"));
+                if (fields.length === 0) {
+                    return {ok: false, error: `No visible enabled element found for selector. Matched ${elements.length} elements.`};
+                }
+                if (fields.length > 1) {
+                    return {
+                        ok: false,
+                        ambiguous: true,
+                        count: fields.length,
+                        fields: fields.slice(0, 8).map((el) => ({label: labelFor(el), value: String(el.value == null ? "" : el.value)})),
+                    };
                 }
 
-                return {ok: false, error: `No visible enabled element found for selector. Matched ${elements.length} elements.`};
+                const el = fields[0];
+                const previous_value = String(el.value == null ? "" : el.value);
+                el.scrollIntoView({block: "center", inline: "center", behavior: "auto"});
+                el.focus();
+                const rect = el.getBoundingClientRect();
+                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: labelFor(el), previous_value: previous_value};
             }
-            """
+            """ % _FIELD_LABEL_JS
             last_result = None
+            ambiguous_result = None
             for frame in frames:
                 try:
                     result = await frame.evaluate(js_script, selector)
@@ -3521,6 +3750,7 @@ class BrowserController:
                 if result and result.get("ok"):
                     await self.cursor_overlay.show_click(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
                     await self.cursor_overlay.show_typing_start(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
+                    previous_value = str(result.get("previous_value") or "")
                     await self.page.keyboard.press("Control+A")
                     await self.page.keyboard.press("Backspace")
                     await self._human_type(text)
@@ -3530,14 +3760,45 @@ class BrowserController:
                         await self.page.keyboard.press("Enter")
                         try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
                         except: pass
+                    echo = await self._read_type_echo(frame)
                     frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                    label = str((echo or {}).get("label") or result.get("label") or "")
+                    description, warning = _type_echo_description(selector, label, text, previous_value, frame_note)
                     return ActionResult(
                         success=True,
                         action_type=ActionType.DOM_TYPE,
-                        description=f"Typed into visible element for selector{frame_note}: {selector}: '{text}'",
+                        description=description,
                         coordinates=(int(result.get("x", 0)), int(result.get("y", 0))),
+                        output=json.dumps({
+                            "typed_into": {
+                                "label": label or None,
+                                "previous_value": previous_value[:60] or None,
+                                "value": str((echo or {}).get("value") or "")[:60] or None,
+                                **({"warning": warning} if warning else {}),
+                            }
+                        }),
+                        metadata={
+                            "typed_into_label": label or None,
+                            "previous_value": previous_value[:60] or None,
+                            "overwrite_warning": warning,
+                        },
                     )
+                if result and result.get("ambiguous"):
+                    # Try the remaining frames first — a selector ambiguous in
+                    # the main frame may match exactly one field inside an
+                    # iframe. If no frame resolves it uniquely, fail with the
+                    # field list instead of typing into the first match.
+                    if ambiguous_result is None:
+                        ambiguous_result = result
+                    continue
                 last_result = result
+            if ambiguous_result is not None:
+                return ActionResult(
+                    success=False,
+                    action_type=ActionType.DOM_TYPE,
+                    description=f"Type into {selector}",
+                    error=_ambiguous_type_error(selector, int(ambiguous_result.get("count") or 0), ambiguous_result.get("fields") or []),
+                )
             return ActionResult(
                 success=False,
                 action_type=ActionType.DOM_TYPE,
