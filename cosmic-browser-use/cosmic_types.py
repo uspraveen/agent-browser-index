@@ -45,6 +45,10 @@ class ActionType(str, Enum):
     CREDENTIAL_FILL = "CredentialFill"
     # Ends the run asking the orchestrator for credentials for a site.
     REQUEST_CREDENTIALS = "RequestCredentials"
+    # Not an action the agent chooses. Recorded when a human paused the run and
+    # drove the browser themselves, so the takeover appears in history as a
+    # step like any other rather than as an unexplained jump in page state.
+    HUMAN_TAKEOVER = "HumanTakeover"
 
 
 class VerificationStatus(str, Enum):

@@ -156,6 +156,39 @@ def _normalize_needs_credentials(raw: Optional[str]) -> Optional[Dict[str, Any]]
     return None
 
 
+# How often the run watchdog re-checks its deadline. Fine-grained enough that
+# an overrun is noticed promptly, coarse enough to cost nothing.
+_RUN_WATCHDOG_POLL_SEC = 0.5
+
+
+async def _await_run_with_budget(coro, *, timeout: float, takeover_session) -> Any:
+    """asyncio.wait_for, except that time spent paused for a human is free.
+
+    A plain wait_for would cancel the run mid-takeover: the deadline is wall
+    clock, and a handover is wall clock the agent was not allowed to use.
+    Cancelling the run the human is actively working inside is the single
+    worst thing this feature could do, so the deadline is measured against
+    working time instead.
+    """
+    started = time.time()
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            done, _pending = await asyncio.wait({task}, timeout=_RUN_WATCHDOG_POLL_SEC)
+            if task in done:
+                return task.result()
+            paused = float(getattr(takeover_session, "total_paused_sec", 0.0) or 0.0)
+            if (time.time() - started) - paused >= timeout:
+                raise asyncio.TimeoutError()
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 async def run_goal(
     goal: str,
     *,
@@ -176,6 +209,8 @@ async def run_goal(
     step_extension_size: int = 0,
     max_total_steps: int = 0,
     run_timeout_sec: Optional[int] = None,
+    takeover_session: Optional[Any] = None,
+    on_takeover_state=None,
 ) -> Dict[str, Any]:
     """Run one browser goal to completion.
 
@@ -240,6 +275,8 @@ async def run_goal(
         max_step_extensions=max(0, int(max_step_extensions or 0)),
         step_extension_size=max(0, int(step_extension_size or 0)),
         max_total_steps=max(0, int(max_total_steps or 0)),
+        takeover_session=takeover_session,
+        takeover_state_callback=on_takeover_state,
     )
     mimo_url = _env("MIMO_API_URL")
     mimo_key = _env("MIMO_API_KEY")
@@ -255,7 +292,11 @@ async def run_goal(
     # know the same deadline this wait_for enforces.
     run_kwargs["time_budget_sec"] = float(timeout)
     try:
-        raw_result = await asyncio.wait_for(browser_main.run_task(**run_kwargs), timeout=timeout)
+        raw_result = await _await_run_with_budget(
+            browser_main.run_task(**run_kwargs),
+            timeout=timeout,
+            takeover_session=takeover_session,
+        )
     except asyncio.TimeoutError as exc:
         raise BrowserRunError(f"Browser run exceeded {timeout}s and was cancelled.") from exc
 
@@ -270,6 +311,8 @@ async def run_goal(
         "stop_reason": str(raw_result.get("stop_reason") or ""),
         "step_extensions": raw_result.get("step_extensions") or [],
         "step_ceiling": raw_result.get("step_ceiling"),
+        "takeovers": raw_result.get("takeovers") or [],
+        "paused_sec": raw_result.get("paused_sec") or 0,
         "recall_summary": str(raw_result.get("recall_summary") or ""),
         "cosmic_replay": raw_result.get("cosmic_replay"),
         "llm_usage": raw_result.get("llm_usage") or {},

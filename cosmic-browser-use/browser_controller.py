@@ -513,6 +513,10 @@ class BrowserController:
         # (see _schedule_live_screencast_retarget).
         self._screencast_target_page: Optional[Page] = None
         self._screencast_opts: Optional[Dict[str, Any]] = None
+        # Per-page CDP sessions for human takeover input. Separate from the
+        # screencast session so a feed restart never invalidates the input
+        # path mid-takeover, and vice versa.
+        self._human_input_sessions: Dict[Any, Any] = {}
         
         # Tab management
         self.pages: List[Page] = []
@@ -1715,6 +1719,150 @@ class BrowserController:
             await session.send("Page.stopScreencast")
         except Exception:
             pass
+
+    # ---- Human takeover input -------------------------------------------
+    #
+    # The ONLY CDP methods a human takeover may reach. This list is the
+    # security boundary of the whole feature: it is why the desktop is handed
+    # a relay instead of the raw cdpUrl a hosted product like Firecrawl can
+    # afford to expose. Their browser is a disposable container; ours runs as
+    # the same user as the gateway, beside the vault and the SSH keys. Raw CDP
+    # is not browser control, it is machine control - Runtime.evaluate runs
+    # arbitrary JS, Page.navigate reaches file://, Browser.setDownloadBehavior
+    # writes anywhere, IO.read exfiltrates. Input.* can do none of that: it can
+    # only do what a person at a keyboard could already do to the page on
+    # screen. Nothing may be added here without that same argument.
+    _HUMAN_INPUT_METHODS = {
+        "Input.dispatchMouseEvent",
+        "Input.dispatchKeyEvent",
+        "Input.insertText",
+    }
+    _MOUSE_EVENT_TYPES = {"mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"}
+    _KEY_EVENT_TYPES = {"keyDown", "keyUp", "rawKeyDown", "char"}
+    _MOUSE_BUTTONS = {"none", "left", "middle", "right", "back", "forward"}
+    _MAX_INSERT_TEXT = 4096
+
+    async def _human_input_session(self):
+        """A CDP session on the active page for human input.
+
+        Reuses the screencast session when it is already attached to the page
+        the human is looking at - same target, one less handshake - and only
+        opens its own when there is no feed running.
+        """
+        page = self.page
+        if page is None:
+            return None
+        if self._screencast_session is not None and self._screencast_target_page is page:
+            return self._screencast_session
+        cached = self._human_input_sessions.get(page)
+        if cached is not None:
+            return cached
+        session = await self.context.new_cdp_session(page)
+        self._human_input_sessions[page] = session
+        return session
+
+    def _normalize_human_input(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Validate one input event and map it into page coordinates.
+
+        Coordinates arrive normalized (0..1) rather than in pixels: the live
+        feed is downscaled from the viewport (maxWidth 1024 against a 1280 page),
+        so pixel coordinates would silently mean different things on each side
+        the moment either size changed. Normalized in, viewport out - the same
+        discipline the vision model own-clicks already use.
+
+        Returns the CDP params, or None if anything about the event is
+        unrecognised. Unrecognised is always dropped, never passed through.
+        """
+        if not isinstance(event, dict):
+            return None
+        kind = str(event.get("kind") or "").strip()
+        modifiers = event.get("modifiers")
+        modifiers = int(modifiers) if isinstance(modifiers, (int, float)) else 0
+        modifiers = modifiers if 0 <= modifiers <= 15 else 0
+
+        if kind == "mouse":
+            event_type = str(event.get("type") or "")
+            if event_type not in self._MOUSE_EVENT_TYPES:
+                return None
+            viewport = self.page.viewport_size or {
+                "width": self.config.screenshot_max_width,
+                "height": 720,
+            }
+            try:
+                norm_x = min(1.0, max(0.0, float(event.get("x", 0.0))))
+                norm_y = min(1.0, max(0.0, float(event.get("y", 0.0))))
+            except (TypeError, ValueError):
+                return None
+            button = str(event.get("button") or "none")
+            if button not in self._MOUSE_BUTTONS:
+                button = "none"
+            try:
+                click_count = int(event.get("clickCount") or 0)
+            except (TypeError, ValueError):
+                click_count = 0
+            params = {
+                "type": event_type,
+                "x": int(norm_x * int(viewport["width"])),
+                "y": int(norm_y * int(viewport["height"])),
+                "button": button,
+                "clickCount": min(3, max(0, click_count)),
+                "modifiers": modifiers,
+            }
+            if event_type == "mouseWheel":
+                try:
+                    params["deltaX"] = max(-2000.0, min(2000.0, float(event.get("deltaX") or 0.0)))
+                    params["deltaY"] = max(-2000.0, min(2000.0, float(event.get("deltaY") or 0.0)))
+                except (TypeError, ValueError):
+                    params["deltaX"] = 0.0
+                    params["deltaY"] = 0.0
+            return {"method": "Input.dispatchMouseEvent", "params": params}
+
+        if kind == "key":
+            event_type = str(event.get("type") or "")
+            if event_type not in self._KEY_EVENT_TYPES:
+                return None
+            params = {"type": event_type, "modifiers": modifiers}
+            for source in ("key", "code", "text", "unmodifiedText"):
+                value = event.get(source)
+                if isinstance(value, str) and value:
+                    params[source] = value[:32]
+            key_code = event.get("windowsVirtualKeyCode")
+            if isinstance(key_code, (int, float)):
+                params["windowsVirtualKeyCode"] = int(key_code)
+                params["nativeVirtualKeyCode"] = int(key_code)
+            return {"method": "Input.dispatchKeyEvent", "params": params}
+
+        if kind == "text":
+            text = event.get("text")
+            if not isinstance(text, str) or not text:
+                return None
+            return {
+                "method": "Input.insertText",
+                "params": {"text": text[: self._MAX_INSERT_TEXT]},
+            }
+
+        return None
+
+    async def dispatch_human_input(self, event: Dict[str, Any]) -> bool:
+        """Relay one human input event to the live page.
+
+        Non-fatal by design: a rejected or failed event is dropped silently,
+        exactly like a dropped frame. A takeover that loses a mouse move is a
+        minor annoyance; one that raises into the run loop is a lost run.
+        """
+        normalized = self._normalize_human_input(event)
+        if normalized is None:
+            return False
+        if normalized["method"] not in self._HUMAN_INPUT_METHODS:
+            return False  # unreachable above; kept so the gate is local to the send
+        try:
+            session = await self._human_input_session()
+            if session is None:
+                return False
+            await session.send(normalized["method"], normalized["params"])
+            return True
+        except Exception:
+            return False
 
     async def _safe_evaluate(self, js: str, fallback=None):
         """Run page.evaluate(), waiting for navigation to settle if the context is destroyed."""

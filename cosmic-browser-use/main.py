@@ -21,6 +21,7 @@ from cosmic_types import (
     VerificationStatus, ActionType, ActionResult
 )
 from memory_manager import MemoryManager
+from takeover import TakeoverSession, run_takeover
 from orchestrator import Orchestrator, reset_fireworks_http2_preference
 from browser_controller import BrowserController
 from credentials import CredentialStore
@@ -392,6 +393,63 @@ def _should_try_replay_checkpoint_finalizer(replay_summary: dict) -> bool:
     }
 
 
+def _paused_sec(takeover_session) -> float:
+    """Seconds this run spent parked for a human.
+
+    Subtracted from every wall-clock measurement. A takeover is time the agent
+    was not permitted to act; charging it against the time budget would make a
+    handover quietly reduce the work the agent is then allowed to do.
+    """
+    return float(getattr(takeover_session, "total_paused_sec", 0.0) or 0.0)
+
+
+async def _record_takeover_step(*, memory, browser, record, cosmic_log=None) -> None:
+    """Write the handover into history as an ordinary step.
+
+    This is the whole point of the feature working rather than merely
+    happening. Without a step here the agent resumes with a working set
+    describing a page that no longer exists: it re-does the sign-in the human
+    just did, or reasons from a screenshot two navigations stale. Because it is
+    a real Step, the working set, the loop detector and the progress test all
+    see it without any of them needing to know a human exists.
+    """
+    try:
+        after_state = await browser.capture_state()
+    except Exception:
+        after_state = memory.steps[-1].browser_state if memory.steps else None
+    action = ActionResult(
+        success=True,
+        action_type=ActionType.HUMAN_TAKEOVER,
+        description=record.summary,
+        output=record.summary,
+        # Counts as real progress: a human moved the world on. The loop
+        # detector must not read a takeover as another lap of the same circle.
+        verification_status=VerificationStatus.SUCCESS,
+        state_change_score=1.0,
+        metadata={"takeover": record.to_dict()},
+    )
+    try:
+        memory.add_step(
+            screenshot_path=record.screenshot_before or "",
+            screenshot_hash="",
+            browser_state=after_state,
+            action=action,
+            summary=record.summary,
+            before_browser_state=None,
+            after_browser_state=after_state,
+            after_screenshot_path=record.screenshot_after or "",
+        )
+    except Exception as exc:
+        print(f"⚠️  takeover step not recorded (non-fatal): {exc}")
+        return
+    print(f"🤝 Takeover recorded: {record.summary}")
+    if cosmic_log is not None:
+        try:
+            cosmic_log.step(len(memory.steps), "takeover", **record.to_dict())
+        except Exception:
+            pass
+
+
 # Steps of history the extension guard looks at when asking "is this run
 # actually getting anywhere, or has it been circling?"
 _EXTENSION_PROGRESS_WINDOW = 6
@@ -536,6 +594,8 @@ async def run_task(
     credentials: Optional[Dict[str, Dict[str, str]]] = None,
     step_callback=None,
     live_frame_callback=None,
+    takeover_session: Optional[TakeoverSession] = None,
+    takeover_state_callback=None,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -919,7 +979,7 @@ async def run_task(
                     extension_limit=extension_limit,
                     hard_step_cap=hard_step_cap,
                     decision_log=extensions_granted,
-                    elapsed_sec=time.time() - task_start_time,
+                    elapsed_sec=(time.time() - task_start_time) - _paused_sec(takeover_session),
                     time_budget_sec=float(time_budget_sec or 0),
                     browser_state=memory.steps[-1].browser_state if memory.steps else None,
                 )
@@ -1390,6 +1450,23 @@ async def run_task(
                 except Exception as cb_err:
                     print(f"⚠️  step_callback error (non-fatal): {cb_err}")
 
+            # 8a-bis. Human takeover. Only ever here: the step is complete and
+            # persisted, so parking leaves no half-executed action behind, and
+            # the page handed over is the page the agent last observed.
+            if takeover_session is not None and takeover_session.pause_requested:
+                takeover_record = await run_takeover(
+                    session=takeover_session,
+                    browser=browser,
+                    on_state=takeover_state_callback,
+                    screenshot_dir=str(working_dir / "screenshots"),
+                )
+                await _record_takeover_step(
+                    memory=memory,
+                    browser=browser,
+                    record=takeover_record,
+                    cosmic_log=cosmic_log,
+                )
+
             # 8b. Compress history if due. Run synchronously (not as a
             # background task) — see compress_if_due's docstring for why:
             # firing it concurrently with the next step's own LLM call caused
@@ -1578,6 +1655,8 @@ async def run_task(
     return {
         "success": True,
         "task_status": task_status,
+        "takeovers": [r.to_dict() for r in getattr(takeover_session, "records", [])],
+        "paused_sec": round(_paused_sec(takeover_session), 1),
         "stop_reason": stop_reason,
         "step_extensions": extensions_granted,
         "step_ceiling": step_ceiling,
