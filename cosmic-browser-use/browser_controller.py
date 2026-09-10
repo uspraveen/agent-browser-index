@@ -138,7 +138,7 @@ def _ambiguous_type_error(selector: str, count: int, fields: List[Dict[str, Any]
 
 
 def _type_echo_description(
-    selector: str, label: str, text: str, previous_value: str, frame_note: str = ""
+    selector: str, label: str, text: str, previous_value: str, frame_note: str = "", is_secret: bool = False
 ) -> Tuple[str, Optional[str]]:
     """Description for a completed type action, plus an overwrite warning.
 
@@ -146,23 +146,245 @@ def _type_echo_description(
     element, not inferred from the selector) and shouts when it replaced a
     value that was already there — the one signal that catches 'I filled the
     name field, then a later step quietly rewrote it with something else'.
+    Password fills show only the mask: the trace proves the field was
+    addressed without recording what it holds.
     """
-    base = f"Typed into visible element for selector{frame_note}: {selector}: '{str(text)[:120]}'"
+    base = f"Typed into visible element for selector{frame_note}: {selector}: '{_secret_display(text, is_secret, 120)}'"
     clean_label = str(label or "").strip()
     if clean_label:
         base += f" — field labeled '{clean_label[:80]}'"
-    warning: Optional[str] = None
-    prev = str(previous_value or "").strip()
-    if prev and prev != text.strip():
-        warning = f"overwrote the field's existing value '{prev[:60]}'"
+    warning = None if is_secret else _overwrite_warning(text, previous_value)
+    if warning:
         base += f" (WARNING: {warning} — if this is not the field you meant, refill the correct field and restore this one)"
     return base, warning
+
+
+def _overwrite_warning(text: str, previous_value: str) -> Optional[str]:
+    """Warning text when a type replaces a non-empty, different value — shared
+    by the selector path and the @ref path. None when the field was empty or
+    already held exactly this text."""
+    prev = str(previous_value or "").strip()
+    if prev and prev != str(text or "").strip():
+        return f"overwrote the field's existing value '{prev[:60]}'"
+    return None
+
+
+def _secret_display(value: Any, is_secret: bool, cap: int = 60) -> str:
+    """What a trace may show for a field's contents. Password values are the
+    one class of typed text that must never appear in a description, echo, or
+    log — the mask proves the field was filled without naming what filled it."""
+    v = str(value or "")
+    if is_secret:
+        return "********" if v.strip() else ""
+    return v[:cap]
+
+
+# ── DOMSnapshot: the interactive-element map ─────────────────────────────
+# One text pull that replaces per-action visual grounding on structured
+# pages: every clickable/typeable control, listed with role, visible name and
+# state, addressed by a stable @e ref. Perception is a peer tool here, not a
+# replacement — vision still grounds anything the snapshot can't describe,
+# and the existing verification layer still judges every action's outcome.
+
+_SNAPSHOT_INTERACTIVE_CSS = (
+    "a[href], button, input, select, textarea, summary, [contenteditable='true'], [contenteditable=''], "
+    "[role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='combobox'], "
+    "[role='listbox'], [role='option'], [role='tab'], [role='menuitem'], [role='switch'], [role='textbox'], "
+    "[role='searchbox'], [role='slider'], [role='spinbutton']"
+)
+
+# Runs per frame. Returns the frame's VISIBLE, ENABLED interactive elements in
+# DOM order (the order @ref nth-indexing relies on at act time), each with the
+# fingerprint Snapshot actions re-check before acting. Password values are
+# masked here, at the source — they must never reach the model or the trace.
+#
+# Collect and re-check share ONE helper block by construction: the fingerprint
+# compares the name computed at snapshot time against the name computed at act
+# time, so the two must not drift — a name rule that only one side knows is a
+# false "stale" on every act.
+_SNAPSHOT_HELPERS_JS = """
+  const clean = (s) => String(s == null ? "" : s).replace(/\\s+/g, " ").trim();
+  const isVisible = (el) => {
+    const style = window.getComputedStyle(el);
+    if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    if (el.closest("[hidden], [aria-hidden='true']")) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const labelFor = (""" + _FIELD_LABEL_JS + """);
+  const implicitRole = (el) => {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    const t = el.tagName.toLowerCase();
+    if (t === "a") return el.hasAttribute("href") ? "link" : "";
+    if (t === "button" || t === "summary") return "button";
+    if (t === "select") return "combobox";
+    if (t === "textarea") return "textbox";
+    if (t === "option") return "option";
+    if (el.isContentEditable) return "textbox";
+    if (t === "input") {
+      const ty = (el.type || "text").toLowerCase();
+      if (ty === "checkbox") return "checkbox";
+      if (ty === "radio") return "radio";
+      if (ty === "file") return "button";
+      if (ty === "button" || ty === "submit" || ty === "reset" || ty === "image") return "button";
+      return "textbox";
+    }
+    return "";
+  };
+  const nameFor = (el) => {
+    let n = labelFor(el);
+    if (!n) {
+      const t = el.tagName.toLowerCase();
+      if (t === "button" || t === "a" || t === "summary" || t === "option" || el.getAttribute("role")) {
+        // innerText, not textContent: rendered text only, so <style> blocks
+        // inside anchors (Google hides them there) never become a name.
+        n = clean(el.innerText || el.textContent);
+      }
+      else if (t === "input" && ["button", "submit", "reset"].includes((el.type || "").toLowerCase())) n = clean(el.value);
+      if (!n && (t === "input" || t === "textarea")) n = clean(el.getAttribute("title") || el.getAttribute("aria-placeholder") || el.getAttribute("placeholder") || "");
+    }
+    return n.slice(0, 60);
+  };
+"""
+
+_SNAPSHOT_COLLECT_JS = """
+(args) => {
+  const css = args.css;
+  const cap = args.cap;
+/*HELPERS*/
+  let elements = [];
+  try { elements = Array.from(document.querySelectorAll(css)); } catch (e) { return {error: "bad selector"}; }
+  const visible = elements.filter((el) => isVisible(el) && !(el.disabled || el.getAttribute("aria-disabled") === "true"));
+  const entries = [];
+  for (const el of visible) {
+    if (entries.length >= cap) { entries.push({truncated: true}); break; }
+    const role = implicitRole(el);
+    if (!role) continue;
+    const t = el.tagName.toLowerCase();
+    const ty = (el.getAttribute("type") || "").toLowerCase();
+    const entry = {
+      tag: t,
+      id: el.id || "",
+      role: role,
+      name: nameFor(el),
+      value: "",
+      checked: null,
+      selected: "",
+    };
+    if (role === "textbox") entry.value = (ty === "password") ? "********" : clean(el.value).slice(0, 40);
+    if (role === "checkbox" || role === "radio" || role === "switch") entry.checked = !!el.checked;
+    if (role === "combobox" && t === "select") {
+      const sel = el.selectedOptions && el.selectedOptions[0];
+      entry.selected = sel ? clean(sel.textContent).slice(0, 40) : "";
+    }
+    entries.push(entry);
+  }
+  return {count: entries.length, truncated: entries.length > 0 && !!entries[entries.length - 1].truncated, entries};
+}
+""".replace("/*HELPERS*/", _SNAPSHOT_HELPERS_JS)
+
+# Act-time re-resolution: re-run the same query, filter the same way, land on
+# the same nth — then prove it is the same element via the fingerprint. The
+# fingerprint deliberately excludes the value: typing legitimately changes
+# values, and a guard that fired on every keystroke would force a re-snapshot
+# between every pair of form fields.
+_SNAPSHOT_RECHECK_JS = """
+(args) => {
+  const css = args.css;
+  const nth = args.nth;
+  const want = args.fingerprint;
+/*HELPERS*/
+  let elements = [];
+  try { elements = Array.from(document.querySelectorAll(css)); } catch (e) { return {ok: false, reason: "bad selector"}; }
+  const visible = elements.filter((el) => isVisible(el) && !(el.disabled || el.getAttribute("aria-disabled") === "true"));
+  if (nth >= visible.length) return {ok: false, reason: "gone", count: visible.length};
+  const el = visible[nth];
+  const now = {tag: el.tagName.toLowerCase(), id: el.id || "", name: nameFor(el)};
+  const same = now.tag === want.tag && (now.id || "") === (want.id || "") && now.name === (want.name || "");
+  if (!same) return {ok: false, reason: "changed", count: visible.length, now: now};
+  return {
+    ok: true,
+    reason: "",
+    visible: isVisible(el),
+    // Playwright nth() indexes ALL matches in document order, not just the
+    // visible ones this snapshot numbered — hand back the unfiltered index.
+    all_index: elements.indexOf(el),
+    now: now,
+  };
+}
+""".replace("/*HELPERS*/", _SNAPSHOT_HELPERS_JS)
+
+
+def snapshot_fingerprint(entry: Dict[str, Any]) -> Dict[str, str]:
+    """Identity triple a @ref re-verifies before acting (never the value)."""
+    return {
+        "tag": str(entry.get("tag") or ""),
+        "id": str(entry.get("id") or ""),
+        "name": str(entry.get("name") or ""),
+    }
+
+
+def fingerprint_matches(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+    """True when the element a ref now points at is provably the same one the
+    snapshot described."""
+    return (
+        str(before.get("tag") or "") == str(after.get("tag") or "")
+        and str(before.get("id") or "") == str(after.get("id") or "")
+        and str(before.get("name") or "") == str(after.get("name") or "")
+    )
+
+
+def parse_ref(ref: Any) -> Optional[str]:
+    """Validate an @e reference from the model ('@e12' → '@e12'); None when
+    the shape is wrong."""
+    import re as _re
+    m = _re.fullmatch(r"@e(\d+)", str(ref or "").strip())
+    return m.group(0) if m else None
+
+
+def format_snapshot_lines(entries: List[Dict[str, Any]], start_ref: int = 1) -> List[str]:
+    """Render collected snapshot entries as the @e map text the model reads."""
+    lines = []
+    for i, e in enumerate(entries):
+        if e.get("truncated"):
+            lines.append("... (snapshot truncated at cap — call DOMSnapshot again after scrolling)")
+            break
+        ref = f"@e{start_ref + i}"
+        role = str(e.get("role") or "element")
+        name = str(e.get("name") or "").strip()
+        bits = [f"{ref} {role}"]
+        if name:
+            bits.append(f'"{name}"')
+        if e.get("value"):
+            bits.append(f"value='{e['value']}'")
+        if e.get("checked") is not None:
+            bits.append("checked" if e.get("checked") else "unchecked")
+        if e.get("selected"):
+            bits.append(f"selected='{e['selected']}'")
+        lines.append(" ".join(bits))
+    return lines
+
+
+def mask_snapshot_value(value: Any, is_password: bool) -> str:
+    """Password values never leave the page as text — the snapshot shows the
+    mask, not the secret."""
+    v = str(value or "").strip()
+    if is_password:
+        return "********" if v else ""
+    return v[:40]
 
 
 class _AmbiguousTargetError(Exception):
     """A type/select selector matched more than one visible target. Carries
     the model-facing refusal message (with the matched fields' labels) as its
     str()."""
+
+
+class _SnapshotStaleError(Exception):
+    """An @e ref could not be resolved to a provably-live element — unknown
+    ref, superseded snapshot, re-rendered page, fingerprint mismatch, or the
+    element hidden. Carries the model-facing reason as its str()."""
 
 # Structural DOM fingerprint captured with every BrowserState. Deliberately
 # excludes raw text (passwords/PII must not leak into logs or memory): input
@@ -586,6 +808,11 @@ class BrowserController:
         self.cursor_overlay = CursorOverlayManager(
             enabled=os.getenv("SHOW_CURSOR_OVERLAY", "true").strip().lower() not in {"0", "false", "no", "off"}
         )
+        # The live @e ref map from the most recent DOMSnapshot — ref →
+        # {frame_index, nth, fingerprint}. One snapshot at a time: a new one
+        # replaces the map wholesale, and stale/unknown refs are refused at
+        # act time (see _snapshot_resolve).
+        self._snapshot_refs: Dict[str, Dict[str, Any]] = {}
         # Optional async hook for AskUser. When provided, _ask_user() delegates here
         # (e.g. for voice-driven Q&A during a call) instead of stdin input().
         # Receives (question, kind), returns the user's reply text (or raises
@@ -2199,7 +2426,8 @@ class BrowserController:
         try:
             if (
                 not self.config.enable_dom_fallback
-                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_TYPE, ActionType.DOM_EXTRACT, ActionType.SELECT_OPTION}
+                and tool_call.action_type in {ActionType.DOM_CLICK, ActionType.DOM_TYPE, ActionType.DOM_EXTRACT, ActionType.SELECT_OPTION,
+                                              ActionType.DOM_SNAPSHOT, ActionType.SNAPSHOT_CLICK, ActionType.SNAPSHOT_TYPE, ActionType.SNAPSHOT_SELECT}
             ):
                 return ActionResult(
                     success=False,
@@ -2236,6 +2464,25 @@ class BrowserController:
                 )
             elif tool_call.action_type == ActionType.DOM_EXTRACT:
                 result = await self._dom_extract(tool_call.parameters["query"], tool_call.parameters.get("schema"), tool_call.parameters.get("max_results", 10))
+            elif tool_call.action_type == ActionType.DOM_SNAPSHOT:
+                result = await self._dom_snapshot(max_elements=tool_call.parameters.get("max_elements", 120))
+            elif tool_call.action_type == ActionType.SNAPSHOT_CLICK:
+                result = await self._snapshot_click(tool_call.parameters.get("ref"))
+            elif tool_call.action_type == ActionType.SNAPSHOT_TYPE:
+                result = await self._snapshot_type(
+                    tool_call.parameters.get("ref"),
+                    tool_call.parameters.get("text", ""),
+                    tool_call.parameters.get("press_enter", False),
+                )
+            elif tool_call.action_type == ActionType.SNAPSHOT_SELECT:
+                result = await self._snapshot_select(
+                    tool_call.parameters.get("ref"),
+                    value=tool_call.parameters.get("value"),
+                    label=tool_call.parameters.get("label"),
+                    index=tool_call.parameters.get("index"),
+                    values=tool_call.parameters.get("values"),
+                    labels=tool_call.parameters.get("labels"),
+                )
             elif tool_call.action_type == ActionType.BATCH_EXTRACT:
                 result = await self._batch_extract(tool_call.parameters)
             elif tool_call.action_type == ActionType.CREDENTIAL_FILL:
@@ -3360,6 +3607,273 @@ class BrowserController:
         except Exception:
             return None
 
+    async def _dom_snapshot(self, max_elements: int = 120) -> ActionResult:
+        """Perceive the page as a numbered map of its visible, enabled
+        interactive elements — role, visible name, and state per @e ref — so
+        one text pull replaces per-action visual grounding on structured
+        pages. A peer tool, not a replacement: the model still chooses vision
+        (canvas, odd widgets, visual verification) or raw selectors (known
+        unique anchors) whenever those fit better. Only the latest snapshot's
+        refs resolve; every ref is fingerprint-checked against the live DOM
+        at act time, so a page that moved on refuses the old map instead of
+        clicking a stranger."""
+        cap = max(1, min(int(max_elements or 120), 300))
+        frames = self._frame_search_order()
+        self._snapshot_refs = {}
+        lines: List[str] = []
+        ref_counter = 0
+        total = 0
+        truncated = False
+        per_frame_counts: List[int] = []
+        for frame_index, frame in enumerate(frames):
+            try:
+                result = await frame.evaluate(_SNAPSHOT_COLLECT_JS, {
+                    "css": _SNAPSHOT_INTERACTIVE_CSS,
+                    "cap": cap - total,
+                })
+            except Exception:
+                continue  # cross-origin frame that refuses injection, etc.
+            if not isinstance(result, dict) or result.get("error"):
+                continue
+            entries = result.get("entries") or []
+            per_frame_counts.append(len(entries))
+            for entry in entries:
+                if entry.get("truncated"):
+                    truncated = True
+                    break
+                ref_counter += 1
+                ref = f"@e{ref_counter}"
+                self._snapshot_refs[ref] = {
+                    "frame_index": frame_index,
+                    "nth": total,
+                    "role": str(entry.get("role") or "element"),
+                    "name": str(entry.get("name") or ""),
+                    "fingerprint": snapshot_fingerprint(entry),
+                }
+                lines.extend(format_snapshot_lines([entry], start_ref=ref_counter))
+                total += 1
+            if truncated or total >= cap:
+                break
+        if total == 0:
+            return ActionResult(
+                success=False,
+                action_type=ActionType.DOM_SNAPSHOT,
+                description="DOMSnapshot",
+                output=None,
+                error="No visible interactive elements found on this page. Use the screenshot and vision tools instead.",
+            )
+        header = f"{total} interactive elements on {(self.page.url or '')[:100]}:"
+        if truncated:
+            header += f" (truncated at {cap} — scroll and snapshot again for more)"
+        return ActionResult(
+            success=True,
+            action_type=ActionType.DOM_SNAPSHOT,
+            description=f"Snapshotted {total} interactive elements",
+            output="\n".join([header] + lines),
+            metadata={
+                "refs": total,
+                "frames": len(per_frame_counts),
+                "truncated": truncated,
+            },
+        )
+
+    async def _snapshot_resolve(self, ref: Any, action_label: str):
+        """Resolve an @e ref to (locator, frame, info) — or raise
+        _SnapshotStaleError with a model-facing reason. The fingerprint
+        re-check makes acting on a ref prove it is still the same element;
+        typing between snapshot and act never trips it (values are not part
+        of the fingerprint)."""
+        clean_ref = parse_ref(ref)
+        if not clean_ref:
+            raise _SnapshotStaleError(
+                f"{action_label} needs an @e ref from DOMSnapshot output (e.g. '@e5'), got {ref!r}."
+            )
+        info = self._snapshot_refs.get(clean_ref)
+        if not info:
+            raise _SnapshotStaleError(
+                f"{clean_ref} is not in the current snapshot map — never taken, or a newer DOMSnapshot replaced it. Call DOMSnapshot."
+            )
+        frames = self._frame_search_order()
+        if info["frame_index"] >= len(frames):
+            raise _SnapshotStaleError(f"{clean_ref}'s frame is gone — call DOMSnapshot again.")
+        frame = frames[info["frame_index"]]
+        try:
+            check = await frame.evaluate(_SNAPSHOT_RECHECK_JS, {
+                "css": _SNAPSHOT_INTERACTIVE_CSS,
+                "nth": info["nth"],
+                "fingerprint": info["fingerprint"],
+            })
+        except Exception as exc:
+            raise _SnapshotStaleError(f"Could not re-check {clean_ref} ({exc}) — call DOMSnapshot.") from exc
+        if not check or not check.get("ok"):
+            reason = (check or {}).get("reason") or "changed"
+            raise _SnapshotStaleError(
+                f"{clean_ref} is stale ({reason}) — the page moved on since the snapshot. Call DOMSnapshot again and act on the fresh refs."
+            )
+        if not check.get("visible"):
+            raise _SnapshotStaleError(
+                f"{clean_ref} is no longer visible — call DOMSnapshot again."
+            )
+        locator = frame.locator(_SNAPSHOT_INTERACTIVE_CSS).nth(int(check.get("all_index") or 0))
+        return locator, frame, info
+
+    async def _snapshot_click(self, ref: Any) -> ActionResult:
+        """Click the element a snapshot ref points at. The result names what
+        was clicked (role + visible name) so the model sees its own aim, and
+        the standard verification layer judges the landing."""
+        try:
+            locator, frame, info = await self._snapshot_resolve(ref, "SnapshotClick")
+        except _SnapshotStaleError as stale:
+            return ActionResult(success=False, action_type=ActionType.SNAPSHOT_CLICK, description=f"SnapshotClick {ref}", error=str(stale))
+        name = str(info.get("name") or "").strip()
+        role = str(info.get("role") or "element")
+        try:
+            await locator.scroll_into_view_if_needed(timeout=2000)
+            box = await locator.bounding_box(timeout=2000)
+            if box:
+                await self.cursor_overlay.show_click(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+            await locator.click(timeout=2500)
+            x = int(box["x"] + box["width"] / 2) if box else 0
+            y = int(box["y"] + box["height"] / 2) if box else 0
+            named = f" {role} '{name}'" if name else ""
+            return ActionResult(
+                success=True,
+                action_type=ActionType.SNAPSHOT_CLICK,
+                description=f"Clicked {parse_ref(ref)}{named}",
+                coordinates=(x, y),
+            )
+        except Exception as exc:
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SNAPSHOT_CLICK,
+                description=f"SnapshotClick {ref}",
+                error=f"Click on {parse_ref(ref)} failed: {exc}",
+            )
+
+    async def _snapshot_type(self, ref: Any, text: str, press_enter: bool = False) -> ActionResult:
+        """Type into the text field a snapshot ref points at — real keyboard
+        events (clear, then type), the same overwrite warning and landing
+        echo as DomType, so a @ref type is never a blind write."""
+        try:
+            locator, frame, info = await self._snapshot_resolve(ref, "SnapshotType")
+        except _SnapshotStaleError as stale:
+            return ActionResult(success=False, action_type=ActionType.SNAPSHOT_TYPE, description=f"SnapshotType {ref}", error=str(stale))
+        fingerprint = info["fingerprint"]
+        target_name = str(fingerprint.get("name") or "").strip()
+        try:
+            kind = await locator.evaluate(
+                "el => ({tag: el.tagName.toLowerCase(), type: (el.getAttribute('type') || '').toLowerCase(), editable: !!el.isContentEditable})"
+            )
+        except Exception:
+            kind = {}
+        tag = str((kind or {}).get("tag") or "")
+        input_type = str((kind or {}).get("type") or "")
+        if tag not in ("input", "textarea") and not (kind or {}).get("editable"):
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SNAPSHOT_TYPE,
+                description=f"SnapshotType {ref}",
+                error=f"{parse_ref(ref)} is a '{fingerprint.get('name') or tag}' {tag}, not a text field — use SnapshotClick, or SelectOption/SnapshotSelect for dropdowns.",
+            )
+        if tag == "input" and input_type in ("checkbox", "radio", "button", "submit", "reset", "file", "image", "range", "color"):
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SNAPSHOT_TYPE,
+                description=f"SnapshotType {ref}",
+                error=f"{parse_ref(ref)} is an {input_type or 'unknown-type'} input, not a text field.",
+            )
+        try:
+            await locator.scroll_into_view_if_needed(timeout=2000)
+            box = await locator.bounding_box(timeout=2000)
+            if box:
+                await self.cursor_overlay.show_click(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+            await locator.click(timeout=2000)
+            if box:
+                await self.cursor_overlay.show_typing_start(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+            previous_value = ""
+            try:
+                previous_value = await locator.input_value()
+            except Exception:
+                previous_value = ""
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Backspace")
+            await self._human_type(text)
+            await self.cursor_overlay.show_typing_stop(self.page)
+            if press_enter:
+                await self.cursor_overlay.show_key(self.page, "Enter")
+                await self.page.keyboard.press("Enter")
+                try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
+                except: pass
+            echo = await self._read_type_echo(frame)
+            label = str((echo or {}).get("label") or target_name or "")
+            is_secret = input_type == "password"
+            warning = None if is_secret else _overwrite_warning(text, previous_value)
+            description = f"Typed into {parse_ref(ref)}"
+            if target_name:
+                description += f" '{target_name[:60]}'"
+            description += f": '{_secret_display(text, is_secret, 120)}'"
+            if label and label != target_name:
+                description += f" — field labeled '{label[:80]}'"
+            if warning:
+                description += f" (WARNING: {warning} — if this is not the field you meant, refill the correct field and restore this one)"
+            return ActionResult(
+                success=True,
+                action_type=ActionType.SNAPSHOT_TYPE,
+                description=description,
+                coordinates=(int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2)) if box else None,
+                output=json.dumps({
+                    "typed_into": {
+                        "ref": parse_ref(ref),
+                        "label": label or None,
+                        "previous_value": _secret_display(previous_value, is_secret) or None,
+                        "value": _secret_display((echo or {}).get("value"), is_secret) or None,
+                        **({"warning": warning} if warning else {}),
+                    }
+                }),
+                metadata={
+                    "typed_into_label": label or None,
+                    "previous_value": _secret_display(previous_value, is_secret) or None,
+                    "overwrite_warning": warning,
+                },
+            )
+        except Exception as exc:
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SNAPSHOT_TYPE,
+                description=f"SnapshotType {ref}",
+                error=f"Type into {parse_ref(ref)} failed: {exc}",
+            )
+
+    async def _snapshot_select(self, ref: Any, value: Optional[str] = None, label: Optional[str] = None,
+                               index: Optional[int] = None, values: Optional[List[str]] = None,
+                               labels: Optional[List[str]] = None) -> ActionResult:
+        """Select option(s) in the <select> a snapshot ref points at — the
+        deterministic dropdown primitive aimed by ref instead of selector."""
+        try:
+            locator, frame, info = await self._snapshot_resolve(ref, "SnapshotSelect")
+        except _SnapshotStaleError as stale:
+            return ActionResult(success=False, action_type=ActionType.SNAPSHOT_SELECT, description=f"SnapshotSelect {ref}", error=str(stale))
+        target_name = str(info["fingerprint"].get("name") or "").strip()
+        try:
+            chosen = await self._select_via_locator(
+                locator,
+                value=value, label=label, index=index, values=values, labels=labels,
+            )
+        except Exception as exc:
+            return ActionResult(
+                success=False,
+                action_type=ActionType.SNAPSHOT_SELECT,
+                description=f"SnapshotSelect {ref}",
+                error=f"Select in {parse_ref(ref)} failed: {exc}",
+            )
+        named = f" '{target_name[:60]}'" if target_name else ""
+        return ActionResult(
+            success=True,
+            action_type=ActionType.SNAPSHOT_SELECT,
+            description=f"Selected '{chosen}' in {parse_ref(ref)}{named}",
+            output=f"selected={chosen}",
+        )
+
     @staticmethod
     def _has_text_query(selector: str) -> Optional[str]:
         """Pull the quoted string out of a :has-text("...") clause, if present."""
@@ -3527,37 +4041,9 @@ class BrowserController:
                 loc = await self._unique_visible_locator(frame, selector)
                 if not await loc.is_visible():
                     return None
-                if values:
-                    try:
-                        await loc.select_option(value=values, timeout=5000)
-                    except Exception:
-                        await loc.select_option(label=values, timeout=5000)
-                elif labels:
-                    try:
-                        await loc.select_option(label=labels, timeout=5000)
-                    except Exception:
-                        await loc.select_option(value=labels, timeout=5000)
-                elif value is not None:
-                    try:
-                        await loc.select_option(value=value, timeout=5000)
-                    except Exception:
-                        # Value didn't match — retry as a label (visible text).
-                        await loc.select_option(label=value, timeout=5000)
-                elif label is not None:
-                    try:
-                        await loc.select_option(label=str(label), timeout=5000)
-                    except Exception:
-                        await loc.select_option(value=label, timeout=5000)
-                else:
-                    await loc.select_option(index=int(index), timeout=5000)
-                chosen = await loc.evaluate(
-                    "el => (el.selectedOptions && el.selectedOptions[0] ? "
-                    "String(el.selectedOptions[0].text).trim() : String(el.value))"
+                return await self._select_via_locator(
+                    loc, value=value, label=label, index=index, values=values, labels=labels,
                 )
-                box = await loc.bounding_box()
-                if box:
-                    await self.cursor_overlay.show_click(self.page, int(box["x"] + 20), int(box["y"] + box["height"] / 2))
-                return chosen
             last_err: Optional[str] = "no visible <select> matched the selector in any frame"
             ambiguity_err: Optional[str] = None
             for frame in frames:
@@ -3590,6 +4076,45 @@ class BrowserController:
             )
         except Exception as e:
             return ActionResult(success=False, action_type=ActionType.SELECT_OPTION, description=f"Select {selector}", error=str(e))
+
+    async def _select_via_locator(self, loc, value: Optional[str] = None, label: Optional[str] = None,
+                                  index: Optional[int] = None, values: Optional[List[str]] = None,
+                                  labels: Optional[List[str]] = None) -> str:
+        """Pick option(s) on an already-resolved <select> locator and return
+        the chosen option's visible text. Shared by SelectOption and
+        SnapshotSelect; fires real change events so JS-framework selects
+        update too."""
+        if values:
+            try:
+                await loc.select_option(value=values, timeout=5000)
+            except Exception:
+                await loc.select_option(label=values, timeout=5000)
+        elif labels:
+            try:
+                await loc.select_option(label=labels, timeout=5000)
+            except Exception:
+                await loc.select_option(value=labels, timeout=5000)
+        elif value is not None:
+            try:
+                await loc.select_option(value=value, timeout=5000)
+            except Exception:
+                # Value didn't match — retry as a label (visible text).
+                await loc.select_option(label=value, timeout=5000)
+        elif label is not None:
+            try:
+                await loc.select_option(label=str(label), timeout=5000)
+            except Exception:
+                await loc.select_option(value=label, timeout=5000)
+        else:
+            await loc.select_option(index=int(index), timeout=5000)
+        chosen = await loc.evaluate(
+            "el => (el.selectedOptions && el.selectedOptions[0] ? "
+            "String(el.selectedOptions[0].text).trim() : String(el.value))"
+        )
+        box = await loc.bounding_box()
+        if box:
+            await self.cursor_overlay.show_click(self.page, int(box["x"] + 20), int(box["y"] + box["height"] / 2))
+        return chosen
 
     async def _dom_type(self, selector: str, text: str, press_enter: bool = False) -> ActionResult:
         """Type into an element matched by a CSS/Playwright selector. Mirrors
@@ -3653,7 +4178,11 @@ class BrowserController:
                             frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
                             tag_note = "" if sel == selector else f" (auto-corrected tag: {sel})"
                             label = (echo or {}).get("label") or ""
-                            description, warning = _type_echo_description(selector, label, text, previous_value, frame_note + tag_note)
+                            try:
+                                is_secret = bool(await locator.evaluate("el => el.tagName === 'INPUT' && el.type === 'password'"))
+                            except Exception:
+                                is_secret = False
+                            description, warning = _type_echo_description(selector, label, text, previous_value, frame_note + tag_note, is_secret=is_secret)
                             return ActionResult(
                                 success=True,
                                 action_type=ActionType.DOM_TYPE,
@@ -3662,14 +4191,14 @@ class BrowserController:
                                 output=json.dumps({
                                     "typed_into": {
                                         "label": label or None,
-                                        "previous_value": (previous_value or "")[:60] or None,
-                                        "value": ((echo or {}).get("value") or "")[:60] or None,
+                                        "previous_value": _secret_display(previous_value, is_secret) or None,
+                                        "value": _secret_display((echo or {}).get("value"), is_secret) or None,
                                         **({"warning": warning} if warning else {}),
                                     }
                                 }),
                                 metadata={
                                     "typed_into_label": label or None,
-                                    "previous_value": (previous_value or "")[:60] or None,
+                                    "previous_value": _secret_display(previous_value, is_secret) or None,
                                     "overwrite_warning": warning,
                                 },
                             )
@@ -3737,7 +4266,7 @@ class BrowserController:
                 el.scrollIntoView({block: "center", inline: "center", behavior: "auto"});
                 el.focus();
                 const rect = el.getBoundingClientRect();
-                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: labelFor(el), previous_value: previous_value};
+                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: labelFor(el), previous_value: previous_value, is_secret: (el.tagName === "INPUT" && el.type === "password")};
             }
             """ % _FIELD_LABEL_JS
             last_result = None
@@ -3763,7 +4292,8 @@ class BrowserController:
                     echo = await self._read_type_echo(frame)
                     frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
                     label = str((echo or {}).get("label") or result.get("label") or "")
-                    description, warning = _type_echo_description(selector, label, text, previous_value, frame_note)
+                    is_secret = bool(result.get("is_secret"))
+                    description, warning = _type_echo_description(selector, label, text, previous_value, frame_note, is_secret=is_secret)
                     return ActionResult(
                         success=True,
                         action_type=ActionType.DOM_TYPE,
@@ -3772,14 +4302,14 @@ class BrowserController:
                         output=json.dumps({
                             "typed_into": {
                                 "label": label or None,
-                                "previous_value": previous_value[:60] or None,
-                                "value": str((echo or {}).get("value") or "")[:60] or None,
+                                "previous_value": _secret_display(previous_value, is_secret) or None,
+                                "value": _secret_display((echo or {}).get("value"), is_secret) or None,
                                 **({"warning": warning} if warning else {}),
                             }
                         }),
                         metadata={
                             "typed_into_label": label or None,
-                            "previous_value": previous_value[:60] or None,
+                            "previous_value": _secret_display(previous_value, bool(result.get("is_secret"))) or None,
                             "overwrite_warning": warning,
                         },
                     )

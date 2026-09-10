@@ -19,6 +19,14 @@ class ActionType(str, Enum):
     DOM_EXTRACT = "DOMExtract"
     SELECT_OPTION = "SelectOption"
     BATCH_EXTRACT = "BatchExtract"
+    # Structured perception: a snapshot of the page's interactive elements as
+    # a numbered map with stable @e refs, so one text pull replaces per-action
+    # visual grounding on structured pages. The @ref actions below resolve a
+    # ref against the live DOM with a fingerprint check before every act.
+    DOM_SNAPSHOT = "DOMSnapshot"
+    SNAPSHOT_CLICK = "SnapshotClick"
+    SNAPSHOT_TYPE = "SnapshotType"
+    SNAPSHOT_SELECT = "SnapshotSelect"
     NAVIGATE = "Navigate"
     GO_BACK = "GoBack"
     GO_FORWARD = "GoForward"
