@@ -4370,11 +4370,19 @@ class BrowserController:
                     el.getAttribute && el.getAttribute("src"),
                 ];
 
+                let text = "";
                 for (const candidate of candidates) {
-                    const text = cleanText(candidate);
-                    if (text) return text;
+                    const cleaned = cleanText(candidate);
+                    if (cleaned) { text = cleaned; break; }
                 }
-                return null;
+                // A text link's URL is unreachable through any text candidate —
+                // the title always wins — so an extract meant to collect links
+                // re-derives the same titles forever. Append the resolved href
+                // (when real) so one extract carries both.
+                if (el.tagName === "A" && el.href && /^https?:/i.test(el.href) && text && !text.includes(el.href)) {
+                    return text + " — " + el.href;
+                }
+                return text || null;
             };
 
             const elements = Array.from(document.querySelectorAll(query)).slice(0, max_results);
@@ -4640,11 +4648,19 @@ class BrowserController:
                         el.getAttribute && el.getAttribute("src"),
                     ];
 
+                    let text = "";
                     for (const candidate of candidates) {
-                        const text = cleanText(candidate);
-                        if (text) return text;
+                        const cleaned = cleanText(candidate);
+                        if (cleaned) { text = cleaned; break; }
                     }
-                    return null;
+                    // A text link's URL is unreachable through any text candidate —
+                    // the title always wins — so an extract meant to collect links
+                    // re-derives the same titles forever. Append the resolved href
+                    // (when real) so one extract carries both.
+                    if (el.tagName === "A" && el.href && /^https?:/i.test(el.href) && text && !text.includes(el.href)) {
+                        return text + " — " + el.href;
+                    }
+                    return text || null;
                 };
                 
                 const elements = Array.from(document.querySelectorAll(query)).slice(0, max_results);

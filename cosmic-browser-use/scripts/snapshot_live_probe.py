@@ -276,6 +276,26 @@ async def scenario_ashby(controller: BrowserController, probe: Probe):
         probe.record(name, False, f"exception: {exc}")
 
 
+async def scenario_hrefs(controller: BrowserController, probe: Probe):
+    """Text links must extract as 'title — URL' in ONE call — the metacareers
+    run looped 4+ times because hrefs were unreachable through the text
+    extractor."""
+    name = "hrefs"
+    if not probe.should(name):
+        return
+    try:
+        await goto(controller, "https://the-internet.herokuapp.com/status_codes")
+        result = await controller.execute_tool(ToolCallFor(
+            ActionType.DOM_EXTRACT, {"query": "a[href*='status_codes']", "max_results": 10}), "")
+        items = [line.strip().strip('",') for line in (result.output or "").splitlines() if line.strip().startswith('"')]
+        links_with_url = [i for i in items if "https://the-internet.herokuapp.com/status_codes/" in i]
+        titles_present = any("200" in i for i in links_with_url)
+        probe.record(name, result.success and len(links_with_url) >= 2 and titles_present,
+                     f"{len(items)} items, {len(links_with_url)} carry hrefs (e.g. {links_with_url[:1]})")
+    except Exception as exc:
+        probe.record(name, False, f"exception: {exc}")
+
+
 async def scenario_canvas(controller: BrowserController, probe: Probe):
     """Canvas app → honest thin/empty result, no crash. Vision territory."""
     name = "canvas"
@@ -319,6 +339,7 @@ async def main() -> int:
         await scenario_values_dont_invalidate(controller, probe)
         await scenario_staleness(controller, probe)
         await scenario_ashby(controller, probe)
+        await scenario_hrefs(controller, probe)
         await scenario_canvas(controller, probe)
     finally:
         await controller.close()
