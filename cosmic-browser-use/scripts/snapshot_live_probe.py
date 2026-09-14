@@ -52,7 +52,7 @@ class Probe:
         print(f"  [{status}] {name}: {note}")
 
     def report(self) -> int:
-        core_fails = [r for r in self.results if r[1] == "FAIL" and r[0] not in ("ashby", "canvas")]
+        core_fails = [r for r in self.results if r[1] == "FAIL" and r[0] not in ("ashby", "canvas", "meta_fill")]
         print("\n=== SUMMARY ===")
         for name, status, note in self.results:
             print(f"  {status:4} {name}: {note}")
@@ -296,6 +296,66 @@ async def scenario_hrefs(controller: BrowserController, probe: Probe):
         probe.record(name, False, f"exception: {exc}")
 
 
+async def scenario_duck_menu(controller: BrowserController, probe: Probe):
+    """The harness must not close what the agent just opened. Reproduces the
+    duck.ai loop: click the model selector, run capture_state exactly like the
+    orchestrator does after every action, then snapshot — the model options
+    must still be in the map."""
+    name = "duck_menu"
+    if not probe.should(name):
+        return
+    try:
+        await goto(controller, "https://duck.ai")
+        result = await snapshot(controller)
+        refs = refs_from(result)
+        before = len(refs)
+        luna_ref = find_ref(refs, "Luna")
+        if not luna_ref:
+            probe.record(name, False, f"model selector not found among {before} refs")
+            return
+        click = await ref_click(controller, luna_ref)
+        # The orchestrator captures state after EVERY action — the old
+        # blanket Escape closed the dropdown right here.
+        await controller.capture_state("probe_duck_after_click")
+        result2 = await snapshot(controller)
+        refs2 = refs_from(result2)
+        haiku = find_ref(refs2, "Claude Haiku")
+        probe.record(name, click.success and result2.success and haiku is not None and len(refs2) > before,
+                     f"refs {before} → {len(refs2)} after open+capture; Claude Haiku visible: {haiku is not None}")
+    except Exception as exc:
+        probe.record(name, False, f"exception: {exc}")
+
+
+async def scenario_meta_fill(controller: BrowserController, probe: Probe):
+    """meta.ai steals focus from its composer on click — typing was silently
+    swallowed. The type must now verify its landing and self-heal via fill."""
+    name = "meta_fill"
+    if not probe.should(name):
+        return
+    try:
+        await goto(controller, "https://www.meta.ai")
+        result = await snapshot(controller)
+        refs = refs_from(result)
+        dismiss = find_ref(refs, "Dismiss") or find_ref(refs, "close", role="button")
+        if dismiss:
+            await ref_click(controller, dismiss)
+            await asyncio.sleep(1.2)
+        result = await snapshot(controller)
+        refs = refs_from(result)
+        box = find_ref(refs, "Ask Meta AI", role="textbox")
+        if not box:
+            probe.record(name, None, f"composer not found among {len(refs)} refs (region/variant?)")
+            return
+        q = "Why do AI models give such similar answers? Answer in under 150 words."
+        t = await ref_type(controller, box, q)
+        val = await controller.page.evaluate("() => { const el = document.querySelector(\"input[placeholder='Ask Meta AI...']\"); return el ? String(el.value || '') : 'GONE'; }")
+        landed = t.success and "similar answers" in str(val).lower()
+        probe.record(name, landed,
+                     f"success={t.success} healed={'filled instead' in (t.description or '')} field_value={str(val)[:60]!r}")
+    except Exception as exc:
+        probe.record(name, False, f"exception: {exc}")
+
+
 async def scenario_canvas(controller: BrowserController, probe: Probe):
     """Canvas app → honest thin/empty result, no crash. Vision territory."""
     name = "canvas"
@@ -340,6 +400,8 @@ async def main() -> int:
         await scenario_staleness(controller, probe)
         await scenario_ashby(controller, probe)
         await scenario_hrefs(controller, probe)
+        await scenario_duck_menu(controller, probe)
+        await scenario_meta_fill(controller, probe)
         await scenario_canvas(controller, probe)
     finally:
         await controller.close()

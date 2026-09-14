@@ -169,6 +169,76 @@ def _overwrite_warning(text: str, previous_value: str) -> Optional[str]:
     return None
 
 
+def typing_landed_value(value: Optional[str], text: str) -> bool:
+    """Did the typed text reach the field? Sites transform values legitimately
+    (masked card grouping, autocapitalize, maxLength truncation), so this asks
+    'is the typed content recognizably present', never 'is it byte-identical'.
+    Truncation only counts when a substantial prefix survived: a focus-stealing
+    page that swallowed all but the first keystrokes must read as NOT landed.
+    An empty needle (a clearing type) succeeds on any readable value; an
+    unreadable field cannot be verified and reports as not landed."""
+    needle = str(text or "").strip()
+    got = str(value or "").strip()
+    if not needle:
+        return True
+    if not got:
+        return False
+    # maxLength-style truncation keeps a real prefix — accept it only when the
+    # survivor is substantial (at least half the text, floor 4 chars), so the
+    # 'W' left behind by a swallowed typing run is never mistaken for success.
+    substantial = max(4, len(needle) // 2)
+    gl, nl = got.lower(), needle.lower()
+    if len(gl) >= substantial and gl in nl:
+        return True
+    if needle[:24].lower() in gl:
+        return True
+    squished = got.replace(" ", "").replace("\u00a0", "").lower()
+    if needle[:24].lower() in squished:
+        return True
+    nsq = needle.replace(" ", "").replace("\u00a0", "").lower()
+    return len(squished) >= substantial and squished in nsq
+
+
+# Read/identify the text field under viewport coordinates (VisualType's
+# verify path). Found=false covers both "no field there" and cross-origin
+# iframes — the caller keeps legacy behavior in that case.
+_POINT_FIELD_JS = """
+(args) => {
+  const el = document.elementFromPoint(args.x, args.y);
+  if (!el) return {found: false};
+  const target = (el.matches && (el.matches('input, textarea') || el.isContentEditable)) ? el
+    : (el.closest ? el.closest('input, textarea, [contenteditable="true"]') : null);
+  if (!target) return {found: false};
+  const value = String(target.value !== undefined && target.value !== null ? target.value : (target.textContent || ''));
+  return {found: true, tag: target.tagName, value: value.slice(0, 200), is_secret: target.tagName === 'INPUT' && target.type === 'password'};
+}
+"""
+
+# Set the value of the field under viewport coordinates — native prototype
+# setter plus input/change events, the only programmatic write React
+# controlled inputs reliably accept.
+_POINT_FILL_JS = """
+(args) => {
+  const el = document.elementFromPoint(args.x, args.y);
+  if (!el) return {filled: false};
+  const target = (el.matches && (el.matches('input, textarea') || el.isContentEditable)) ? el
+    : (el.closest ? el.closest('input, textarea, [contenteditable="true"]') : null);
+  if (!target) return {filled: false};
+  target.focus();
+  if (target.isContentEditable) {
+    target.textContent = args.text;
+  } else {
+    const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(target, args.text);
+  }
+  target.dispatchEvent(new Event('input', {bubbles: true}));
+  target.dispatchEvent(new Event('change', {bubbles: true}));
+  return {filled: true};
+}
+"""
+
+
 def _secret_display(value: Any, is_secret: bool, cap: int = 60) -> str:
     """What a trace may show for a field's contents. Password values are the
     one class of typed text that must never appear in a description, echo, or
@@ -813,6 +883,12 @@ class BrowserController:
         # replaces the map wholesale, and stale/unknown refs are refused at
         # act time (see _snapshot_resolve).
         self._snapshot_refs: Dict[str, Dict[str, Any]] = {}
+        # Set by navigation actions; the next capture_state dismisses lingering
+        # extension overlays (Escape) once, then clears it. Every other capture
+        # must not touch the page: a blanket Escape closed menus the agent had
+        # just opened, made successful clicks look like no-ops, and the model
+        # retried them until the step ceiling.
+        self._pending_overlay_dismiss = False
         # Optional async hook for AskUser. When provided, _ask_user() delegates here
         # (e.g. for voice-driven Q&A during a call) instead of stdin input().
         # Receives (question, kind), returns the user's reply text (or raises
@@ -2298,11 +2374,22 @@ class BrowserController:
         self.page = self.pages[self.active_tab_index]
         await self.page.bring_to_front()
 
-        # Dismiss any extension overlay (e.g. SignalHire) that reappears after navigations.
-        try:
-            await self.page.keyboard.press("Escape")
-        except Exception:
-            pass
+        # Dismiss any extension overlay (e.g. SignalHire) that reappears after
+        # navigations — gated to navigation captures. A blanket Escape closed
+        # every menu the agent had just opened (duck.ai's model dropdown took
+        # five successful clicks to no visible effect). When the Escape does
+        # fire it is recorded like any other auto-handled page mutation, so
+        # the agent is never left guessing why a menu vanished.
+        if self._pending_overlay_dismiss:
+            self._pending_overlay_dismiss = False
+            try:
+                await self.page.keyboard.press("Escape")
+                self._pending_dialogs.append({
+                    "type": "overlay_dismiss",
+                    "message": "Escape pressed after navigation to clear lingering overlays; any popup/menu on the page may have been closed by this.",
+                })
+            except Exception:
+                pass
 
         screenshot_path = self.working_dir / "screenshots" / f"{screenshot_name}.webp"
         await self._safe_page_screenshot(path=screenshot_path, type="jpeg", quality=self.config.screenshot_quality)
@@ -3422,7 +3509,40 @@ class BrowserController:
             await self.page.keyboard.press("Enter")
             try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
             except: pass
-        return ActionResult(success=True, action_type=ActionType.VISUAL_TYPE, description=f"Typed '{text}'", coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
+        # Verify at the grounded point; one JS fill when keystrokes were
+        # swallowed. Only main-frame fields are verifiable this way — when the
+        # point resolves to nothing readable (e.g. a cross-origin iframe),
+        # keep the legacy trust-the-typing behavior rather than fail a type
+        # that may have worked.
+        check = await self._point_field(x, y)
+        filled_instead = False
+        if check.get("found") and not typing_landed_value(check.get("value"), text):
+            fill_result = await self._point_fill(x, y, text)
+            filled_instead = bool(fill_result.get("filled"))
+            check = await self._point_field(x, y)
+            if check.get("found") and not typing_landed_value(check.get("value"), text):
+                return ActionResult(success=False, action_type=ActionType.VISUAL_TYPE, description=f"Type '{text[:60]}'", error="Typed text did not stick at the grounded position (keyboard input and fill both failed) — try DomType or re-ground.", metadata={"mimo_grounding": dict(self.last_mimo_grounding or {})})
+        desc_text = _secret_display(text, bool(check.get("is_secret")), 60)
+        description = f"Typed '{desc_text}'"
+        if filled_instead:
+            description += " — keyboard typing did not stick; filled instead (value verified)"
+        return ActionResult(success=True, action_type=ActionType.VISUAL_TYPE, description=description, coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {}), "fill_fallback": filled_instead})
+
+    async def _point_field(self, x: int, y: int) -> Dict[str, Any]:
+        """Read the text field (if any) under viewport coordinates."""
+        try:
+            return await self.page.evaluate(_POINT_FIELD_JS, {"x": int(x), "y": int(y)})
+        except Exception:
+            return {"found": False}
+
+    async def _point_fill(self, x: int, y: int, text: str) -> Dict[str, Any]:
+        """Set the value of the field under viewport coordinates directly —
+        native setter plus input/change events, which React-controlled inputs
+        accept. Best effort; a non-field or unreadable point reports honestly."""
+        try:
+            return await self.page.evaluate(_POINT_FILL_JS, {"x": int(x), "y": int(y), "text": text})
+        except Exception:
+            return {"filled": False}
 
     async def _visual_scroll(self, direction: str, amount: Any) -> ActionResult:
         direction_lower = direction.lower()
@@ -3606,6 +3726,19 @@ class BrowserController:
             return await frame.evaluate(_TYPE_ECHO_JS)
         except Exception:
             return None
+
+    async def _field_value(self, locator) -> Optional[str]:
+        """The target field's current value, however it stores it — input
+        value or contenteditable text. None when unreadable. Verification by
+        locator, not by focus: the whole point is to notice when focus (and
+        the keystrokes) went somewhere else."""
+        try:
+            return await locator.input_value()
+        except Exception:
+            try:
+                return await locator.evaluate("el => String(el.value !== undefined && el.value !== null ? el.value : (el.textContent || ''))")
+            except Exception:
+                return None
 
     async def _dom_snapshot(self, max_elements: int = 120) -> ActionResult:
         """Perceive the page as a numbered map of its visible, enabled
@@ -3805,6 +3938,26 @@ class BrowserController:
                 try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
                 except: pass
             echo = await self._read_type_echo(frame)
+            # Verify by locator, not by hope: focus-driven sites (meta.ai
+            # steals focus to a media control on click) swallow keystrokes
+            # silently. If the text did not land, one deterministic fill
+            # replaces it — then report honestly whichever way it went.
+            final_value = await self._field_value(locator)
+            filled_instead = False
+            if not typing_landed_value(final_value, text):
+                try:
+                    await locator.fill(text, timeout=3000)
+                    filled_instead = True
+                    final_value = await self._field_value(locator)
+                except Exception:
+                    pass
+            if not typing_landed_value(final_value, text):
+                return ActionResult(
+                    success=False,
+                    action_type=ActionType.SNAPSHOT_TYPE,
+                    description=f"SnapshotType {ref}",
+                    error=f"Typed text did not stick in '{(target_name or parse_ref(ref))[:60]}' — keyboard input and fill both failed. The page is intercepting input; re-snapshot and retry, or use a different route.",
+                )
             label = str((echo or {}).get("label") or target_name or "")
             is_secret = input_type == "password"
             warning = None if is_secret else _overwrite_warning(text, previous_value)
@@ -3812,6 +3965,8 @@ class BrowserController:
             if target_name:
                 description += f" '{target_name[:60]}'"
             description += f": '{_secret_display(text, is_secret, 120)}'"
+            if filled_instead:
+                description += " — keyboard typing did not stick; filled instead (value verified)"
             if label and label != target_name:
                 description += f" — field labeled '{label[:80]}'"
             if warning:
@@ -3826,7 +3981,8 @@ class BrowserController:
                         "ref": parse_ref(ref),
                         "label": label or None,
                         "previous_value": _secret_display(previous_value, is_secret) or None,
-                        "value": _secret_display((echo or {}).get("value"), is_secret) or None,
+                        "value": _secret_display(final_value, is_secret) or None,
+                        **({"filled_instead": True} if filled_instead else {}),
                         **({"warning": warning} if warning else {}),
                     }
                 }),
@@ -3834,6 +3990,7 @@ class BrowserController:
                     "typed_into_label": label or None,
                     "previous_value": _secret_display(previous_value, is_secret) or None,
                     "overwrite_warning": warning,
+                    "fill_fallback": filled_instead,
                 },
             )
         except Exception as exc:
@@ -4173,6 +4330,24 @@ class BrowserController:
                                 try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
                                 except: pass
                             echo = await self._read_type_echo(frame)
+                            # Same locator-verified landing check as the CSS
+                            # path; one fill when keystrokes were swallowed.
+                            final_value = await self._field_value(locator)
+                            filled_instead = False
+                            if not typing_landed_value(final_value, text):
+                                try:
+                                    await locator.fill(text, timeout=3000)
+                                    filled_instead = True
+                                    final_value = await self._field_value(locator)
+                                except Exception:
+                                    pass
+                            if not typing_landed_value(final_value, text):
+                                return ActionResult(
+                                    success=False,
+                                    action_type=ActionType.DOM_TYPE,
+                                    description=f"Type into {selector}",
+                                    error=f"Typed text did not stick (keyboard input and fill both failed) — the page is intercepting input near '{selector[:80]}'; try VisualType or a different route.",
+                                )
                             x = int(box["x"] + box["width"] / 2) if box else 0
                             y = int(box["y"] + box["height"] / 2) if box else 0
                             frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
@@ -4183,6 +4358,8 @@ class BrowserController:
                             except Exception:
                                 is_secret = False
                             description, warning = _type_echo_description(selector, label, text, previous_value, frame_note + tag_note, is_secret=is_secret)
+                            if filled_instead:
+                                description += " — keyboard typing did not stick; filled instead (value verified)"
                             return ActionResult(
                                 success=True,
                                 action_type=ActionType.DOM_TYPE,
@@ -4192,7 +4369,8 @@ class BrowserController:
                                     "typed_into": {
                                         "label": label or None,
                                         "previous_value": _secret_display(previous_value, is_secret) or None,
-                                        "value": _secret_display((echo or {}).get("value"), is_secret) or None,
+                                        "value": _secret_display(final_value, is_secret) or None,
+                                        **({"filled_instead": True} if filled_instead else {}),
                                         **({"warning": warning} if warning else {}),
                                     }
                                 }),
@@ -4200,6 +4378,7 @@ class BrowserController:
                                     "typed_into_label": label or None,
                                     "previous_value": _secret_display(previous_value, is_secret) or None,
                                     "overwrite_warning": warning,
+                                    "fill_fallback": filled_instead,
                                 },
                             )
                         except _AmbiguousTargetError as amb:
@@ -4266,7 +4445,7 @@ class BrowserController:
                 el.scrollIntoView({block: "center", inline: "center", behavior: "auto"});
                 el.focus();
                 const rect = el.getBoundingClientRect();
-                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: labelFor(el), previous_value: previous_value, is_secret: (el.tagName === "INPUT" && el.type === "password")};
+                return {ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: labelFor(el), previous_value: previous_value, is_secret: (el.tagName === "INPUT" && el.type === "password"), all_index: elements.indexOf(el)};
             }
             """ % _FIELD_LABEL_JS
             last_result = None
@@ -4290,10 +4469,31 @@ class BrowserController:
                         try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
                         except: pass
                     echo = await self._read_type_echo(frame)
+                    # Verify by locator, not by hope — focus-stealing pages
+                    # swallow keystrokes silently; one fill replaces them.
+                    type_locator = frame.locator(selector).nth(int(result.get("all_index") or 0))
+                    final_value = await self._field_value(type_locator)
+                    filled_instead = False
+                    if not typing_landed_value(final_value, text):
+                        try:
+                            await type_locator.fill(text, timeout=3000)
+                            filled_instead = True
+                            final_value = await self._field_value(type_locator)
+                        except Exception:
+                            pass
+                    if not typing_landed_value(final_value, text):
+                        return ActionResult(
+                            success=False,
+                            action_type=ActionType.DOM_TYPE,
+                            description=f"Type into {selector}",
+                            error=f"Typed text did not stick (keyboard input and fill both failed) — the page is intercepting input near '{selector[:80]}'; try VisualType or a different route.",
+                        )
                     frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
                     label = str((echo or {}).get("label") or result.get("label") or "")
                     is_secret = bool(result.get("is_secret"))
                     description, warning = _type_echo_description(selector, label, text, previous_value, frame_note, is_secret=is_secret)
+                    if filled_instead:
+                        description += " — keyboard typing did not stick; filled instead (value verified)"
                     return ActionResult(
                         success=True,
                         action_type=ActionType.DOM_TYPE,
@@ -4303,14 +4503,16 @@ class BrowserController:
                             "typed_into": {
                                 "label": label or None,
                                 "previous_value": _secret_display(previous_value, is_secret) or None,
-                                "value": _secret_display((echo or {}).get("value"), is_secret) or None,
+                                "value": _secret_display(final_value, is_secret) or None,
+                                **({"filled_instead": True} if filled_instead else {}),
                                 **({"warning": warning} if warning else {}),
                             }
                         }),
                         metadata={
                             "typed_into_label": label or None,
-                            "previous_value": _secret_display(previous_value, bool(result.get("is_secret"))) or None,
+                            "previous_value": _secret_display(previous_value, is_secret) or None,
                             "overwrite_warning": warning,
+                            "fill_fallback": filled_instead,
                         },
                     )
                 if result and result.get("ambiguous"):
@@ -4729,6 +4931,7 @@ class BrowserController:
     async def _navigate(self, url: str) -> ActionResult:
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            self._pending_overlay_dismiss = True
             return ActionResult(success=True, action_type=ActionType.NAVIGATE, description=f"Navigated to {url}")
         except Exception as e: return ActionResult(success=False, action_type=ActionType.NAVIGATE, description=f"Navigate {url}", error=str(e))
 
@@ -4751,9 +4954,11 @@ class BrowserController:
             response = await self.page.go_back(wait_until="domcontentloaded", timeout=15000)
             if response is None:
                 return ActionResult(success=False, action_type=ActionType.GO_BACK, description="Go back", error="No previous page in history")
+            self._pending_overlay_dismiss = True
             return ActionResult(success=True, action_type=ActionType.GO_BACK, description=f"Went back to {self.page.url}")
         except Exception as e:
             if await self._recover_from_nav_timeout():
+                self._pending_overlay_dismiss = True
                 return ActionResult(success=True, action_type=ActionType.GO_BACK, description=f"Went back to {self.page.url} (slow load, recovered)")
             return ActionResult(success=False, action_type=ActionType.GO_BACK, description="Go back", error=str(e))
 
@@ -4762,18 +4967,22 @@ class BrowserController:
             response = await self.page.go_forward(wait_until="domcontentloaded", timeout=15000)
             if response is None:
                 return ActionResult(success=False, action_type=ActionType.GO_FORWARD, description="Go forward", error="No forward page in history")
+            self._pending_overlay_dismiss = True
             return ActionResult(success=True, action_type=ActionType.GO_FORWARD, description=f"Went forward to {self.page.url}")
         except Exception as e:
             if await self._recover_from_nav_timeout():
+                self._pending_overlay_dismiss = True
                 return ActionResult(success=True, action_type=ActionType.GO_FORWARD, description=f"Went forward to {self.page.url} (slow load, recovered)")
             return ActionResult(success=False, action_type=ActionType.GO_FORWARD, description="Go forward", error=str(e))
 
     async def _reload(self) -> ActionResult:
         try:
             await self.page.reload(wait_until="domcontentloaded", timeout=15000)
+            self._pending_overlay_dismiss = True
             return ActionResult(success=True, action_type=ActionType.RELOAD, description=f"Reloaded {self.page.url}")
         except Exception as e:
             if await self._recover_from_nav_timeout():
+                self._pending_overlay_dismiss = True
                 return ActionResult(success=True, action_type=ActionType.RELOAD, description=f"Reloaded {self.page.url} (slow load, recovered)")
             return ActionResult(success=False, action_type=ActionType.RELOAD, description="Reload page", error=str(e))
 

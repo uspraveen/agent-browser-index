@@ -22,6 +22,7 @@ from browser_controller import (  # noqa: E402
     mask_snapshot_value,
     parse_ref,
     snapshot_fingerprint,
+    typing_landed_value,
 )
 
 
@@ -110,3 +111,42 @@ class TestFingerprints:
     def test_missing_fields_do_not_crash(self):
         assert fingerprint_matches({}, {}) is True
         assert fingerprint_matches({"tag": "input"}, {}) is False
+
+
+class TestTypingLanded:
+    """The verified-typing gate: every type must prove the text reached the
+    field, and the proof must tolerate the ways sites legitimately transform
+    values — otherwise the fill fallback fires pointlessly."""
+
+    def test_exact_match_lands(self):
+        assert typing_landed_value("Why do AI models", "Why do AI models")
+
+    def test_case_and_padding_transformations_count(self):
+        assert typing_landed_value("WHY DO AI MODELS", "Why do AI models")
+        assert typing_landed_value("  Why do AI models  ", "Why do AI models")
+
+    def test_mask_grouping_counts(self):
+        # Card formatters insert spaces the raw text never had.
+        assert typing_landed_value("4111 1111 1111 1111", "4111111111111111")
+
+    def test_maxlength_truncation_counts_when_substantial(self):
+        # Half the text surviving reads as a maxLength-enforced field.
+        assert typing_landed_value("Why do AI models give such sim", "Why do AI models give such similar answers?")
+
+    def test_swallowed_keystrokes_never_count_as_landed(self):
+        # meta.ai's focus steal left 'Why' / 'W' behind — those are failures,
+        # not truncation, and must trigger the fill fallback.
+        assert not typing_landed_value("Why", "Why do AI models give such similar answers?")
+        assert not typing_landed_value("W", "Why do AI models give such similar answers?")
+
+    def test_empty_or_missing_value_is_not_landed(self):
+        assert not typing_landed_value("", "Why do AI models")
+        assert not typing_landed_value(None, "Why do AI models")
+
+    def test_clearing_a_field_succeeds(self):
+        assert typing_landed_value("", "")
+        assert typing_landed_value(None, "")
+
+    def test_unrelated_value_is_not_landed(self):
+        assert not typing_landed_value("Search", "Why do AI models")
+        assert not typing_landed_value("W", "Why do AI models give such similar answers?")
