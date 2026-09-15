@@ -299,4 +299,5 @@ class TaskConfig:
     chrome_profile: Optional[str] = None   # Path to Chrome profile dir for CDP mode (e.g. "Default", "Profile 1")
     restore_previous_tabs: bool = False    # Best-effort reopen of tabs that were open in the live profile (CDP mode only)
     refresh_chrome_profile: bool = False   # Re-seed the agent's persistent Chrome dir from the real profile (CDP mode only)
+    storage_state_path: Optional[str] = None  # Playwright storage_state file persisted across runs (bundled-Chromium mode) so logins survive run boundaries
     credentials_available_for: tuple = ()  # Site domains with vault credentials provisioned for this run (domains only — never values)

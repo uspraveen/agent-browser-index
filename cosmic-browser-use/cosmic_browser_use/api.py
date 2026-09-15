@@ -167,14 +167,49 @@ def _normalize_needs_credentials(raw: Optional[str]) -> Optional[Dict[str, Any]]
 _RUN_WATCHDOG_POLL_SEC = 0.5
 
 
-async def _await_run_with_budget(coro, *, timeout: float, takeover_session) -> Any:
+class HumanWaitClock:
+    """Live wall-clock seconds a run has spent waiting on a human.
+
+    Counts *while the wait is happening*, not afterwards: the watchdog checks
+    its deadline mid-wait, so a counter written only when the answer arrives
+    would let the watchdog kill the run it was meant to protect.
+    """
+
+    def __init__(self) -> None:
+        self._completed = 0.0
+        self._started_at: float | None = None
+
+    def start(self) -> None:
+        if self._started_at is None:
+            self._started_at = time.time()
+
+    def stop(self) -> None:
+        if self._started_at is not None:
+            self._completed += time.time() - self._started_at
+            self._started_at = None
+
+    def total(self) -> float:
+        if self._started_at is None:
+            return self._completed
+        return self._completed + (time.time() - self._started_at)
+
+
+async def _await_run_with_budget(
+    coro,
+    *,
+    timeout: float,
+    takeover_session,
+    human_wait_getter=None,
+) -> Any:
     """asyncio.wait_for, except that time spent paused for a human is free.
 
     A plain wait_for would cancel the run mid-takeover: the deadline is wall
     clock, and a handover is wall clock the agent was not allowed to use.
     Cancelling the run the human is actively working inside is the single
     worst thing this feature could do, so the deadline is measured against
-    working time instead.
+    working time instead. AskUser waits are the same currency: three
+    unanswered password cards burned 720 of a run's 840 seconds this month
+    and the watchdog killed the run mid-prompt.
     """
     started = time.time()
     task = asyncio.ensure_future(coro)
@@ -184,6 +219,11 @@ async def _await_run_with_budget(coro, *, timeout: float, takeover_session) -> A
             if task in done:
                 return task.result()
             paused = float(getattr(takeover_session, "total_paused_sec", 0.0) or 0.0)
+            if human_wait_getter is not None:
+                try:
+                    paused += float(human_wait_getter() or 0.0)
+                except Exception:
+                    pass
             if (time.time() - started) - paused >= timeout:
                 raise asyncio.TimeoutError()
     finally:
@@ -211,6 +251,10 @@ async def run_goal(
     ask_user_handler=None,
     on_live_frame=None,
     working_dir_root: Optional[str] = None,
+    # Playwright storage_state file that carries cookies/localStorage from one
+    # run to the next (bundled-Chromium path). Without it every run starts
+    # logged out and every retry re-authenticates — see BrowserController.
+    storage_state_path: Optional[str] = None,
     max_step_extensions: int = 0,
     step_extension_size: int = 0,
     max_total_steps: int = 0,
@@ -253,6 +297,13 @@ async def run_goal(
     import main as browser_main
 
     started = time.time()
+    # Wall-clock accrued while a human was answering an AskUser prompt. Fed to
+    # the watchdog and to the step-extension guard so waiting on a person is
+    # never charged against the run's budget.
+    human_wait_clock = HumanWaitClock()
+
+    def _human_wait_getter() -> float:
+        return human_wait_clock.total()
 
     async def _progress_bridge(info: Dict[str, Any]) -> None:
         if on_progress is None:
@@ -263,6 +314,15 @@ async def run_goal(
         if asyncio.iscoroutine(result):
             await result
 
+    bridged_ask_user = ask_user_handler
+    if ask_user_handler is not None:
+        async def bridged_ask_user(question, kind):  # type: ignore[misc]
+            human_wait_clock.start()
+            try:
+                return await ask_user_handler(question, kind)
+            finally:
+                human_wait_clock.stop()
+
     run_kwargs: Dict[str, Any] = dict(
         goal=str(goal).strip(),
         initial_url=initial_url,
@@ -272,7 +332,8 @@ async def run_goal(
         slow_model_config=slow_config,
         memory_mode=memory_mode,
         headless=headless,
-        ask_user_handler=ask_user_handler,
+        ask_user_handler=bridged_ask_user,
+        human_wait_getter=_human_wait_getter,
         step_callback=_progress_bridge,
         live_frame_callback=on_live_frame,
         supermemory_enabled=_env("SUPERMEMORY_API_KEY") != "" and _env("BROWSER_SUPERMEMORY_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
@@ -284,6 +345,8 @@ async def run_goal(
         takeover_session=takeover_session,
         takeover_state_callback=on_takeover_state,
     )
+    if storage_state_path:
+        run_kwargs["storage_state_path"] = str(storage_state_path)
     mimo_url = _env("MIMO_API_URL")
     mimo_key = _env("MIMO_API_KEY")
     if mimo_url:
@@ -302,6 +365,7 @@ async def run_goal(
             browser_main.run_task(**run_kwargs),
             timeout=timeout,
             takeover_session=takeover_session,
+            human_wait_getter=_human_wait_getter,
         )
     except asyncio.TimeoutError as exc:
         raise BrowserRunError(f"Browser run exceeded {timeout}s and was cancelled.") from exc

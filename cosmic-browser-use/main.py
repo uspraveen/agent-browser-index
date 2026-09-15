@@ -234,6 +234,11 @@ async def _detect_credential_handoff_reason(browser: BrowserController) -> Optio
                 const inputs = Array.from(document.querySelectorAll('input'));
                 for (const el of inputs) {
                     if (el.disabled || !visible(el)) continue;
+                    // A field that already holds a value is not an unanswered
+                    // prompt: re-asking when the password/OTP is filled (by
+                    // the user, the model, or an autofill) is what turned one
+                    // handoff into a timed loop.
+                    if (String(el.value || '').trim() !== '') continue;
                     if ((el.type || '').toLowerCase() === 'password') return 'password';
                     const auto = (el.getAttribute('autocomplete') || '').toLowerCase();
                     // Normalize snake_case/kebab-case to spaces first — JS regex
@@ -260,6 +265,29 @@ async def _should_try_credential_handoff_governor(
 ) -> Optional[str]:
     if not _env_bool("CREDENTIAL_HANDOFF_GOVERNOR_ENABLED", True):
         return None
+    # One prompt per site per run, regardless of outcome. Without this the
+    # governor re-fires on its cooldown cadence whenever the field is still
+    # visible — the reason a single login produced five cards in two minutes.
+    try:
+        if browser.credential_prompt_shown_for():
+            return None
+    except Exception:
+        pass
+    # Vault credentials for this site are the sanctioned path: the model has
+    # CredentialFill and the values never enter its context. Asking the human
+    # while the vault can answer is exactly backwards.
+    try:
+        store = getattr(browser, "credential_store", None)
+        if store is not None and len(store) > 0:
+            url = ""
+            try:
+                url = browser.page.url or ""
+            except Exception:
+                url = ""
+            if url and url not in {"about:blank", "chrome://new-tab-page/"} and store.get(url):
+                return None
+    except Exception:
+        pass
     cooldown = int(os.getenv("CREDENTIAL_HANDOFF_GOVERNOR_COOLDOWN_STEPS", "3"))
     if last_attempt_step and step_num - last_attempt_step < cooldown:
         return None
@@ -393,14 +421,22 @@ def _should_try_replay_checkpoint_finalizer(replay_summary: dict) -> bool:
     }
 
 
-def _paused_sec(takeover_session) -> float:
+def _paused_sec(takeover_session, human_wait_getter=None) -> float:
     """Seconds this run spent parked for a human.
 
     Subtracted from every wall-clock measurement. A takeover is time the agent
     was not permitted to act; charging it against the time budget would make a
-    handover quietly reduce the work the agent is then allowed to do.
+    handover quietly reduce the work the agent is then allowed to do. The same
+    holds for AskUser waits: a run that spends 12 of its 14 minutes waiting on
+    an answer was never given those 12 minutes to browse.
     """
-    return float(getattr(takeover_session, "total_paused_sec", 0.0) or 0.0)
+    total = float(getattr(takeover_session, "total_paused_sec", 0.0) or 0.0)
+    if human_wait_getter is not None:
+        try:
+            total += float(human_wait_getter() or 0.0)
+        except Exception:
+            pass
+    return total
 
 
 async def _record_takeover_step(*, memory, record, cosmic_log=None) -> None:
@@ -594,11 +630,13 @@ async def run_task(
     chrome_profile: str = None,
     restore_previous_tabs: bool = False,
     refresh_chrome_profile: bool = False,
+    storage_state_path: str = None,
     credentials: Optional[Dict[str, Dict[str, str]]] = None,
     step_callback=None,
     live_frame_callback=None,
     takeover_session: Optional[TakeoverSession] = None,
     takeover_state_callback=None,
+    human_wait_getter=None,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -679,6 +717,7 @@ async def run_task(
         chrome_profile=resolved_chrome_profile,
         restore_previous_tabs=restore_previous_tabs,
         refresh_chrome_profile=refresh_chrome_profile,
+        storage_state_path=str(Path(storage_state_path).expanduser()) if storage_state_path else None,
         credentials_available_for=credentials_available_for,
     )
     
@@ -982,7 +1021,7 @@ async def run_task(
                     extension_limit=extension_limit,
                     hard_step_cap=hard_step_cap,
                     decision_log=extensions_granted,
-                    elapsed_sec=(time.time() - task_start_time) - _paused_sec(takeover_session),
+                    elapsed_sec=(time.time() - task_start_time) - _paused_sec(takeover_session, human_wait_getter),
                     time_budget_sec=float(time_budget_sec or 0),
                     browser_state=memory.steps[-1].browser_state if memory.steps else None,
                 )
@@ -1048,6 +1087,10 @@ async def run_task(
             )
             if credential_handoff_reason:
                 last_credential_governor_step = step_num
+                try:
+                    browser.mark_credential_prompt()
+                except Exception:
+                    pass
                 print(f"   [Credential governor] detected a visible {credential_handoff_reason} field — forcing AskUser handoff...")
                 llm_response = await orchestrator.force_credential_handoff(context=context, reason=credential_handoff_reason)
                 cosmic_log.step(
@@ -1657,7 +1700,7 @@ async def run_task(
         "success": True,
         "task_status": task_status,
         "takeovers": [r.to_dict() for r in getattr(takeover_session, "records", [])],
-        "paused_sec": round(_paused_sec(takeover_session), 1),
+        "paused_sec": round(_paused_sec(takeover_session, human_wait_getter), 1),
         "stop_reason": stop_reason,
         "step_extensions": extensions_granted,
         "step_ceiling": step_ceiling,

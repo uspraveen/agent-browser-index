@@ -34,6 +34,7 @@ except Exception:
     tiktoken = None
 
 from cosmic_types import ActionType, ActionResult, BrowserState, TabInfo, ToolCall, VerificationStatus, TaskConfig
+from credentials import normalize_site_domain
 from browser_memory.coordinates import replay_coordinates
 from browser_memory.demo_overlay import DemoOverlayManager
 from browser_memory.cursor_overlay import CursorOverlayManager
@@ -897,6 +898,12 @@ class BrowserController:
         # Per-run vault credentials (provisioned by the Cosmic orchestrator).
         # Values never enter the LLM context — only CredentialFill consumes them.
         self.credential_store = credential_store
+        # Sites (normalized domains) where this run already showed the user a
+        # credential prompt. The governor consults this so one answered (or
+        # skipped) password handoff can never re-prompt on a timer: the model
+        # may still choose to ask again, but the deterministic 3-step loop is
+        # dead the moment the first prompt fires for a site.
+        self._credential_prompt_origins: set = set()
         
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -1394,10 +1401,20 @@ class BrowserController:
                 "--disable-blink-features=AutomationControlled",
             ]
         )
+        storage_state = None
+        if self.config.storage_state_path:
+            state_path = Path(self.config.storage_state_path).expanduser()
+            if state_path.is_file():
+                try:
+                    storage_state = json.loads(state_path.read_text(encoding="utf-8"))
+                    print(f"   🔐 Loaded persisted browser session state from {state_path}")
+                except Exception:
+                    storage_state = None
         self.context = await self.browser.new_context(
             viewport={"width": self.config.screenshot_max_width, "height": 720},
             locale="en-US",
             user_agent=_build_matching_user_agent(self.browser.version),
+            storage_state=storage_state,
         )
         await self.context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
@@ -3326,6 +3343,41 @@ class BrowserController:
     # reliable than asking the model to self-report it.
     _ASK_USER_MODEL_KINDS = {"verification_code", "confirm", "blocked", "generic"}
 
+    def mark_credential_prompt(self, url_or_origin: Optional[str] = None) -> None:
+        """Remember a credential prompt was shown for a site this run.
+
+        Called by the governor when it forces a handoff, and by `_ask_user`
+        when the model itself asks a password-kind question. Keyed by
+        normalized site domain so a timed re-ask can never re-prompt for the
+        same site — answered, skipped or timed out, one prompt per site per
+        run is the ceiling.
+        """
+        raw = str(url_or_origin or "").strip()
+        if not raw and self.page is not None:
+            try:
+                raw = self.page.url or ""
+            except Exception:
+                raw = ""
+        domain = normalize_site_domain(raw)
+        if domain:
+            self._credential_prompt_origins.add(domain)
+
+    def credential_prompt_shown_for(self, url_or_origin: Optional[str] = None) -> bool:
+        """True when this run already prompted for credentials on this site."""
+        raw = str(url_or_origin or "").strip()
+        if not raw and self.page is not None:
+            try:
+                raw = self.page.url or ""
+            except Exception:
+                raw = ""
+        domain = normalize_site_domain(raw)
+        if not domain:
+            return bool(self._credential_prompt_origins)
+        for known in self._credential_prompt_origins:
+            if domain == known or domain.endswith("." + known) or known.endswith("." + domain):
+                return True
+        return False
+
     async def _ask_user(self, question: str, kind: str = "") -> ActionResult:
         """Ask the user a question.
 
@@ -3347,6 +3399,11 @@ class BrowserController:
         normalized_kind = str(kind or "").strip().lower()
         if normalized_kind not in self._ASK_USER_MODEL_KINDS and normalized_kind != "password":
             normalized_kind = ""
+        if normalized_kind == "password":
+            # Mark at ask time, not answer time: a skip or a timeout still
+            # means the user was asked, and the governor must not mint a
+            # second identical prompt three steps later.
+            self.mark_credential_prompt()
         truncated_q = question_text if len(question_text) <= 60 else question_text[:57] + "..."
 
         # Always reflect the ask in the overlay (no-op when overlay is disabled).
@@ -3740,6 +3797,44 @@ class BrowserController:
             except Exception:
                 return None
 
+    @staticmethod
+    async def _is_combobox_like(locator) -> bool:
+        """True when the target is a custom dropdown/searchable select.
+
+        A silent JS `fill` on these widgets sets the DOM value without the
+        interaction the widget listens to, so the chosen value never commits
+        and the menu stays open intercepting the next clicks. That is how a
+        State dropdown turned into ten wasted steps on PetScreening. Native
+        <select> is excluded: SnapshotSelect handles those properly.
+        """
+        try:
+            return bool(
+                await locator.evaluate(
+                    """(el) => {
+                        if (!el) return false;
+                        const tag = (el.tagName || '').toLowerCase();
+                        if (tag === 'select') return false;
+                        const role = (el.getAttribute('role') || '').toLowerCase();
+                        if (role === 'combobox') return true;
+                        const controls = (el.getAttribute('aria-controls') || '').trim();
+                        if (controls) {
+                            const menu = document.getElementById(controls);
+                            if (menu && (menu.getAttribute('role') || '').toLowerCase() === 'listbox') return true;
+                        }
+                        if ((el.getAttribute('aria-haspopup') || '').toLowerCase() === 'listbox') return true;
+                        let node = el;
+                        for (let i = 0; i < 4 && node; i += 1) {
+                            const cls = String(node.className || '').toLowerCase();
+                            if (cls.includes('select') || cls.includes('combobox') || cls.includes('dropdown')) return true;
+                            node = node.parentElement;
+                        }
+                        return false;
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
     async def _dom_snapshot(self, max_elements: int = 120) -> ActionResult:
         """Perceive the page as a numbered map of its visible, enabled
         interactive elements — role, visible name, and state per @e ref — so
@@ -3945,6 +4040,19 @@ class BrowserController:
             final_value = await self._field_value(locator)
             filled_instead = False
             if not typing_landed_value(final_value, text):
+                if await self._is_combobox_like(locator):
+                    return ActionResult(
+                        success=False,
+                        action_type=ActionType.SNAPSHOT_TYPE,
+                        description=f"SnapshotType {ref}",
+                        error=(
+                            f"Typed text did not stick in '{(target_name or parse_ref(ref))[:60]}' and this is a "
+                            "dropdown/combobox: it needs its option clicked, not a silent fill (a fill would show "
+                            "the text but never commit the selection and leave the menu open). Take a fresh "
+                            "DOMSnapshot, open the menu, type to filter, then click the option — or use "
+                            "SnapshotSelect for a native <select>."
+                        ),
+                    )
                 try:
                     await locator.fill(text, timeout=3000)
                     filled_instead = True
@@ -4335,6 +4443,17 @@ class BrowserController:
                             final_value = await self._field_value(locator)
                             filled_instead = False
                             if not typing_landed_value(final_value, text):
+                                if await self._is_combobox_like(locator):
+                                    return ActionResult(
+                                        success=False,
+                                        action_type=ActionType.DOM_TYPE,
+                                        description=f"Type into {selector}",
+                                        error=(
+                                            "Typed text did not stick and this target is a dropdown/combobox: "
+                                            "it needs its option clicked, not a silent fill. Take a fresh DOMSnapshot, "
+                                            "open the menu, type to filter, then click the option."
+                                        ),
+                                    )
                                 try:
                                     await locator.fill(text, timeout=3000)
                                     filled_instead = True
@@ -5526,6 +5645,17 @@ class BrowserController:
             except Exception:
                 pass
         else:
+            # Persist the session (cookies, localStorage) before the context
+            # goes away. The bundled-Chromium path is otherwise ephemeral, so
+            # this file is what carries a login from one run to the next —
+            # without it every retry re-authenticates and re-prompts the user.
+            if self.config.storage_state_path and self.context is not None:
+                try:
+                    state_path = Path(self.config.storage_state_path).expanduser()
+                    state_path.parent.mkdir(parents=True, exist_ok=True)
+                    await self.context.storage_state(path=str(state_path))
+                except Exception:
+                    pass
             try:
                 if self.context:
                     await self.context.close()

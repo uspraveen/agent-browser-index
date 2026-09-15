@@ -1321,18 +1321,25 @@ Recent search-result loop steps:
         templated AskUser is faster and strictly more reliable than asking a
         model to decide whether to ask.
         """
-        goal = context.get("goal") or "the task"
+        goal = " ".join(str(context.get("goal") or "the task").split())
+        # The goal can be the whole task brief (and has, in the wild, carried
+        # pasted credentials from upstream callers). The card only needs to
+        # name what the login is for — clipping here keeps the question, the
+        # logs and the run ledger from becoming a second copy of the brief.
+        if len(goal) > 140:
+            goal = goal[:139].rstrip() + "…"
         browser_state = context.get("browser_state") or {}
         url = browser_state.get("url") or "this page"
         if reason == "password":
             question = (
-                f"I've reached a sign-in page ({url}) that needs your password. "
-                f"Please enter your credentials and complete sign-in, then reply 'done' so I can continue with: {goal}"
+                f"I've reached a sign-in page ({url}) that needs your password to continue: {goal}. "
+                f"Type it here and I'll enter it into the form."
             )
         else:
             question = (
                 f"I've reached a verification step ({url}) that needs a code from your phone, "
-                f"authenticator app, or email (MFA/2FA). Please complete it, then reply 'done' so I can continue with: {goal}"
+                f"authenticator app, or email (MFA/2FA) to continue: {goal}. "
+                f"Enter the code here and I'll submit it."
             )
         return LLMResponse(
             tool_call=ToolCall(
@@ -1751,6 +1758,7 @@ Rules:
 - **Wrong-SSO-Provider Rule**: If a step's verification status is `wrong_state`, your last click landed on a DIFFERENT sign-in provider's button than you intended (e.g. you meant to click "Continue with Google" but landed on Microsoft's OAuth page). GoBack, then do NOT repeat the same VisualClick with a similar description — it will pick the wrong button again. Switch to DOMClick instead; DOMClick now searches inside iframes too, which is where these SSO buttons often live.
 - **Type-Target Discipline (any form, any site)**: Forms everywhere — not just on one kind of site — reuse the same placeholder text, class, or markup across many different fields, so a generic selector (`input[placeholder='Type here...']`, `input[type='text']`, `input[name*='value']`) can match several of them at once. Such an ambiguous selector is REFUSED for DomType/SelectOption instead of silently typing into the first match — a wrong guess types one field's value into another and destroys what was there. Anchor every DomType/SelectOption selector to something unique about the intended field: its visible label text (`input[placeholder='Type here...']:below(:text("Legal Name"))`), its id, or its name attribute — or skip selectors entirely and use the DOMSnapshot @ref actions, where each ref IS one specific element. When a precise selector fails, do NOT fall back to a broader generic one — that trades a clean failure for a silent wrong-target write. Re-identify the field instead: DOMExtract the form region, read the actual markup of the field you meant, and build a better-anchored selector. After each successful DomType, the result names the field label that received the text and the value it replaced — read that echo every time; if it names a field other than the one you intended, immediately retype the correct value into the right field AND restore the wronged field's previous value (the echo reports it).
 - **No Blind Writes (verify every landing)**: Never assume an action did what you meant. The harness verifies each step, and every type action verifies the field's actual value after the last keystroke — one that says "filled instead" already recovered from a page stealing keyboard focus, and one that FAILS means the text provably never landed. Read every echo before moving on; never click Send after a type whose echoed value is wrong — retype or take a different route. After a click meant to change something (navigate, expand a section, switch a tab), confirm the change in the next state (URL/title, a fresh DOMSnapshot, DOMExtract) before building on it. A snapshot ref refused as stale is the system telling you the page moved on: call DOMSnapshot again; never act on refs you remember from an old map.
+- **Personal-Data Integrity Rule (forms)**: Fields that identify the person — name, address, unit/apartment, phone, email, date of birth, government IDs, employment/income, emergency contacts — are filled ONLY from values the user or the task actually provided (the goal, SAVED NOTES, or an AskUser answer). Never invent, approximate, or substitute a placeholder or a lookalike value to get past validation: a fabricated address is a real write into someone's real profile and can be fraud-adjacent noise, even when it makes the form submit. If a required personal value is missing, AskUser for it; if the user does not answer, leave the field untouched and report exactly what blocked the submission instead of guessing.
 - **SSO Selector Rule**: SSO sign-in buttons (Google, Microsoft, Apple, etc.) are almost always rendered as `<div role="button">`, NOT a literal `<button>` tag — this is standard for Google's official Identity Services widget specifically. When using DOMClick on an SSO button, use `[role="button"]:has-text("Continue with Google")` (attribute selector, not a tag name). A `button:has-text(...)` selector will silently match nothing for these widgets even though the button is clearly visible on screen.
 - **Search-Bar Shortcut Rule**: If clicking/typing into a SITE SEARCH bar fails to produce any change (`no_change`) 2 times in a row — via any combination of VisualClick, VisualType, or DOMClick — STOP fighting the input field. Most major sites support a direct search URL (e.g. `linkedin.com/search/results/all/?keywords=TERM`, `youtube.com/results?search_query=TERM`, `google.com/search?q=TERM`, `github.com/search?q=TERM`, `twitter.com/search?q=TERM`). Construct that URL with the search term and use Navigate directly instead of continuing to click/type. This is faster and far more reliable than fighting a JS-heavy search widget.
 - **Working-Set Rule**: WORKING SET holds results you already fetched in earlier steps and they are still valid. Before any DOMExtract, BatchExtract or ReadLargeNote, check whether the data is already there — re-fetching something you can already see is the single most common way to waste a run. Re-read only when you need a part that was truncated.
