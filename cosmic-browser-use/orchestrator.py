@@ -1573,6 +1573,7 @@ Recent search-result loop steps:
             "- SaveNote(note) - Save important information to memory. NOTE MUST NOT BE EMPTY.",
             "- DeleteNote(index) - Delete a note by its number (1-based, from SAVED NOTES list). Use to remove outdated or incorrect info.",
             "- EditNote(index, new_note) - Replace a note's content by its number (1-based). Use to correct or update saved info.",
+            "- RequestCommitAuthorization(target, ref|selector, irreversible) - Hold ANY action you judge to be a commit BEFORE doing it: a control that persists, submits, sends, deletes, orders, pays, or irreversibly changes state. The harness already holds the common commit controls automatically; use this for labels it may not catch (e.g. 'Finalize', 'Transmit', 'File return', 'Renew', 'Upgrade', 'Withdraw', 'Transfer', 'Book', 'RSVP', 'Sign & submit'). Pass the @ref or CSS selector of the control when you have one so the card can show exactly what it is. Returns authorized, or commit_blocked — and a block is final.",
         ]
 
         if dom_enabled:
@@ -1707,10 +1708,12 @@ A password field or verification-code field is usually caught automatically befo
 - Once the user replies, re-read the CURRENT screenshot/URL rather than assuming you know what page you're on now — they may have ended up somewhere you didn't expect (e.g. a "device confirmed" page, or straight to the logged-in destination).
 
 ## COMMIT AUTHORIZATION (CRITICAL)
-Clicking a submit/apply/save/send/delete/pay/order/confirm control is a commit. The harness detects these deterministically and holds them for authorization before they fire, so you will either see them proceed normally or come back as a failure starting with `commit_blocked`.
-- `commit_blocked: ...` means the action was NOT performed and authorization was denied for now. Do NOT retry it, do not re-snapshot to find the same button again, and do not attempt the same commit through another route.
-- Report exactly what was blocked in your next note or final answer, and continue with anything else in the goal that does not commit. A blocked commit is not a failure of the run — it is the system protecting the user's account.
-- Never work around the gate: no direct JS `form.submit()`, no Enter-submit to dodge a blocked button, no relabeling the same commit as "navigation".
+A commit is ANY action that persists, submits, sends, deletes, orders, pays, or irreversibly changes state — not only the labels listed here. The harness detects the common controls deterministically and holds them before they fire; for anything you are not certain it detected, call RequestCommitAuthorization(target, ref or selector) BEFORE doing it.
+- Labels the automatic net may miss but you must still treat as commits: finalize, transmit, file (a return/claim/application), renew, upgrade, withdraw, transfer, book/reserve, RSVP, sign & submit, and any confirm-style button on a form you filled.
+- Model-declared holds follow the same authorization rule as automatic ones: the orchestrator may authorize on the user's explicit instruction or raise a confirmation card. A denial is final.
+- A result starting with `commit_blocked` means the action was NOT performed and authorization was denied for now. Do NOT retry it, do not re-snapshot to find the same button again, and do not attempt the same commit through another route. Report exactly what was blocked and continue with anything else in the goal that does not commit.
+- You cannot disable or bypass the automatic gate, and you must never try: no direct JS `form.submit()`, no Enter-submit to dodge a blocked button, no relabeling the same commit as "navigation".
+- Benign actions never need a request: navigation, search, filters, sign-in, accepting cookies, opening menus, reading pages.
 - When a commit is allowed (the action proceeds, or the user approves on the card), continue exactly as with any other successful click.
 
 ## WORKSPACE MANAGEMENT (CRITICAL)

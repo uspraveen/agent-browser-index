@@ -47,6 +47,12 @@ class ActionType(str, Enum):
     EDIT_NOTE = "EditNote"
     READ_HISTORY = "ReadHistory"
     ASK_USER = "AskUser"
+    # Model-initiated commit hold. The model may only ADD holds: this routes
+    # through the same authorization gate as automatic commit detection for
+    # controls the deterministic classifier may have missed ("Finalize",
+    # "Transmit", "File return"). It authorizes nothing by itself and cannot
+    # disable the automatic gate.
+    REQUEST_COMMIT_AUTHORIZATION = "RequestCommitAuthorization"
     PARSE_ERROR = "ParseError"
     # Vault-backed login fill — values come from a per-run secure store, never
     # from the LLM context or screenshots.

@@ -117,3 +117,70 @@ def test_enter_is_gated_when_the_active_form_submits():
     result = asyncio.run(controller._press_key("Enter"))
     assert result.success is False
     assert "commit_blocked" in result.error
+
+
+def _request(controller, params):
+    return asyncio.run(controller._request_commit_authorization(params))
+
+
+def test_model_can_add_a_hold_through_the_same_gate():
+    seen: dict = {}
+
+    async def handler(payload):
+        seen.update(payload)
+        return {"allowed": True, "reason": "user asked"}
+
+    result = _request(_controller(handler), {"target": "File return"})
+    assert result.success is True
+    assert seen["source"] == "model_request"
+    assert seen["model_declared"] is True
+    # No ref/selector resolved means the classifier did not flag it: a miss.
+    assert seen["classifier_miss"] is True
+    assert seen["target"] == "File return"
+
+
+def test_model_request_denied_is_final_and_counted():
+    async def handler(payload):
+        return {"allowed": False, "reason": "confirm with the user first"}
+
+    controller = _controller(handler)
+    result = _request(controller, {"target": "Transmit"})
+    assert result.success is False
+    assert "commit_blocked" in result.error
+    assert controller.commit_blocked_count == 1
+
+
+def test_model_request_with_gate_off_succeeds_without_authorizing_anything():
+    result = _request(_controller(None), {"target": "Finalize"})
+    assert result.success is True
+    assert "gate" in (result.output or "")
+
+
+def test_model_request_resolves_a_ref_and_clears_the_miss_flag():
+    seen: dict = {}
+
+    async def handler(payload):
+        seen.update(payload)
+        return {"allowed": True}
+
+    class _Locator:
+        async def evaluate(self, _js):
+            return {
+                "is_commit": True,
+                "name": "File return",
+                "is_submit_control": False,
+                "matched": ["file"],
+                "irreversible": False,
+                "fields": [{"label": "Tax year", "value": "2025"}],
+            }
+
+    async def fake_resolve(ref, who):
+        return (_Locator(), None, {"name": "File return"})
+
+    controller = _controller(handler)
+    controller._snapshot_resolve = fake_resolve
+    result = _request(controller, {"target": "file thing", "ref": "@e9"})
+    assert result.success is True
+    assert seen["classifier_miss"] is False
+    assert seen["target"] == "File return"
+    assert seen["fields"] == [{"label": "Tax year", "value": "2025"}]

@@ -2697,6 +2697,8 @@ class BrowserController:
                 result = await self._credential_fill(tool_call.parameters)
             elif tool_call.action_type == ActionType.REQUEST_CREDENTIALS:
                 result = await self._request_credentials(tool_call.parameters)
+            elif tool_call.action_type == ActionType.REQUEST_COMMIT_AUTHORIZATION:
+                result = await self._request_commit_authorization(tool_call.parameters)
             elif tool_call.action_type == ActionType.SELECT_OPTION:
                 result = await self._dom_select(
                     tool_call.parameters["selector"],
@@ -3740,6 +3742,95 @@ class BrowserController:
                 "look for another way to perform the same action; report exactly what was blocked "
                 "and continue with anything else that does not commit."
             ),
+        )
+
+    async def _request_commit_authorization(self, params: Dict[str, Any]) -> ActionResult:
+        """Model-initiated commit hold, for controls the deterministic net missed.
+
+        The model may only ADD holds: this goes through the same gate handler
+        as automatic detection, and a deny is final. When the classifier did
+        not flag the control, the request is marked as a classifier miss so the
+        label can be harvested into the deterministic list later. There is no
+        path for the model to disable the automatic gate.
+        """
+        description = str(params.get("target") or params.get("description") or "this action").strip()[:200]
+        ref = params.get("ref")
+        selector = params.get("selector")
+        info: Dict[str, Any] = {}
+        resolved_name = ""
+        if ref:
+            try:
+                locator, _frame, snap_info = await self._snapshot_resolve(ref, "RequestCommitAuthorization")
+                info = await self._classify_commit_locator(locator) or {}
+                resolved_name = str(info.get("name") or (snap_info or {}).get("name") or "").strip()
+            except Exception:
+                info = {}
+        elif selector:
+            for candidate_frame in self._frame_search_order():
+                try:
+                    locator = await self._unique_visible_locator(candidate_frame, str(selector))
+                    info = await self._classify_commit_locator(locator) or {}
+                    resolved_name = str(info.get("name") or "").strip()
+                    break
+                except Exception:
+                    continue
+        target = (resolved_name or description or "this action")[:200]
+        page_url = ""
+        if self.page is not None:
+            try:
+                page_url = self.page.url or ""
+            except Exception:
+                page_url = ""
+        payload = {
+            "action": "model_request",
+            "source": "model_request",
+            "model_declared": True,
+            # The model says commit; the classifier may disagree. Disagreement
+            # is exactly the miss we want to learn from.
+            "classifier_miss": not bool(info.get("is_commit")),
+            "target": target,
+            "control": {
+                "name": str(info.get("name") or target)[:200],
+                "is_submit_control": bool(info.get("is_submit_control")),
+                "matched": list(info.get("matched") or [])[:4],
+            },
+            "irreversible": bool(info.get("irreversible")) or bool(params.get("irreversible")),
+            "fields": list(info.get("fields") or [])[:20],
+            "url": page_url,
+        }
+        if self.commit_gate_handler is None:
+            return ActionResult(
+                success=True,
+                action_type=ActionType.REQUEST_COMMIT_AUTHORIZATION,
+                description=f"Commit authorization (gate off): {target}",
+                output=json.dumps({"authorized": True, "gate": "off"}),
+            )
+        try:
+            decision = await self.commit_gate_handler(payload)
+        except Exception as exc:
+            decision = {"allowed": False, "reason": f"authorization channel failed: {exc}"}
+        if isinstance(decision, dict):
+            allowed = bool(decision.get("allowed"))
+            reason = str(decision.get("reason") or "").strip()
+        else:
+            allowed = bool(decision)
+            reason = ""
+        if not allowed:
+            self.commit_blocked_count += 1
+            return ActionResult(
+                success=False,
+                action_type=ActionType.REQUEST_COMMIT_AUTHORIZATION,
+                description=f"Commit authorization denied: {target}",
+                error=(
+                    f"commit_blocked: {reason or 'the user has not authorized this action'}. "
+                    "The action was NOT performed and must not be attempted."
+                ),
+            )
+        return ActionResult(
+            success=True,
+            action_type=ActionType.REQUEST_COMMIT_AUTHORIZATION,
+            description=f"Commit authorized: {target}",
+            output=json.dumps({"authorized": True, "reason": reason}),
         )
 
     async def _visual_click(self, screenshot_path: str, description: str, region_hint: Optional[str] = None) -> ActionResult:
