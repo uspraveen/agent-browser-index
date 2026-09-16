@@ -2265,9 +2265,9 @@ class BrowserController:
         self,
         on_frame,
         *,
-        quality: int = 45,
-        max_width: int = 1024,
-        max_height: int = 640,
+        quality: int = 68,
+        max_width: int = 1600,
+        max_height: int = 900,
     ) -> None:
         """Stream the active page live via CDP Page.startScreencast.
 
@@ -2277,6 +2277,15 @@ class BrowserController:
         of us polling page.screenshot() on a fixed interval. During a mostly
         static page (e.g. waiting on a CAPTCHA) it's near-silent; during a
         load or animation it streams smoothly.
+
+        The caps sit above the 1280×720 run viewport so the feed captures at
+        native resolution — Chrome only ever scales DOWN to fit maxWidth/
+        maxHeight, and at the old 1024×640 caps a 1280×720 page fed the panel
+        a 1024×576 q45 frame that read as ~240p the moment the view expanded.
+        Measured on a real page: ~48KB/frame before, ~93KB after — about 2×
+        the bandwidth, at a 2.5fps cadence that is under 2 Mbps, and takeover
+        input stays correct because its coordinates are normalized, not
+        pixels.
 
         on_frame receives each frame as a base64-encoded JPEG string (CDP's
         native wire format — passed through as-is since consumers typically
@@ -2433,10 +2442,11 @@ class BrowserController:
         """Validate one input event and map it into page coordinates.
 
         Coordinates arrive normalized (0..1) rather than in pixels: the live
-        feed is downscaled from the viewport (maxWidth 1024 against a 1280 page),
-        so pixel coordinates would silently mean different things on each side
-        the moment either size changed. Normalized in, viewport out - the same
-        discipline the vision model own-clicks already use.
+        feed's capture size follows the caps in start_live_screencast and can
+        differ from the viewport, so pixel coordinates would silently mean
+        different things on each side the moment either size changed.
+        Normalized in, viewport out - the same discipline the vision model
+        own-clicks already use.
 
         Returns the CDP params, or None if anything about the event is
         unrecognised. Unrecognised is always dropped, never passed through.
