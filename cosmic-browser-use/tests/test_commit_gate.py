@@ -20,6 +20,19 @@ class _FakePage:
     url = "https://example.com/checkout"
 
 
+class _FakeFrame:
+    """Records the apply-edits call so a test can assert what the form got."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    async def evaluate(self, _js, arg=None):
+        self.calls.append(arg)
+        applied = [entry["label"] for entry in (arg or []) if entry.get("label") != "Ghost field"]
+        pending = [entry["label"] for entry in (arg or []) if entry["label"] == "Ghost field"]
+        return {"applied": applied, "pending": pending}
+
+
 _COMMIT_INFO = {
     "is_commit": True,
     "name": "Submit application",
@@ -38,16 +51,18 @@ def _controller(handler):
     controller.commit_gate_handler = handler
     controller.commit_blocked_count = 0
     controller.page = _FakePage()
+    controller._pending_dialogs = []
     return controller
 
 
-def _gate(controller, info=None):
+def _gate(controller, info=None, frame=None):
     return asyncio.run(
         controller._gate_commit(
             action_type=ActionType.SNAPSHOT_CLICK,
             description="SnapshotClick @e7",
             info=info or _COMMIT_INFO,
             target="Submit application",
+            frame=frame,
         )
     )
 
@@ -101,6 +116,78 @@ def test_gate_payload_carries_fields_and_url_for_the_card():
     assert seen["control"]["matched"] == ["submit", "apply"]
     assert seen["irreversible"] is False
     assert [field["label"] for field in seen["fields"]] == ["Full name", "Address"]
+
+
+def test_gate_payload_reports_how_many_fields_are_empty():
+    seen: dict = {}
+
+    async def handler(payload):
+        seen.update(payload)
+        return {"allowed": True}
+
+    info = dict(
+        _COMMIT_INFO,
+        fields=[{"label": "Email", "value": "uspraveenraj@gmail.com"}],
+        empty_field_count=14,
+    )
+    _gate(_controller(handler), info=info)
+    assert seen["fields"] == [{"label": "Email", "value": "uspraveenraj@gmail.com"}]
+    assert seen["empty_field_count"] == 14
+
+
+def test_card_edits_are_applied_to_the_form_before_an_allowed_commit():
+    async def handler(payload):
+        return {
+            "allowed": True,
+            "field_edits": [{"label": "Full name", "value": "Praveen Raj U S"}],
+        }
+
+    controller = _controller(handler)
+    frame = _FakeFrame()
+    assert _gate(controller, frame=frame) is None
+    assert frame.calls == [[{"label": "Full name", "value": "Praveen Raj U S"}]]
+    assert any(d["type"] == "commit_edits_applied" for d in controller._pending_dialogs)
+
+
+def test_masked_card_edits_never_become_real_values():
+    async def handler(payload):
+        return {
+            "allowed": True,
+            "field_edits": [{"label": "Password", "value": "********"}],
+        }
+
+    controller = _controller(handler)
+    frame = _FakeFrame()
+    assert _gate(controller, frame=frame) is None
+    assert frame.calls == []
+
+
+def test_edits_that_match_no_field_are_reported_not_fatal():
+    async def handler(payload):
+        return {
+            "allowed": True,
+            "field_edits": [{"label": "Ghost field", "value": "x"}],
+        }
+
+    controller = _controller(handler)
+    frame = _FakeFrame()
+    assert _gate(controller, frame=frame) is None
+    notes = [d for d in controller._pending_dialogs if d["type"] == "commit_edits_applied"]
+    assert notes and "could not be matched" in notes[0]["message"]
+
+
+def test_denied_commit_ignores_any_edits():
+    async def handler(payload):
+        return {
+            "allowed": False,
+            "field_edits": [{"label": "Full name", "value": "nope"}],
+        }
+
+    controller = _controller(handler)
+    frame = _FakeFrame()
+    result = _gate(controller, frame=frame)
+    assert result is not None and result.success is False
+    assert frame.calls == []
 
 
 def test_enter_is_gated_when_the_active_form_submits():

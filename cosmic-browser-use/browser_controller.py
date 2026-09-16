@@ -72,11 +72,19 @@ _COMMIT_CLASSIFY_JS = r"""
     const matched = verbs.filter(v => name.includes(v));
     if (!isSubmitControl && matched.length === 0) return {is_commit: false, name: text.slice(0, 160)};
     const irreversible = /(delete|remove|pay|purchase|buy|place order|place your order|checkout|unsubscribe|cancel subscription)/.test(name);
+    // The card shows what this commit will actually send: fields that hold a
+    // value (checkboxes/radios always count — their unchecked state is a
+    // decision the user should see). Empty fields are tallied, not listed —
+    // a fifteen-question form must read as "email + 14 empty", not a wall
+    // of dashes that looks like a template.
     const fields = [];
+    let empty_field_count = 0;
     const form = el.form || el.closest('form');
     if (form) {
       const controls = form.querySelectorAll('input, select, textarea');
+      let scanned = 0;
       for (const c of controls) {
+        if (++scanned > 200) break;
         const ctype = (c.getAttribute('type') || '').toLowerCase();
         if (['hidden','submit','button','reset','image','file'].indexOf(ctype) >= 0) continue;
         if (c.disabled) continue;
@@ -88,11 +96,14 @@ _COMMIT_CLASSIFY_JS = r"""
         else if (ctype === 'checkbox' || ctype === 'radio') value = c.checked ? 'checked' : 'unchecked';
         else if ((c.tagName || '').toLowerCase() === 'select') value = c.options && c.options[c.selectedIndex] ? c.options[c.selectedIndex].text : '';
         else value = c.value || '';
-        fields.push({
-          label: String(label).replace(/\s+/g, ' ').trim().slice(0, 80),
-          value: String(value).replace(/\s+/g, ' ').trim().slice(0, 200)
-        });
-        if (fields.length >= 20) break;
+        const trimmed = String(value).replace(/\s+/g, ' ').trim();
+        if (ctype !== 'checkbox' && ctype !== 'radio' && !trimmed) { empty_field_count += 1; continue; }
+        if (fields.length < 20) {
+          fields.push({
+            label: String(label).replace(/\s+/g, ' ').trim().slice(0, 80),
+            value: trimmed.slice(0, 200)
+          });
+        }
       }
     }
     return {
@@ -101,7 +112,8 @@ _COMMIT_CLASSIFY_JS = r"""
       is_submit_control: isSubmitControl,
       irreversible: irreversible,
       matched: matched.slice(0, 4),
-      fields: fields
+      fields: fields,
+      empty_field_count: empty_field_count
     };
   } catch (e) { return null; }
 }
@@ -114,20 +126,82 @@ _COMMIT_PROBE_AT_POINT_JS = (
     "return (" + _COMMIT_CLASSIFY_JS + ")(el); }"
 )
 
-# Enter can implicitly submit a form. Only gate when the form's own visible
-# submit control is named like a commit ("Submit", "Send", "Apply") — search
-# and filter forms must keep working un-gated.
-_ENTER_COMMIT_PROBE_JS = (
-    "() => { const el = document.activeElement; if (!el) return null; "
-    "const form = el.form || (el.closest ? el.closest('form') : null); if (!form) return null; "
-    "const controls = Array.from(form.querySelectorAll('button, input[type=submit], input[type=image]')); "
-    "for (const c of controls) { "
-    "  const r = c.getBoundingClientRect(); const s = window.getComputedStyle(c); "
-    "  if (!(r.width > 0 && r.height > 0) || s.display === 'none' || s.visibility === 'hidden' || c.disabled) continue; "
-    "  const info = (" + _COMMIT_CLASSIFY_JS + ")(c); "
-    "  if (info && info.is_commit && info.matched && info.matched.length) return info; "
-    "} return null; }"
-)
+# Enter can implicitly submit the form under focus. The gate rule matches the
+# click classifier exactly: any visible, enabled submit-type control counts
+# regardless of its name ("Continue" submits a login just as dead as "Submit"
+# does), and the classifier's own benign-name exemptions (search/filter/
+# sign-in/cookies) keep read-only forms free. Three things can never be a
+# gated Enter commit:
+#   - a textarea or any non-input element — Enter adds a newline there, it
+#     never implicit-submits, so chat boxes are never held;
+#   - a form whose required fields are still empty — the browser itself will
+#     block that submission, so Enter is navigation, not a commit;
+#   - a search-named single field — filtering as you type must stay free.
+# A form with exactly one text input and no submit button still submits on
+# Enter (implicit submission with no default button); that counts too, so an
+# email-capture box cannot slip a send past the gate.
+_ENTER_COMMIT_PROBE_JS = r"""
+() => {
+  const el = document.activeElement;
+  if (!el) return null;
+  const tag = (el.tagName || '').toLowerCase();
+  const etype = (el.getAttribute('type') || '').toLowerCase();
+  if (tag !== 'input') return null;
+  if (['submit','button','reset','image','file','checkbox','radio','range','color','hidden'].indexOf(etype) >= 0) return null;
+  const form = el.form || (el.closest ? el.closest('form') : null);
+  if (!form) return null;
+  let requiredEmpty = false;
+  try {
+    requiredEmpty = Array.from(form.querySelectorAll('input, select, textarea')).some(function (c) {
+      const ct = (c.getAttribute('type') || '').toLowerCase();
+      if (['hidden','submit','button','reset','image','file'].indexOf(ct) >= 0 || c.disabled) return false;
+      if (!c.hasAttribute || !c.hasAttribute('required')) return false;
+      if (ct === 'checkbox' || ct === 'radio') return !c.checked;
+      if ((c.tagName || '').toLowerCase() === 'select') return !c.value;
+      return !String(c.value || '').trim();
+    });
+  } catch (e) { requiredEmpty = false; }
+  if (requiredEmpty) return null;
+  const controls = Array.from(form.querySelectorAll('button, input[type=submit], input[type=image]'));
+  let hasSubmitControl = false;
+  for (const c of controls) {
+    if ((c.tagName || '').toLowerCase() === 'button' && (c.getAttribute('type') || 'submit').toLowerCase() !== 'submit') continue;
+    if (c.disabled) continue;
+    hasSubmitControl = true;
+    const r = c.getBoundingClientRect(); const s = window.getComputedStyle(c);
+    if (!(r.width > 0 && r.height > 0) || s.display === 'none' || s.visibility === 'hidden') continue;
+    const info = (/*CLASSIFY*/)(c);
+    if (info && info.is_commit) return info;
+  }
+  // No submit control at all: implicit submission still fires for a
+  // single-field form. (A benign submit button — "Search" — means the form's
+  // submission path was already judged free; the fallback stays out.)
+  if (hasSubmitControl) return null;
+  const inputs = Array.from(form.querySelectorAll('input')).filter(function (i) {
+    const t = (i.getAttribute('type') || 'text').toLowerCase();
+    return ['submit','button','reset','image','file','checkbox','radio','range','color','hidden'].indexOf(t) < 0 && !i.disabled;
+  });
+  if (inputs.length === 1 && inputs[0] === el) {
+    let fname = '';
+    try { if (el.labels && el.labels.length) fname = el.labels[0].innerText || ''; } catch (e) {}
+    if (!fname) fname = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('id') || '';
+    fname = String(fname).replace(/\s+/g, ' ').trim();
+    if (fname && !/(search|find|filter|lookup|look up|query|preview|view|show|download|print|copy|share|refresh|reload|sort|expand|collapse|clear|reset|back|next|previous|close|dismiss)/.test(fname.toLowerCase())) {
+      const val = etype === 'password' ? '********' : String(el.value || '').replace(/\s+/g, ' ').trim();
+      return {
+        is_commit: true,
+        name: fname.slice(0, 160),
+        is_submit_control: false,
+        irreversible: false,
+        matched: [],
+        fields: [{label: fname.slice(0, 80), value: val.slice(0, 200)}],
+        empty_field_count: 0
+      };
+    }
+  }
+  return null;
+}
+""".replace("/*CLASSIFY*/", "(" + _COMMIT_CLASSIFY_JS + ")")
 from browser_memory.coordinates import replay_coordinates
 from browser_memory.demo_overlay import DemoOverlayManager
 from browser_memory.cursor_overlay import CursorOverlayManager
@@ -196,6 +270,67 @@ _FIELD_LABEL_JS = """
   return '';
 }
 """
+
+# Applies the corrected values a user edited on the commit card, just before
+# the authorized commit fires. Edits are matched by field label (the same
+# label the card showed), scoped to the form the commit control belongs to —
+# located via the gate's marker when present, else the focused field's form.
+# Values go through the native setter + input/change events so React-style
+# controlled fields accept them. Passwords are never written here: the card
+# shows them masked, and a masked edit must never become a real value.
+_APPLY_FIELD_EDITS_JS = r"""
+(edits) => {
+  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+  let scopeForm = null;
+  try {
+    const marked = document.querySelector('[data-cosmic-commit-gate]');
+    if (marked) scopeForm = marked.form || (marked.closest ? marked.closest('form') : null);
+  } catch (e) {}
+  if (!scopeForm && document.activeElement && document.activeElement.form) {
+    scopeForm = document.activeElement.form;
+  }
+  const forms = scopeForm ? [scopeForm] : Array.from(document.forms);
+  const applied = [];
+  const pending = [];
+  for (const edit of (edits || [])) {
+    if (!edit) continue;
+    const label = norm(edit.label);
+    const value = String(edit.value == null ? '' : edit.value);
+    if (!label || !value.trim()) { if (edit && edit.label) pending.push(String(edit.label)); continue; }
+    if (value.trim() === '********') continue;
+    let done = false;
+    for (const form of forms) {
+      const controls = form.querySelectorAll('input, select, textarea');
+      for (const c of controls) {
+        const ctype = (c.getAttribute('type') || '').toLowerCase();
+        if (ctype === 'password' || ['hidden','submit','button','reset','image','file'].indexOf(ctype) >= 0) continue;
+        if (c.disabled) continue;
+        if (ctype === 'checkbox' || ctype === 'radio') continue;
+        if (norm((/*LABELFN*/)(c)) !== label) continue;
+        if ((c.tagName || '').toLowerCase() === 'select') {
+          let hit = false;
+          for (const o of c.options) {
+            if (norm(o.text) === norm(value) || o.value === value) { c.value = o.value; hit = true; break; }
+          }
+          if (!hit) continue;
+        } else {
+          const proto = c.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+          if (setter && setter.set) setter.set.call(c, value); else c.value = value;
+        }
+        c.dispatchEvent(new Event('input', {bubbles: true}));
+        c.dispatchEvent(new Event('change', {bubbles: true}));
+        applied.push(String(edit.label));
+        done = true;
+        break;
+      }
+      if (done) break;
+    }
+    if (!done && edit && edit.label) pending.push(String(edit.label));
+  }
+  return {applied: applied, pending: pending};
+}
+""".replace("/*LABELFN*/", "(" + _FIELD_LABEL_JS + ")")
 
 # Read back what the keyboard actually landed in: focus was set inside the
 # target frame, so document.activeElement there is the field that received
@@ -3689,6 +3824,7 @@ class BrowserController:
         description: str,
         info: Dict[str, Any],
         target: str,
+        frame: Any = None,
     ) -> Optional[ActionResult]:
         """Hold a detected commit control for authorization.
 
@@ -3696,6 +3832,11 @@ class BrowserController:
         when it was denied (the caller returns it verbatim; the click/Enter
         never fires). Without an injected handler the gate is off, preserving
         standalone CLI/demo behavior.
+
+        An approval may carry field_edits — values the user corrected on the
+        card. They are applied to the committing form here, before the caller
+        fires the authorized click, so the commit sends what the user saw and
+        fixed on the card.
         """
         if self.commit_gate_handler is None:
             return None
@@ -3715,6 +3856,7 @@ class BrowserController:
             },
             "irreversible": bool(info.get("irreversible")),
             "fields": list(info.get("fields") or [])[:20],
+            "empty_field_count": max(0, int(info.get("empty_field_count") or 0)),
             "url": page_url,
         }
         try:
@@ -3730,6 +3872,7 @@ class BrowserController:
             allowed = bool(decision)
             reason = ""
         if allowed:
+            await self._apply_commit_field_edits(decision, frame)
             return None
         self.commit_blocked_count += 1
         detail = reason or "the user has not authorized this action"
@@ -3743,6 +3886,58 @@ class BrowserController:
                 "and continue with anything else that does not commit."
             ),
         )
+
+    async def _apply_commit_field_edits(self, decision: Any, frame: Any) -> None:
+        """Write user-corrected card values into the form, just before it commits.
+
+        Best-effort and never blocking an approved commit: an edit that cannot
+        be matched is reported (dialog note + log) rather than failing the
+        action the user just approved. Masked values are refused — they stand
+        for a secret the card never saw in clear.
+        """
+        edits: List[Dict[str, str]] = []
+        if isinstance(decision, dict) and isinstance(decision.get("field_edits"), list):
+            for entry in decision["field_edits"]:
+                if not isinstance(entry, dict):
+                    continue
+                label = str(entry.get("label") or "").strip()[:80]
+                value = entry.get("value")
+                if not label or not isinstance(value, str):
+                    continue
+                value = value.strip()[:200]
+                if not value or value == "********":
+                    continue
+                edits.append({"label": label, "value": value})
+        if not edits:
+            return
+        target_frame = frame
+        if target_frame is None and self.page is not None:
+            try:
+                target_frame = self.page.main_frame
+            except Exception:
+                target_frame = None
+        if target_frame is None:
+            self._pending_dialogs.append({
+                "type": "commit_edits_skipped",
+                "message": f"{len(edits)} card edit(s) could not be applied (no page frame); the commit fired with the form's current values.",
+            })
+            return
+        try:
+            outcome = await target_frame.evaluate(_APPLY_FIELD_EDITS_JS, edits)
+        except Exception as exc:
+            self._pending_dialogs.append({
+                "type": "commit_edits_failed",
+                "message": f"Card edits could not be applied ({str(exc)[:120]}); the commit fired with the form's current values.",
+            })
+            return
+        applied = [str(x) for x in (outcome or {}).get("applied") or []]
+        pending = [str(x) for x in (outcome or {}).get("pending") or []]
+        note = f"Applied {len(applied)} card edit(s) before the commit: {', '.join(applied[:6])}" if applied else ""
+        if pending:
+            tail = f"{len(pending)} edit(s) could not be matched to a field: {', '.join(pending[:6])}"
+            note = f"{note}. {tail}" if note else tail
+        if note:
+            self._pending_dialogs.append({"type": "commit_edits_applied", "message": note})
 
     async def _request_commit_authorization(self, params: Dict[str, Any]) -> ActionResult:
         """Model-initiated commit hold, for controls the deterministic net missed.
@@ -4293,6 +4488,7 @@ class BrowserController:
                     description=f"SnapshotClick {ref}",
                     info=commit_info,
                     target=f"{role} '{name}'" if name else parse_ref(ref),
+                    frame=frame,
                 )
                 if blocked is not None:
                     return blocked
@@ -4374,6 +4570,7 @@ class BrowserController:
                         description=f"SnapshotType {ref} (Enter submit)",
                         info=enter_commit,
                         target=f"Enter in '{(target_name or parse_ref(ref))[:80]}'",
+                        frame=frame,
                     )
                     if blocked is not None:
                         return blocked
@@ -4535,6 +4732,7 @@ class BrowserController:
                                     description=f"Click {selector}",
                                     info=commit_info,
                                     target=str(commit_info.get("name") or selector),
+                                    frame=frame,
                                 )
                                 if blocked is not None:
                                     return blocked
@@ -4639,6 +4837,7 @@ class BrowserController:
                         description=f"Click {selector}",
                         info=commit_info,
                         target=str(commit_info.get("name") or result.get("text") or selector),
+                        frame=frame,
                     )
                     if blocked is not None:
                         await self._clear_commit_marker(frame, commit_marker)
@@ -4839,6 +5038,7 @@ class BrowserController:
                                         description=f"Type into {selector} (Enter submit)",
                                         info=enter_commit,
                                         target=f"Enter in '{selector[:80]}'",
+                                        frame=frame,
                                     )
                                     if blocked is not None:
                                         return blocked
@@ -4999,6 +5199,7 @@ class BrowserController:
                                 description=f"Type into {selector} (Enter submit)",
                                 info=enter_commit,
                                 target=f"Enter in '{selector[:80]}'",
+                                frame=frame,
                             )
                             if blocked is not None:
                                 return blocked
