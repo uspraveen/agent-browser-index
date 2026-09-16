@@ -35,6 +35,94 @@ except Exception:
 
 from cosmic_types import ActionType, ActionResult, BrowserState, TabInfo, ToolCall, VerificationStatus, TaskConfig
 from credentials import normalize_site_domain
+
+# Deterministic commit classifier, run against a real element. A "commit" is a
+# control that persists, sends, submits, deletes, pays, or otherwise changes
+# the world in a way the user should authorize: submit/save/apply/send/delete/
+# order controls. Read/navigation/search/filter controls are deliberately NOT
+# commits — gating those would make the agent ask before doing its job.
+#
+# The classifier reports why it matched; the authorization policy itself lives
+# in the orchestrator. Benign controls (search, filters, cookie banners, sign
+# in) are excluded here so the gate never sees them as commits.
+_COMMIT_CLASSIFY_JS = r"""
+(el) => {
+  if (!el) return null;
+  try {
+    const tag = (el.tagName || '').toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const text = String(
+      el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || ''
+    ).replace(/\s+/g, ' ').trim();
+    const name = text.toLowerCase();
+    if (/\b(sign in|log in|sign-in|login)\b/.test(name)) return {is_commit: false, name: text.slice(0, 160)};
+    if (/cookie|privacy preference|privacy choices|consent to cookies/.test(name)) return {is_commit: false, name: text.slice(0, 160)};
+    if (/(search|find|filter|lookup|look up|query|preview|view|show|download|print|copy|share|refresh|reload|sort|expand|collapse|clear|reset|back|next|previous|close|dismiss)/.test(name)) {
+      return {is_commit: false, name: text.slice(0, 160)};
+    }
+    const isSubmitControl =
+      (tag === 'button' && type === 'submit') ||
+      (tag === 'input' && (type === 'submit' || type === 'image'));
+    const verbs = ['submit','apply','save','confirm','place order','place your order','buy','purchase','checkout','delete','remove','unsubscribe','cancel subscription','publish','send','agree','i agree','finish','pay'];
+    const matched = verbs.filter(v => name.includes(v));
+    if (!isSubmitControl && matched.length === 0) return {is_commit: false, name: text.slice(0, 160)};
+    const irreversible = /(delete|remove|pay|purchase|buy|place order|place your order|checkout|unsubscribe|cancel subscription)/.test(name);
+    const fields = [];
+    const form = el.form || el.closest('form');
+    if (form) {
+      const controls = form.querySelectorAll('input, select, textarea');
+      for (const c of controls) {
+        const ctype = (c.getAttribute('type') || '').toLowerCase();
+        if (['hidden','submit','button','reset','image','file'].indexOf(ctype) >= 0) continue;
+        if (c.disabled) continue;
+        let label = '';
+        try { if (c.labels && c.labels.length) label = c.labels[0].innerText || ''; } catch (e) {}
+        if (!label) label = c.getAttribute('aria-label') || c.getAttribute('placeholder') || c.getAttribute('name') || c.getAttribute('id') || '';
+        let value = '';
+        if (ctype === 'password') value = '********';
+        else if (ctype === 'checkbox' || ctype === 'radio') value = c.checked ? 'checked' : 'unchecked';
+        else if ((c.tagName || '').toLowerCase() === 'select') value = c.options && c.options[c.selectedIndex] ? c.options[c.selectedIndex].text : '';
+        else value = c.value || '';
+        fields.push({
+          label: String(label).replace(/\s+/g, ' ').trim().slice(0, 80),
+          value: String(value).replace(/\s+/g, ' ').trim().slice(0, 200)
+        });
+        if (fields.length >= 20) break;
+      }
+    }
+    return {
+      is_commit: true,
+      name: text.slice(0, 160),
+      is_submit_control: isSubmitControl,
+      irreversible: irreversible,
+      matched: matched.slice(0, 4),
+      fields: fields
+    };
+  } catch (e) { return null; }
+}
+"""
+
+# Same classifier, but for a screen point (VisualClick): the element under the
+# click is what the model actually aimed at.
+_COMMIT_PROBE_AT_POINT_JS = (
+    "([x, y]) => { const el = document.elementFromPoint(x, y); if (!el) return null; "
+    "return (" + _COMMIT_CLASSIFY_JS + ")(el); }"
+)
+
+# Enter can implicitly submit a form. Only gate when the form's own visible
+# submit control is named like a commit ("Submit", "Send", "Apply") — search
+# and filter forms must keep working un-gated.
+_ENTER_COMMIT_PROBE_JS = (
+    "() => { const el = document.activeElement; if (!el) return null; "
+    "const form = el.form || (el.closest ? el.closest('form') : null); if (!form) return null; "
+    "const controls = Array.from(form.querySelectorAll('button, input[type=submit], input[type=image]')); "
+    "for (const c of controls) { "
+    "  const r = c.getBoundingClientRect(); const s = window.getComputedStyle(c); "
+    "  if (!(r.width > 0 && r.height > 0) || s.display === 'none' || s.visibility === 'hidden' || c.disabled) continue; "
+    "  const info = (" + _COMMIT_CLASSIFY_JS + ")(c); "
+    "  if (info && info.is_commit && info.matched && info.matched.length) return info; "
+    "} return null; }"
+)
 from browser_memory.coordinates import replay_coordinates
 from browser_memory.demo_overlay import DemoOverlayManager
 from browser_memory.cursor_overlay import CursorOverlayManager
@@ -857,6 +945,11 @@ class BrowserController:
         ask_user_handler: Optional[Callable[[str, str], Awaitable[str]]] = None,
         human_driven: bool = False,
         credential_store: Optional[Any] = None,
+        # async (commit_payload: dict) -> dict. Every detected commit control
+        # (submit/apply/save/send/delete/pay...) is held here before it fires.
+        # Returns {"allowed": bool, "reason": str}. When None the gate is off
+        # (standalone CLI/demo); the Cosmic deployment always injects one.
+        commit_gate_handler: Optional[Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]] = None,
     ):
         self.config = config
         # When True, a human is driving this browser (workflow recorder), not
@@ -898,6 +991,12 @@ class BrowserController:
         # Per-run vault credentials (provisioned by the Cosmic orchestrator).
         # Values never enter the LLM context — only CredentialFill consumes them.
         self.credential_store = credential_store
+        # Every commit-like control (submit/apply/save/send/delete/pay/…) is
+        # held here before the click/Enter fires. The handler owns the policy
+        # (the orchestrator authorizes or asks the user); the controller only
+        # enforces the answer. None = gate disabled.
+        self.commit_gate_handler = commit_gate_handler
+        self.commit_blocked_count = 0
         # Sites (normalized domains) where this run already showed the user a
         # credential prompt. The governor consults this so one answered (or
         # skipped) password handoff can never re-prompt on a timer: the model
@@ -3524,11 +3623,135 @@ class BrowserController:
             return ActionResult(success=False, action_type=ActionType.ASK_USER, description=f"Ask user: {question}", error=str(e))
 
     # --- Internal Actions ---
+    async def _classify_commit_locator(self, locator) -> Optional[Dict[str, Any]]:
+        try:
+            return await locator.evaluate("el => (" + _COMMIT_CLASSIFY_JS + ")(el)")
+        except Exception:
+            return None
+
+    async def _classify_commit_at_point(self, x: int, y: int) -> Optional[Dict[str, Any]]:
+        try:
+            return await self.page.evaluate(_COMMIT_PROBE_AT_POINT_JS, [x, y])
+        except Exception:
+            return None
+
+    async def _enter_commit_probe(self, frame=None) -> Optional[Dict[str, Any]]:
+        """A visible commit-named submit control in the active form, if any.
+
+        Enter presses are only gated when the form's own submit control is
+        named like a commit — a search box with a "Search" button must keep
+        submitting freely.
+        """
+        target = frame or (self.page.main_frame if self.page is not None else None)
+        if target is None:
+            return None
+        try:
+            return await target.evaluate(_ENTER_COMMIT_PROBE_JS)
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _clear_commit_marker(frame, marker: str) -> None:
+        try:
+            await frame.evaluate(
+                "(m) => { const el = document.querySelector('[data-cosmic-commit-gate=\"' + m + '\"]'); "
+                "if (el) el.removeAttribute('data-cosmic-commit-gate'); }",
+                marker,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _click_commit_marker(frame, marker: str) -> bool:
+        """Click precisely the element the gate probed, which the probe marked."""
+        try:
+            return bool(
+                await frame.evaluate(
+                    "(m) => { const el = document.querySelector('[data-cosmic-commit-gate=\"' + m + '\"]'); "
+                    "if (!el) return false; el.removeAttribute('data-cosmic-commit-gate'); el.click(); return true; }",
+                    marker,
+                )
+            )
+        except Exception:
+            return False
+
+    async def _gate_commit(
+        self,
+        *,
+        action_type: ActionType,
+        description: str,
+        info: Dict[str, Any],
+        target: str,
+    ) -> Optional[ActionResult]:
+        """Hold a detected commit control for authorization.
+
+        Returns None when the action may proceed, or an ActionResult failure
+        when it was denied (the caller returns it verbatim; the click/Enter
+        never fires). Without an injected handler the gate is off, preserving
+        standalone CLI/demo behavior.
+        """
+        if self.commit_gate_handler is None:
+            return None
+        page_url = ""
+        if self.page is not None:
+            try:
+                page_url = self.page.url or ""
+            except Exception:
+                page_url = ""
+        payload = {
+            "action": "click",
+            "target": str(target or info.get("name") or "")[:200],
+            "control": {
+                "name": str(info.get("name") or "")[:200],
+                "is_submit_control": bool(info.get("is_submit_control")),
+                "matched": list(info.get("matched") or [])[:4],
+            },
+            "irreversible": bool(info.get("irreversible")),
+            "fields": list(info.get("fields") or [])[:20],
+            "url": page_url,
+        }
+        try:
+            decision = await self.commit_gate_handler(payload)
+        except Exception as exc:
+            # Fail closed: an unreachable authorization channel never turns a
+            # commit into a free action.
+            decision = {"allowed": False, "reason": f"authorization channel failed: {exc}"}
+        if isinstance(decision, dict):
+            allowed = bool(decision.get("allowed"))
+            reason = str(decision.get("reason") or "").strip()
+        else:
+            allowed = bool(decision)
+            reason = ""
+        if allowed:
+            return None
+        self.commit_blocked_count += 1
+        detail = reason or "the user has not authorized this action"
+        return ActionResult(
+            success=False,
+            action_type=action_type,
+            description=description,
+            error=(
+                f"commit_blocked: {detail}. This was NOT performed. Do not retry it, and do not "
+                "look for another way to perform the same action; report exactly what was blocked "
+                "and continue with anything else that does not commit."
+            ),
+        )
+
     async def _visual_click(self, screenshot_path: str, description: str, region_hint: Optional[str] = None) -> ActionResult:
         coords = await self._call_mimo_grounding(screenshot_path, description)
         if not coords:
             return ActionResult(success=False, action_type=ActionType.VISUAL_CLICK, description=description, error="MiMo failed to find element")
         x, y = coords
+        commit_info = await self._classify_commit_at_point(x, y)
+        if commit_info and commit_info.get("is_commit"):
+            blocked = await self._gate_commit(
+                action_type=ActionType.VISUAL_CLICK,
+                description=description,
+                info=commit_info,
+                target=description,
+            )
+            if blocked is not None:
+                return blocked
         await self._human_dwell_after_load()
         await self.cursor_overlay.show_click(self.page, x, y)
         await self._human_mouse_click(x, y)
@@ -3562,6 +3785,16 @@ class BrowserController:
         await self._human_type(text)
         await self.cursor_overlay.show_typing_stop(self.page)
         if press_enter:
+            enter_commit = await self._enter_commit_probe()
+            if enter_commit:
+                blocked = await self._gate_commit(
+                    action_type=ActionType.VISUAL_TYPE,
+                    description=f"Type '{text[:60]}' (Enter submit)",
+                    info=enter_commit,
+                    target=f"Enter in '{field_description[:80]}'",
+                )
+                if blocked is not None:
+                    return blocked
             await self.cursor_overlay.show_key(self.page, "Enter")
             await self.page.keyboard.press("Enter")
             try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
@@ -3957,6 +4190,16 @@ class BrowserController:
         role = str(info.get("role") or "element")
         try:
             await locator.scroll_into_view_if_needed(timeout=2000)
+            commit_info = await self._classify_commit_locator(locator)
+            if commit_info and commit_info.get("is_commit"):
+                blocked = await self._gate_commit(
+                    action_type=ActionType.SNAPSHOT_CLICK,
+                    description=f"SnapshotClick {ref}",
+                    info=commit_info,
+                    target=f"{role} '{name}'" if name else parse_ref(ref),
+                )
+                if blocked is not None:
+                    return blocked
             box = await locator.bounding_box(timeout=2000)
             if box:
                 await self.cursor_overlay.show_click(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
@@ -4028,6 +4271,16 @@ class BrowserController:
             await self._human_type(text)
             await self.cursor_overlay.show_typing_stop(self.page)
             if press_enter:
+                enter_commit = await self._enter_commit_probe(frame)
+                if enter_commit:
+                    blocked = await self._gate_commit(
+                        action_type=ActionType.SNAPSHOT_TYPE,
+                        description=f"SnapshotType {ref} (Enter submit)",
+                        info=enter_commit,
+                        target=f"Enter in '{(target_name or parse_ref(ref))[:80]}'",
+                    )
+                    if blocked is not None:
+                        return blocked
                 await self.cursor_overlay.show_key(self.page, "Enter")
                 await self.page.keyboard.press("Enter")
                 try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
@@ -4179,6 +4432,16 @@ class BrowserController:
                         try:
                             locator = frame.locator(sel).first
                             await locator.scroll_into_view_if_needed(timeout=2000)
+                            commit_info = await self._classify_commit_locator(locator)
+                            if commit_info and commit_info.get("is_commit"):
+                                blocked = await self._gate_commit(
+                                    action_type=ActionType.DOM_CLICK,
+                                    description=f"Click {selector}",
+                                    info=commit_info,
+                                    target=str(commit_info.get("name") or selector),
+                                )
+                                if blocked is not None:
+                                    return blocked
                             box = await locator.bounding_box(timeout=2000)
                             if box:
                                 await self.cursor_overlay.show_click(self.page, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
@@ -4209,7 +4472,9 @@ class BrowserController:
             # Standard CSS selector path via querySelectorAll — searched in
             # every frame for the same cross-origin-iframe reason as above.
             js_script = """
-            (selector) => {
+            (args) => {
+                const selector = args[0];
+                const marker = args[1];
                 const cleanText = (value) => {
                     if (value === null || value === undefined) return "";
                     return String(value).replace(/\\s+/g, " ").trim();
@@ -4223,6 +4488,7 @@ class BrowserController:
                     const rect = el.getBoundingClientRect();
                     return rect.width > 0 && rect.height > 0;
                 };
+                const classify = """ + _COMMIT_CLASSIFY_JS + """;
 
                 let elements = [];
                 try {
@@ -4238,6 +4504,19 @@ class BrowserController:
                     const rect = el.getBoundingClientRect();
                     const x = rect.left + rect.width / 2;
                     const y = rect.top + rect.height / 2;
+                    const commit = classify(el);
+                    if (commit && commit.is_commit) {
+                        // Do not click: mark the exact element, let the gate decide.
+                        el.setAttribute("data-cosmic-commit-gate", marker);
+                        return {
+                            ok: false,
+                            pending_commit: true,
+                            commit: commit,
+                            text: cleanText(el.innerText || el.textContent || el.getAttribute("aria-label") || el.getAttribute("title")),
+                            x,
+                            y,
+                        };
+                    }
                     el.click();
                     return {
                         ok: true,
@@ -4251,11 +4530,35 @@ class BrowserController:
             }
             """
             last_result = None
+            commit_marker = "cg_" + os.urandom(6).hex()
             for frame in frames:
                 try:
-                    result = await frame.evaluate(js_script, selector)
+                    result = await frame.evaluate(js_script, [selector, commit_marker])
                 except Exception as e:
                     result = {"ok": False, "error": str(e)}
+                if result and result.get("pending_commit"):
+                    commit_info = result.get("commit") if isinstance(result.get("commit"), dict) else {}
+                    blocked = await self._gate_commit(
+                        action_type=ActionType.DOM_CLICK,
+                        description=f"Click {selector}",
+                        info=commit_info,
+                        target=str(commit_info.get("name") or result.get("text") or selector),
+                    )
+                    if blocked is not None:
+                        await self._clear_commit_marker(frame, commit_marker)
+                        return blocked
+                    if not await self._click_commit_marker(frame, commit_marker):
+                        last_result = {"error": "Authorized commit element disappeared before the click; re-snapshot and retry."}
+                        continue
+                    frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
+                    await self.cursor_overlay.show_click(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
+                    return ActionResult(
+                        success=True,
+                        action_type=ActionType.DOM_CLICK,
+                        description=f"Clicked visible element for selector{frame_note}: {selector}",
+                        coordinates=(int(result.get("x", 0)), int(result.get("y", 0))),
+                        output=result.get("text") or None,
+                    )
                 if result and result.get("ok"):
                     frame_note = "" if frame is self.page.main_frame else f" [iframe: {frame.url[:60]}]"
                     await self.cursor_overlay.show_click(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
@@ -4433,6 +4736,16 @@ class BrowserController:
                             await self._human_type(text)
                             await self.cursor_overlay.show_typing_stop(self.page)
                             if press_enter:
+                                enter_commit = await self._enter_commit_probe(frame)
+                                if enter_commit:
+                                    blocked = await self._gate_commit(
+                                        action_type=ActionType.DOM_TYPE,
+                                        description=f"Type into {selector} (Enter submit)",
+                                        info=enter_commit,
+                                        target=f"Enter in '{selector[:80]}'",
+                                    )
+                                    if blocked is not None:
+                                        return blocked
                                 await self.cursor_overlay.show_key(self.page, "Enter")
                                 await self.page.keyboard.press("Enter")
                                 try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
@@ -4583,6 +4896,16 @@ class BrowserController:
                     await self._human_type(text)
                     await self.cursor_overlay.show_typing_stop(self.page)
                     if press_enter:
+                        enter_commit = await self._enter_commit_probe(frame)
+                        if enter_commit:
+                            blocked = await self._gate_commit(
+                                action_type=ActionType.DOM_TYPE,
+                                description=f"Type into {selector} (Enter submit)",
+                                info=enter_commit,
+                                target=f"Enter in '{selector[:80]}'",
+                            )
+                            if blocked is not None:
+                                return blocked
                         await self.cursor_overlay.show_key(self.page, "Enter")
                         await self.page.keyboard.press("Enter")
                         try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
@@ -5168,6 +5491,19 @@ class BrowserController:
             "del": "Delete",
             "backspace": "Backspace",
         }.get(str(key).strip().lower(), key)
+        if normalized_key == "Enter":
+            # Enter can implicitly submit the form under focus. Gate it when
+            # that form's own submit control is named like a commit.
+            enter_commit = await self._enter_commit_probe()
+            if enter_commit:
+                blocked = await self._gate_commit(
+                    action_type=ActionType.PRESS_KEY,
+                    description="Pressed Enter (form submit)",
+                    info=enter_commit,
+                    target="Enter submit",
+                )
+                if blocked is not None:
+                    return blocked
         await self.cursor_overlay.show_key(self.page, normalized_key)
         await self.page.keyboard.press(normalized_key)
         return ActionResult(success=True, action_type=ActionType.PRESS_KEY, description=f"Pressed {normalized_key}")

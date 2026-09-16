@@ -637,6 +637,7 @@ async def run_task(
     takeover_session: Optional[TakeoverSession] = None,
     takeover_state_callback=None,
     human_wait_getter=None,
+    commit_gate_handler=None,
 ):
     mimo_api_url = mimo_api_url or os.getenv("MIMO_API_URL", MIMO_DEFAULT_URL)
     mimo_api_key = mimo_api_key or os.getenv("MIMO_API_KEY")
@@ -818,6 +819,7 @@ async def run_task(
         demo_overlay=demo_overlay,
         ask_user_handler=ask_user_handler,
         credential_store=credential_store,
+        commit_gate_handler=commit_gate_handler,
     )
 
     await browser.start(initial_url)

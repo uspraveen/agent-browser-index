@@ -249,6 +249,10 @@ async def run_goal(
     # password/""), set by the model itself or the deterministic credential
     # governor — not something the caller needs to re-derive from the text.
     ask_user_handler=None,
+    # async (commit_payload: dict) -> {"allowed": bool, "reason": str}. Every
+    # detected commit control (submit/apply/save/send/delete/pay) is held here
+    # before it fires. Unset = gate off (standalone CLI/demo).
+    commit_gate_handler=None,
     on_live_frame=None,
     working_dir_root: Optional[str] = None,
     # Playwright storage_state file that carries cookies/localStorage from one
@@ -323,6 +327,17 @@ async def run_goal(
             finally:
                 human_wait_clock.stop()
 
+    # A commit authorization can park on a human confirmation card too, so its
+    # wait is the same free time as an AskUser wait.
+    bridged_commit_gate = commit_gate_handler
+    if commit_gate_handler is not None:
+        async def bridged_commit_gate(payload):  # type: ignore[misc]
+            human_wait_clock.start()
+            try:
+                return await commit_gate_handler(payload)
+            finally:
+                human_wait_clock.stop()
+
     run_kwargs: Dict[str, Any] = dict(
         goal=str(goal).strip(),
         initial_url=initial_url,
@@ -333,6 +348,7 @@ async def run_goal(
         memory_mode=memory_mode,
         headless=headless,
         ask_user_handler=bridged_ask_user,
+        commit_gate_handler=bridged_commit_gate,
         human_wait_getter=_human_wait_getter,
         step_callback=_progress_bridge,
         live_frame_callback=on_live_frame,
