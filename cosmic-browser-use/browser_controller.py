@@ -56,7 +56,12 @@ _COMMIT_CLASSIFY_JS = r"""
     ).replace(/\s+/g, ' ').trim();
     const name = text.toLowerCase();
     if (/\b(sign in|log in|sign-in|login)\b/.test(name)) return {is_commit: false, name: text.slice(0, 160)};
-    if (/cookie|privacy preference|privacy choices|consent to cookies/.test(name)) return {is_commit: false, name: text.slice(0, 160)};
+    if (/cookie|privacy preference|privacy choices|consent to cookies|accept and continue/.test(name)) return {is_commit: false, name: text.slice(0, 160)};
+    try {
+      if (el.closest && el.closest('[id*="cookie" i], [class*="cookie" i], [id*="onetrust" i], [class*="onetrust" i], [id*="consent" i], [class*="consent" i]')) {
+        return {is_commit: false, name: text.slice(0, 160)};
+      }
+    } catch (e) {}
     if (/(search|find|filter|lookup|look up|query|preview|view|show|download|print|copy|share|refresh|reload|sort|expand|collapse|clear|reset|back|next|previous|close|dismiss)/.test(name)) {
       return {is_commit: false, name: text.slice(0, 160)};
     }
