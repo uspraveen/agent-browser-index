@@ -3868,14 +3868,27 @@ class BrowserController:
         if isinstance(decision, dict):
             allowed = bool(decision.get("allowed"))
             reason = str(decision.get("reason") or "").strip()
+            user_note = str(decision.get("user_note") or "").strip()
         else:
             allowed = bool(decision)
             reason = ""
+            user_note = ""
         if allowed:
             await self._apply_commit_field_edits(decision, frame)
+            if user_note:
+                # The user approved AND said something. The commit fires as
+                # authorized, and the instruction becomes a note for the very
+                # next step — "approved, but uncheck the newsletter box" has
+                # to reach the model, not just the ledger.
+                self._pending_dialogs.append({
+                    "type": "user_note",
+                    "message": f"While authorizing '{str(target or info.get('name') or 'this action')[:80]}', the user said: {user_note[:300]}",
+                })
             return None
         self.commit_blocked_count += 1
         detail = reason or "the user has not authorized this action"
+        if user_note:
+            detail = f"{detail}. User note: {user_note[:300]}"
         return ActionResult(
             success=False,
             action_type=action_type,

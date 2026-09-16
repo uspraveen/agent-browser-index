@@ -190,6 +190,26 @@ def test_denied_commit_ignores_any_edits():
     assert frame.calls == []
 
 
+def test_note_on_approval_becomes_a_dialog_for_the_next_step():
+    async def handler(payload):
+        return {"allowed": True, "user_note": "approved, but uncheck the newsletter box"}
+
+    controller = _controller(handler)
+    assert _gate(controller) is None
+    notes = [d for d in controller._pending_dialogs if d["type"] == "user_note"]
+    assert notes and "uncheck the newsletter box" in notes[0]["message"]
+
+
+def test_note_on_denial_lands_in_the_error_the_model_reads():
+    async def handler(payload):
+        return {"allowed": False, "reason": "not authorized", "user_note": "use the other resume"}
+
+    result = _gate(_controller(handler))
+    assert result is not None and result.success is False
+    assert "use the other resume" in result.error
+    assert "commit_blocked" in result.error
+
+
 def test_enter_is_gated_when_the_active_form_submits():
     async def handler(payload):
         return {"allowed": False, "reason": "not authorized"}
