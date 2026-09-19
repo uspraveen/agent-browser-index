@@ -488,8 +488,8 @@ def _secret_display(value: Any, is_secret: bool, cap: int = 60) -> str:
 _SNAPSHOT_INTERACTIVE_CSS = (
     "a[href], button, input, select, textarea, summary, [contenteditable='true'], [contenteditable=''], "
     "[role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='combobox'], "
-    "[role='listbox'], [role='option'], [role='tab'], [role='menuitem'], [role='switch'], [role='textbox'], "
-    "[role='searchbox'], [role='slider'], [role='spinbutton']"
+    "[role='listbox'], [role='option'], [role='tab'], [role='menuitem'], [role='menuitemradio'], "
+    "[role='switch'], [role='textbox'], [role='searchbox'], [role='slider'], [role='spinbutton']"
 )
 
 # Runs per frame. Returns the frame's VISIBLE, ENABLED interactive elements in

@@ -65,6 +65,9 @@ search before opening results; a populated field alone is not an applied search.
 WAIT only when a needed control is absent, disabled, or submitted results are still
 loading; recent WAITs are not evidence of loading. SCROLL_DOWN only when the needed
 control is not in the element table. Prefer a useful visible control over scrolling.
+GO_BACK when this landing is clearly the wrong page for the goal and the previous page
+offers a better route. RELOAD only when the page failed to load or its content is stuck
+incomplete — do not reload a merely slow page, WAIT instead.
 DONE requires visible evidence that ALL requirements are satisfied; when in doubt,
 keep working or escalate. BLOCKED means no supported operation can make progress.
 You have NO vision: the element table is all you see. Choose ESCALATE_VISION when the
@@ -236,6 +239,8 @@ def build_questions(goal: str, space: Dict[str, Any], allow_scroll_up: bool) -> 
         "TYPE_TEXT": "Enter or replace text in an editable field; a helper LLM supplies the value from the goal.",
         "SELECT": "Pick an observed native dropdown option.",
         "SCROLL_DOWN": "Scroll down to reveal controls that are not in the element table.",
+        "GO_BACK": "Go back to the previous page when this landing is clearly the wrong page for the goal.",
+        "RELOAD": "Reload the current page when it failed to load or its content is stuck incomplete.",
         "WAIT": "Wait for the page to update when a needed control is absent or results are loading.",
         "DONE": "Every requirement is visibly satisfied.",
         "BLOCKED": "No supported operation can make progress.",
@@ -512,6 +517,22 @@ class JevEngine:
                 ToolCall(action_type=ActionType.VISUAL_SCROLL, parameters={"direction": "up", "amount": 500}),
                 operation_answer, None, confidence, progress,
                 reasoning="Jev: scroll up for controls that left the viewport",
+            )
+
+        if operation == "GO_BACK":
+            self.stats["decisions"] += 1
+            return self._response(
+                ToolCall(action_type=ActionType.GO_BACK, parameters={}),
+                operation_answer, None, confidence, progress,
+                reasoning="Jev: go back — wrong landing for the goal",
+            )
+
+        if operation == "RELOAD":
+            self.stats["decisions"] += 1
+            return self._response(
+                ToolCall(action_type=ActionType.RELOAD, parameters={}),
+                operation_answer, None, confidence, progress,
+                reasoning="Jev: reload — page failed to load or is stuck incomplete",
             )
 
         if operation == "CLICK":

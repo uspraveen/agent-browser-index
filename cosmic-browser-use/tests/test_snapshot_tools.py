@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from browser_controller import (  # noqa: E402
+    _SNAPSHOT_INTERACTIVE_CSS,
     BrowserController,
     fingerprint_matches,
     format_snapshot_lines,
@@ -26,6 +27,15 @@ from browser_controller import (  # noqa: E402
     snapshot_fingerprint,
     typing_landed_value,
 )
+
+
+class TestInteractiveCss:
+    """Pin the interactive-role surface so collector parity with reference
+    implementations is not lost silently."""
+
+    def test_menu_roles_are_collected(self):
+        assert "[role='menuitem']" in _SNAPSHOT_INTERACTIVE_CSS
+        assert "[role='menuitemradio']" in _SNAPSHOT_INTERACTIVE_CSS
 
 
 class TestRefParsing:

@@ -212,6 +212,8 @@ class TestActionSpace:
         assert "ESCALATE_VISION" in criteria
         assert "ESCALATE_LLM" in criteria
         assert "BLOCKED" in criteria
+        assert "GO_BACK" in criteria
+        assert "RELOAD" in criteria
 
 
 # --------------------------------------------------------------------- #
@@ -296,6 +298,18 @@ class TestDecideStep:
         engine = _engine(handler=_handler_script({"operation": "WAIT"}))
         response = _decide(engine)
         assert response.tool_call.action_type == ActionType.VISUAL_WAIT
+
+    def test_go_back_and_reload_map_to_navigation_tools(self):
+        engine = _engine(handler=_handler_script({"operation": "GO_BACK"}))
+        response = _decide(engine)
+        assert response.tool_call.action_type == ActionType.GO_BACK
+        assert response.tool_call.parameters == {}
+        assert response.tier_used == "jev"
+
+        engine = _engine(handler=_handler_script({"operation": "RELOAD"}))
+        response = _decide(engine)
+        assert response.tool_call.action_type == ActionType.RELOAD
+        assert response.tool_call.parameters == {}
 
     def test_done_goes_through_the_finalizer_never_jev_tier(self):
         finalizer_response = LLMResponse(
