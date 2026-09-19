@@ -20,6 +20,7 @@ It is designed for real browsing environments where DOM-only automation is britt
 ## Highlights
 
 - Vision-first control loop with screenshot-grounded actions.
+- Jev decision engine (default): routine structured-page steps are decided by one ~0.4s TypeSafe System One call over the DOM snapshot's `@e` ref map — no screenshot in the decision, no free-form generation — while escalations, vision pages, low confidence, and every non-routine step fall through to the full LLM planner. Toggle with `--decision-engine jev|llm`; auto-downgrades to the classic planner without `TYPESAFE_API_KEY` or in vision mode.
 - Deterministic dropdown detection: native `<select>` popups are invisible to screenshots, so every capture scans for them (native selects + custom comboboxes, across iframes and open shadow roots) and prompts the agent to switch to DOM tools. The `SelectOption` tool sets options deterministically, and the workflow recorder captures human dropdown picks as `SelectOption` steps.
 - MiMo-VL-7B-RL visual grounding: screenshot + target description → pixel coordinate.
 - COSMIC traversal memory: page states, actions, visual indexes, failures, fixes, and replay checkpoints.
@@ -73,6 +74,8 @@ sequenceDiagram
     Main->>Browser: capture_state(step_n)
     Browser-->>Main: screenshot + browser_state + hash
     Main->>Memory: get_context_for_llm()
+    Main->>Jev: (fast path enabled) snapshot action space + one TypeSafe call
+    Jev-->>Main: LLMResponse — or fall-through
     Main->>Orch: decide_action(context, screenshot)
     Orch->>LLM: prompt + tools + state
     LLM-->>Orch: tool call JSON
@@ -92,6 +95,8 @@ sequenceDiagram
 Entry point, CLI, provider config, MiMo health pre-check, main execution loop, final stats.
 - `orchestrator.py`
 LLM provider adapters + tier selection + prompt construction + JSON parsing.
+- `jev_engine.py`
+Jev fast path: snapshot-driven action space, one TypeSafe decision call per routine step, LLMResponse mapping, confidence gate, circuit breaker. Falls through to the planner for escalations, vision, and low confidence.
 - `browser_controller.py`
 Playwright lifecycle, tool execution, MiMo grounding calls, note systems, tabs, waits, navigation, screenshot, ask-user.
 - `memory_manager.py`
@@ -356,6 +361,7 @@ python main.py --help
 | `--disable-supermemory` | flag | off | Local workflow only; skip Supermemory reads/writes. |
 | `--replay-max-actions` | int | `8` | Max indexed replay actions before returning to agent loop. |
 | `--interaction-mode` | enum | `hybrid` | `hybrid` (DOM + vision) or `vision` (vision tools only). |
+| `--decision-engine` | enum | `jev` | `jev` (TypeSafe fast path over the DOM snapshot; falls through to the LLM planner) or `llm` (classic planner-only loop). Env: `COSMIC_DECISION_ENGINE`. |
 | `--demo-overlay` | flag | off | In-browser COSMIC status overlay (hidden during MiMo screenshots). |
 | `--chrome-profile` | str | `None` | Chrome profile dir name or path for CDP mode. |
 | `--list-chrome-profiles` | flag | — | List local Chrome profiles and exit. |

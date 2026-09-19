@@ -347,6 +347,11 @@ async def run_goal(
         slow_model_config=slow_config,
         memory_mode=memory_mode,
         headless=headless,
+        # Per-step decision engine (jev fast path | classic LLM planner).
+        # run_task downgrades jev → llm itself when TYPESAFE_API_KEY is
+        # missing or interaction mode is vision, so keyless environments
+        # behave exactly as before.
+        decision_engine=_env("COSMIC_DECISION_ENGINE", "jev") or "jev",
         ask_user_handler=bridged_ask_user,
         commit_gate_handler=bridged_commit_gate,
         human_wait_getter=_human_wait_getter,

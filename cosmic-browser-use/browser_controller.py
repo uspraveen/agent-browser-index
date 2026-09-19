@@ -573,9 +573,22 @@ _SNAPSHOT_COLLECT_JS = """
     };
     if (role === "textbox") entry.value = (ty === "password") ? "********" : clean(el.value).slice(0, 40);
     if (role === "checkbox" || role === "radio" || role === "switch") entry.checked = !!el.checked;
+    if (ty === "password" || el.getAttribute("aria-secret") === "true") entry.secret = true;
+    const expanded = el.getAttribute("aria-expanded");
+    if (expanded !== null) entry.expanded = expanded;
     if (role === "combobox" && t === "select") {
       const sel = el.selectedOptions && el.selectedOptions[0];
       entry.selected = sel ? clean(sel.textContent).slice(0, 40) : "";
+      // Structured consumers (the Jev engine) offer each enabled option as its
+      // own choosable target. The rendered @e map is unchanged — this field is
+      // never printed by format_snapshot_lines.
+      const opts = [];
+      for (const o of el.options) {
+        if (o.disabled || (o.closest && o.closest("optgroup[disabled]"))) continue;
+        if (opts.length >= 30) break;
+        opts.push({ label: clean(o.textContent).slice(0, 60), value: clean(o.value) });
+      }
+      entry.options = opts;
     }
     entries.push(entry);
   }
@@ -4382,24 +4395,18 @@ class BrowserController:
         except Exception:
             return False
 
-    async def _dom_snapshot(self, max_elements: int = 120) -> ActionResult:
-        """Perceive the page as a numbered map of its visible, enabled
-        interactive elements — role, visible name, and state per @e ref — so
-        one text pull replaces per-action visual grounding on structured
-        pages. A peer tool, not a replacement: the model still chooses vision
-        (canvas, odd widgets, visual verification) or raw selectors (known
-        unique anchors) whenever those fit better. Only the latest snapshot's
-        refs resolve; every ref is fingerprint-checked against the live DOM
-        at act time, so a page that moved on refuses the old map instead of
-        clicking a stranger."""
+    async def _collect_snapshot(self, max_elements: int = 120) -> Dict[str, Any]:
+        """Structured core of DOMSnapshot: (re)build the live @e ref map and
+        return the enriched per-element entries for programmatic consumers
+        (the Jev engine). The LLM-visible rendered map stays in _dom_snapshot;
+        this method only owns collection and fingerprinting."""
         cap = max(1, min(int(max_elements or 120), 300))
         frames = self._frame_search_order()
         self._snapshot_refs = {}
-        lines: List[str] = []
-        ref_counter = 0
+        entries: List[Dict[str, Any]] = []
+        per_frame_counts: List[int] = []
         total = 0
         truncated = False
-        per_frame_counts: List[int] = []
         for frame_index, frame in enumerate(frames):
             try:
                 result = await frame.evaluate(_SNAPSHOT_COLLECT_JS, {
@@ -4410,25 +4417,50 @@ class BrowserController:
                 continue  # cross-origin frame that refuses injection, etc.
             if not isinstance(result, dict) or result.get("error"):
                 continue
-            entries = result.get("entries") or []
-            per_frame_counts.append(len(entries))
-            for entry in entries:
+            frame_entries = result.get("entries") or []
+            per_frame_counts.append(len(frame_entries))
+            # nth indexes THIS frame's filtered visible list at recheck time —
+            # a global counter would offset every non-main-frame ref and make
+            # iframe elements permanently "stale".
+            frame_nth = 0
+            for entry in frame_entries:
                 if entry.get("truncated"):
                     truncated = True
                     break
-                ref_counter += 1
-                ref = f"@e{ref_counter}"
+                total += 1
+                ref = f"@e{total}"
                 self._snapshot_refs[ref] = {
                     "frame_index": frame_index,
-                    "nth": total,
+                    "nth": frame_nth,
                     "role": str(entry.get("role") or "element"),
                     "name": str(entry.get("name") or ""),
                     "fingerprint": snapshot_fingerprint(entry),
                 }
-                lines.extend(format_snapshot_lines([entry], start_ref=ref_counter))
-                total += 1
+                entries.append({**entry, "ref": ref, "frame_index": frame_index})
+                frame_nth += 1
             if truncated or total >= cap:
                 break
+        return {
+            "refs": self._snapshot_refs,
+            "entries": entries,
+            "total": total,
+            "truncated": truncated,
+            "frames": len(per_frame_counts),
+        }
+
+    async def _dom_snapshot(self, max_elements: int = 120) -> ActionResult:
+        """Perceive the page as a numbered map of its visible, enabled
+        interactive elements — role, visible name, and state per @e ref — so
+        one text pull replaces per-action visual grounding on structured
+        pages. A peer tool, not a replacement: the model still chooses vision
+        (canvas, odd widgets, visual verification) or raw selectors (known
+        unique anchors) whenever those fit better. Only the latest snapshot's
+        refs resolve; every ref is fingerprint-checked against the live DOM
+        at act time, so a page that moved on refuses the old map instead of
+        clicking a stranger."""
+        collected = await self._collect_snapshot(max_elements)
+        total = collected["total"]
+        truncated = collected["truncated"]
         if total == 0:
             return ActionResult(
                 success=False,
@@ -4439,15 +4471,15 @@ class BrowserController:
             )
         header = f"{total} interactive elements on {(self.page.url or '')[:100]}:"
         if truncated:
-            header += f" (truncated at {cap} — scroll and snapshot again for more)"
+            header += f" (truncated at {max(1, min(int(max_elements or 120), 300))} — scroll and snapshot again for more)"
         return ActionResult(
             success=True,
             action_type=ActionType.DOM_SNAPSHOT,
             description=f"Snapshotted {total} interactive elements",
-            output="\n".join([header] + lines),
+            output="\n".join([header] + format_snapshot_lines(collected["entries"], start_ref=1)),
             metadata={
                 "refs": total,
-                "frames": len(per_frame_counts),
+                "frames": collected["frames"],
                 "truncated": truncated,
             },
         )

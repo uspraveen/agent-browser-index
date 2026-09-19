@@ -11,12 +11,14 @@ Run with:  python -m pytest tests/test_snapshot_tools.py -q
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from browser_controller import (  # noqa: E402
+    BrowserController,
     fingerprint_matches,
     format_snapshot_lines,
     mask_snapshot_value,
@@ -150,3 +152,113 @@ class TestTypingLanded:
     def test_unrelated_value_is_not_landed(self):
         assert not typing_landed_value("Search", "Why do AI models")
         assert not typing_landed_value("W", "Why do AI models give such similar answers?")
+
+
+class _FakeSnapshotFrame:
+    """Returns a canned _SNAPSHOT_COLLECT_JS result, recording the cap it got.
+    Like the real collector JS, it truncates at the requested cap and marks
+    the overflow."""
+
+    def __init__(self, entries):
+        self._entries = entries
+        self.caps = []
+
+    async def evaluate(self, _js, arg=None):
+        cap = (arg or {}).get("cap")
+        self.caps.append(cap)
+        entries = self._entries[:cap]
+        truncated = len(self._entries) > cap
+        if truncated:
+            entries = entries + [{"truncated": True}]
+        return {"count": len(entries), "truncated": truncated, "entries": entries}
+
+
+def _snapshot_controller(frames):
+    controller = object.__new__(BrowserController)
+    controller._frame_search_order = lambda: frames
+    return controller
+
+
+class TestCollectSnapshot:
+    """The structured core _dom_snapshot renders from — and the Jev engine
+    consumes directly. Refs must number sequentially across frames while nth
+    stays per-frame (it indexes that frame's own filtered list at recheck
+    time), and structured fields must survive into the entries."""
+
+    def _frames(self):
+        main = _FakeSnapshotFrame([
+            {"tag": "input", "id": "name", "role": "textbox", "name": "Legal Name", "value": ""},
+            {"tag": "button", "role": "button", "name": "Continue"},
+        ])
+        iframe = _FakeSnapshotFrame([
+            {"tag": "button", "role": "button", "name": "Pay now"},
+        ])
+        return [main, iframe]
+
+    def test_refs_are_sequential_and_nth_is_per_frame(self):
+        controller = _snapshot_controller(self._frames())
+        collected = asyncio.run(controller._collect_snapshot(120))
+        refs = collected["refs"]
+        assert list(refs) == ["@e1", "@e2", "@e3"]
+        assert refs["@e3"]["frame_index"] == 1
+        # The iframe element's nth is its own frame index (0), not the global
+        # running count (2) — a global offset made iframe refs permanently
+        # "stale" at recheck time.
+        assert refs["@e3"]["nth"] == 0
+        assert refs["@e2"]["nth"] == 1
+        assert [entry["ref"] for entry in collected["entries"]] == ["@e1", "@e2", "@e3"]
+        assert collected["total"] == 3
+
+    def test_structured_fields_survive_into_entries(self):
+        frame = _FakeSnapshotFrame([
+            {
+                "tag": "input", "id": "pw", "role": "textbox", "name": "Password",
+                "value": "********", "secret": True, "expanded": "false",
+            },
+            {
+                "tag": "select", "role": "combobox", "name": "Country", "selected": "Germany",
+                "options": [{"label": "Germany", "value": "de"}, {"label": "India", "value": "in"}],
+            },
+        ])
+        controller = _snapshot_controller([frame])
+        collected = asyncio.run(controller._collect_snapshot(120))
+        by_ref = {entry["ref"]: entry for entry in collected["entries"]}
+        assert by_ref["@e1"]["secret"] is True
+        assert by_ref["@e1"]["expanded"] == "false"
+        assert by_ref["@e2"]["options"] == [
+            {"label": "Germany", "value": "de"},
+            {"label": "India", "value": "in"},
+        ]
+
+    def test_rendered_map_is_unchanged_by_structured_fields(self):
+        frame = _FakeSnapshotFrame([
+            {"tag": "input", "role": "textbox", "name": "Legal Name", "value": "Test User"},
+            {"tag": "select", "role": "combobox", "name": "Country", "selected": "Germany",
+             "options": [{"label": "Germany", "value": "de"}], "secret": False, "expanded": "true"},
+        ])
+        controller = _snapshot_controller([frame])
+
+        class _Page:
+            url = "https://example.com/form"
+
+        controller.page = _Page()
+        result = asyncio.run(controller._dom_snapshot(120))
+        lines = result.output.split("\n")
+        assert lines[0].startswith("2 interactive elements")
+        assert lines[1] == '@e1 textbox "Legal Name" value=\'Test User\''
+        assert lines[2] == "@e2 combobox \"Country\" selected='Germany'"
+
+    def test_zero_elements_errors_for_the_model(self):
+        controller = _snapshot_controller([_FakeSnapshotFrame([])])
+        result = asyncio.run(controller._dom_snapshot(120))
+        assert result.success is False
+        assert "vision tools" in result.error
+
+    def test_cap_bounds_each_frame_request(self):
+        frame = _FakeSnapshotFrame([{"tag": "button", "role": "button", "name": f"b{i}"} for i in range(5)])
+        controller = _snapshot_controller([frame])
+        collected = asyncio.run(controller._collect_snapshot(3))
+        assert frame.caps == [3]
+        assert collected["total"] == 3
+        # The collector JS flagged the overflow; the structured core honors it.
+        assert collected["truncated"] is True

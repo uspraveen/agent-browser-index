@@ -24,6 +24,7 @@ from memory_manager import MemoryManager
 from takeover import TakeoverSession, run_takeover
 from orchestrator import Orchestrator, reset_fireworks_http2_preference
 from browser_controller import BrowserController
+from jev_engine import JevEngine, JevEngineConfig
 from credentials import CredentialStore
 from find_coordinates_mimo import check_mimo_health
 from cli_labels import (
@@ -625,6 +626,7 @@ async def run_task(
     supermemory_enabled: bool = True,
     replay_max_actions: int = 8,
     interaction_mode: str = "hybrid",
+    decision_engine: str = "jev",
     demo_overlay_enabled: bool = False,
     ask_user_handler=None,
     chrome_profile: str = None,
@@ -650,6 +652,18 @@ async def run_task(
     if interaction_mode not in {"hybrid", "vision"}:
         interaction_mode = "hybrid"
     enable_dom_fallback = interaction_mode != "vision"
+    decision_engine = (decision_engine or "jev").strip().lower()
+    if decision_engine not in {"jev", "llm"}:
+        decision_engine = "jev"
+    if decision_engine == "jev":
+        # Default-on must never break a run: without a Jev key, or in vision
+        # mode (no DOM snapshot to decide over), the classic planner runs.
+        if interaction_mode == "vision":
+            print("⚠️  [Jev] vision interaction mode has no DOM snapshot — decision engine set to 'llm'.")
+            decision_engine = "llm"
+        elif not os.getenv("TYPESAFE_API_KEY"):
+            print("⚠️  [Jev] TYPESAFE_API_KEY not set — decision engine set to 'llm'.")
+            decision_engine = "llm"
 
     # Per-run vault credentials (provisioned by the Cosmic orchestrator or the
     # SDK caller). Values stay in memory only; the model learns just the
@@ -822,6 +836,24 @@ async def run_task(
         commit_gate_handler=commit_gate_handler,
     )
 
+    # Jev fast path: per-step structured decisions over the DOM snapshot for
+    # routine steps; every other step (and every fall-through) uses the
+    # normal planner. Constructed after the browser so it can pull snapshots.
+    jev_engine = None
+    if decision_engine == "jev":
+        jev_engine = JevEngine(
+            orchestrator=orchestrator,
+            browser=browser,
+            config=JevEngineConfig.from_env(),
+            debug_logger=cosmic_log,
+        )
+        print(
+            f"⚡ Decision engine: Jev fast path (model={jev_engine.config.model}, "
+            f"min_confidence={jev_engine.config.min_confidence}); "
+            "falls through to the LLM planner whenever the fast path is not confident."
+        )
+        cosmic_log.event("jev.enabled", model=jev_engine.config.model)
+
     await browser.start(initial_url)
     if live_frame_callback is not None:
         await browser.start_live_screencast(live_frame_callback)
@@ -976,6 +1008,8 @@ async def run_task(
     last_search_results_governor_step = 0
     last_credential_governor_step = 0
     live_llm_decisions = 0
+    jev_decisions = 0
+    jev_fallthroughs = 0
     
     try:
         if replay_summary and replay_summary.get("goal_completed"):
@@ -1166,6 +1200,38 @@ async def run_task(
                         "search_results_governor.no_action",
                     )
 
+            # Jev fast path (governor-style source): one structured-decision
+            # call over the DOM snapshot. Returns None whenever the fast path
+            # is not applicable or not confident — including explicit
+            # ESCALATE_VISION / ESCALATE_LLM / BLOCKED answers — and the
+            # normal planner decides this step. A tier_used of "jev" marks a
+            # genuine fast-path action; DONE routes through the visible-answer
+            # finalizer (an LLM decision), never on Jev's word alone.
+            if llm_response is None and jev_engine is not None:
+                jev_response = await jev_engine.decide_step(
+                    context=context, screenshot_b64=screenshot_b64
+                )
+                if jev_response is not None:
+                    llm_response = jev_response
+                    if jev_response.tier_used == "jev":
+                        jev_decisions += 1
+                        print(
+                            f"   ⚡ [Jev] {llm_response.tool_call.action_type.value} "
+                            f"{llm_response.tool_call.parameters or ''}"
+                            f"(confidence {llm_response.confidence:.2f})"
+                        )
+                    else:
+                        jev_fallthroughs += 1
+                else:
+                    jev_fallthroughs += 1
+                cosmic_log.step(
+                    step_num,
+                    "jev.decision",
+                    decided=jev_response is not None,
+                    tier=(jev_response.tier_used if jev_response else None),
+                    jev=dict(jev_engine.last_debug),
+                )
+
             if llm_response is None:
                 force_tier = None
                 if pending_escalation:
@@ -1194,10 +1260,11 @@ async def run_task(
                 pending_escalation = False
             llm_time_ms = (time.time() - llm_start) * 1000
 
-            # Live overlay: count this LLM-driven step. Replay-mode steps run
-            # before this loop and aren't counted here, which is exactly the
-            # "skipping exploration" story we want to show.
-            live_llm_decisions += 1
+            # Live overlay: count this LLM-driven step. Jev-decided steps are
+            # fast-path, not LLM-driven — they get their own counter so the
+            # overlay's llm_calls stays truthful.
+            if llm_response.tier_used != "jev":
+                live_llm_decisions += 1
             if demo_overlay.enabled:
                 # First real agent activity in live mode — start the clock.
                 demo_overlay.start_timer()
@@ -1610,6 +1677,14 @@ async def run_task(
         orch_stats = orchestrator.get_stats()
         for key, value in orch_stats.items():
             print(f"   {key}: {value}")
+
+        jev_stats = dict(jev_engine.stats) if jev_engine is not None else None
+        if jev_stats is not None:
+            print(f"\n⚡ Jev Fast-Path Statistics:")
+            print(f"   jev_decisions: {jev_decisions}")
+            print(f"   jev_fallthroughs (planner decided): {jev_fallthroughs}")
+            for key, value in jev_stats.items():
+                print(f"   {key}: {value}")
         
         print(f"\n🌐 Browser Statistics:")
         browser_stats = browser.get_stats()
@@ -1628,6 +1703,7 @@ async def run_task(
             memory_stats=memory.get_stats(),
             orchestrator_stats=orchestrator.get_stats(),
             browser_stats=browser.get_stats(),
+            jev_stats=jev_stats,
         )
 
         if memory_mode in {"learn", "auto"} and cosmic_runtime:
@@ -1686,6 +1762,11 @@ async def run_task(
             await orchestrator.close()
         except Exception as _e:
             print(f"⚠️  orchestrator.close() error (non-fatal): {_e}")
+        if jev_engine is not None:
+            try:
+                await jev_engine.close()
+            except Exception:
+                pass
 
     final_answer = _extract_final_answer(memory)
     # One short recall-ledger line for the Cosmic-OS wrapper's session index —
@@ -1716,6 +1797,9 @@ async def run_task(
         "recall_summary": recall_summary,
         "credentials_needed": credentials_request.output if credentials_request else None,
         "llm_usage": orchestrator.get_stats().get("llm_usage"),
+        "decision_engine": decision_engine,
+        "jev_decisions": jev_decisions,
+        "jev_fallthroughs": jev_fallthroughs,
     }
 
 def _extract_final_answer(memory) -> str:
@@ -1798,6 +1882,7 @@ async def main():
     parser.add_argument("--disable-supermemory", action="store_true", help="Use only local workflow memory; skip Supermemory reads/writes.")
     parser.add_argument("--replay-max-actions", type=int, default=int(os.getenv("COSMIC_REPLAY_MAX_ACTIONS", "8")), help="Maximum indexed replay actions before returning to the normal agent loop.")
     parser.add_argument("--interaction-mode", type=str, choices=["hybrid", "vision"], default=os.getenv("COSMIC_INTERACTION_MODE", "hybrid"), help="Tool surface mode. 'vision' removes DOM tools/prompts; 'hybrid' keeps DOM fallback/extraction.")
+    parser.add_argument("--decision-engine", type=str, choices=["jev", "llm"], default=os.getenv("COSMIC_DECISION_ENGINE", "jev"), help="Per-step decision engine. 'jev' (default) decides routine structured-page steps with the TypeSafe Jev fast path over the DOM snapshot and falls through to the LLM planner otherwise (auto-downgrades to 'llm' without TYPESAFE_API_KEY or in vision mode). 'llm' is the classic planner-only loop.")
     parser.add_argument("--demo-overlay", action="store_true", help="Demo-only: render a glassy COSMIC memory overlay inside the browser. Hidden during every agent/MiMo screenshot. Off by default.")
     parser.add_argument(
         "--ask-user-bridge-url",
@@ -2101,6 +2186,7 @@ async def main():
             supermemory_enabled=not args.disable_supermemory,
             replay_max_actions=args.replay_max_actions,
             interaction_mode=args.interaction_mode,
+            decision_engine=args.decision_engine,
             demo_overlay_enabled=args.demo_overlay,
             ask_user_handler=ask_user_handler,
             chrome_profile=args.chrome_profile,

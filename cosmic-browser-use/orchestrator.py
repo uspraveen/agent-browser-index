@@ -1657,6 +1657,15 @@ Recent search-result loop steps:
             dropdown_rule = ""
             mode_line = "Mode: vision-only. Non-visual page-inspection tools are intentionally detached."
 
+        # Jev fast-path escalation: when the structured engine hands this step
+        # back for vision, say so for exactly this step (the context is rebuilt
+        # from memory every step, so the hint never persists).
+        if context.get("prefer_vision_hint"):
+            mode_line += (
+                f" Fast-engine escalation for this step: {context['prefer_vision_hint']}. "
+                "Prefer Visual* tools for this step unless the DOM route is clearly sufficient."
+            )
+
         escalation_rule = """- **Self-Escalation (use SPARINGLY — default false)**: `request_escalation: true` hands the NEXT step to a stronger frontier model with deeper reasoning. Only use it when you are genuinely stuck: at least 2 different approaches to the same sub-goal already failed, the page state contradicts what you expected and you cannot explain why, or the remaining task clearly needs deeper reasoning than you can provide. NEVER use it for routine steps, a single failure, slow tool responses, or minor uncertainty — those are normal. When true, put a one-line reason in `escalation_reason`."""
 
         available_credential_domains = list(context.get("credentials_available_for") or [])
