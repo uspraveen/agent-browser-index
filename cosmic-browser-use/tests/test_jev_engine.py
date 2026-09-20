@@ -62,18 +62,19 @@ class _FakeBrowser:
 
 
 class _FakeProvider:
-    def __init__(self, text="hello"):
+    def __init__(self, text="hello", key="text"):
         self.text = text
+        self.key = key
         self.calls = []
 
     async def generate(self, messages=None, system_prompt=None, json_mode=False):
         self.calls.append({"messages": messages, "json_mode": json_mode})
-        return {"content": json.dumps({"text": self.text}), "raw_response": {}}
+        return {"content": json.dumps({self.key: self.text}), "raw_response": {}}
 
 
 class _FakeOrchestrator:
-    def __init__(self, text="hello", finalizer_response=None):
-        self.models = {LLMTier.FAST: _FakeProvider(text)}
+    def __init__(self, text="hello", key="text", finalizer_response=None):
+        self.models = {LLMTier.FAST: _FakeProvider(text, key)}
         self._finalizer_response = finalizer_response
         self.finalizer_calls = []
 
@@ -149,6 +150,17 @@ def _handler_script(script):
 
 def _decide(engine, context=None):
     return asyncio.run(engine.decide_step(context or _context(), screenshot_b64="data:image/jpeg;base64,x"))
+
+
+def _recording_handler(script):
+    """Handler that also captures every request body for assertions."""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return _handler_script(script)(request)
+
+    return handler, bodies
 
 
 # --------------------------------------------------------------------- #
@@ -422,3 +434,168 @@ class TestGates:
         engine = _engine(browser=_BrokenBrowser(), handler=_handler_script({}))
         assert _decide(engine) is None
         assert engine.stats["api_failures"] == 1
+
+
+# --------------------------------------------------------------------- #
+# Post-tour fixes: clamp, state, SAVE_NOTE, stand-down, guidance
+
+class TestCompletionClamp:
+    def test_jev_progress_never_reaches_the_completion_gate(self):
+        engine = _engine(handler=_handler_script({"operation": "CLICK", "progress": 1.0}))
+        response = _decide(engine)
+        assert response.tool_call.action_type == ActionType.SNAPSHOT_CLICK
+        # A per-page judgment must never end a cumulative-goal run; only the
+        # DONE finalizer may finish one.
+        assert response.estimated_completion == 0.9
+        assert engine.last_debug["progress"] == 1.0
+
+    def test_low_progress_is_untouched(self):
+        engine = _engine(handler=_handler_script({"operation": "CLICK", "progress": 0.4}))
+        assert _decide(engine).estimated_completion == 0.4
+
+
+class TestStateAndBounding:
+    def test_saved_notes_and_large_notes_index_reach_jev_state(self):
+        handler, bodies = _recording_handler({"operation": "CLICK"})
+        engine = _engine(handler=handler)
+        ctx = _context()
+        ctx["browser_state"]["notes"] = ["Restaurant 1: opens 09:00"]
+        ctx["browser_state"]["large_notes_index"] = [
+            {"note_id": "ln1", "title": "Hours", "contains": "hours", "summary": "s"}
+        ]
+        _decide(engine, ctx)
+        state = bodies[0]["state"]
+        assert state["notes"] == ["Restaurant 1: opens 09:00"]
+        assert state["large_notes_index"][0]["note"] == "ln1"
+
+    def test_recent_action_params_are_bounded(self):
+        handler, bodies = _recording_handler({"operation": "CLICK"})
+        engine = _engine(handler=handler)
+        ctx = _context()
+        ctx["recent_steps"] = [{
+            "action_type": "SaveLargeNote",
+            "description": "saved big extract",
+            "verification_status": "success",
+            "requested_parameters": {"content": "x" * 5000, "title": "t"},
+        }]
+        _decide(engine, ctx)
+        row = bodies[0]["state"]["recent_actions"][0]
+        assert len(row["params"]["content"]) == 200
+        assert row["params"]["title"] == "t"
+        assert len(row["detail"]) <= 200
+
+
+class TestSaveNote:
+    def test_save_note_composes_and_maps(self):
+        orchestrator = _FakeOrchestrator(text="A Light in the Attic costs 51.77", key="note")
+        engine = _engine(
+            orchestrator=orchestrator,
+            handler=_handler_script({"operation": "SAVE_NOTE"}),
+        )
+        response = _decide(engine)
+        assert response.tool_call.action_type == ActionType.SAVE_NOTE
+        assert response.tool_call.parameters == {"note": "A Light in the Attic costs 51.77"}
+        assert response.tier_used == "jev"
+        assert engine.stats["note_helper_calls"] == 1
+        payload = json.loads(orchestrator.models[LLMTier.FAST].calls[0]["messages"][0]["content"])
+        assert "already_recorded" in payload
+
+    def test_save_note_helper_decline_falls_through(self):
+        engine = _engine(
+            orchestrator=_FakeOrchestrator(text=None, key="note"),
+            handler=_handler_script({"operation": "SAVE_NOTE"}),
+        )
+        assert _decide(engine) is None
+        assert engine.stats["fallthroughs"] == 1
+
+
+class TestStandDown:
+    def test_three_fallthroughs_stand_the_engine_down(self):
+        handler, _bodies = _recording_handler({"operation": "ESCALATE_LLM"})
+        engine = _engine(handler=handler)
+        for _ in range(3):
+            assert _decide(engine) is None
+        assert engine.stats["standdowns"] == 1
+        snapshots = len(engine.browser.snapshot_calls)
+        assert _decide(engine) is None  # same page -> skipped before snapshot
+        assert len(engine.browser.snapshot_calls) == snapshots
+        assert "standing down" in engine.last_debug["skip"]
+
+    def test_navigation_lifts_the_standdown(self):
+        handler, _bodies = _recording_handler({"operation": "ESCALATE_LLM"})
+        engine = _engine(handler=handler)
+        for _ in range(3):
+            _decide(engine)
+        _decide(engine)  # stand-down skip on the same page
+        ctx = _context()
+        ctx["browser_state"]["url"] = "https://example.com/other-page"
+        assert _decide(engine, ctx) is None
+        assert len(engine.browser.snapshot_calls) == 4
+
+    def test_a_verified_jev_decision_resets_the_streak(self):
+        scripts = iter([
+            {"operation": "ESCALATE_LLM"},
+            {"operation": "ESCALATE_LLM"},
+            {"operation": "CLICK", "click": "@e3"},
+            {"operation": "ESCALATE_LLM"},
+            {"operation": "ESCALATE_LLM"},
+        ])
+
+        def handler(request):
+            return _handler_script(next(scripts))(request)
+
+        engine = _engine(handler=handler)
+        for _ in range(5):
+            _decide(engine)
+        assert engine.stats["decisions"] == 1
+        assert engine.stats["standdowns"] == 0  # never three in a row
+
+
+class TestPlannerHint:
+    def test_hint_rides_the_rules_and_expires(self):
+        handler, bodies = _recording_handler({"operation": "CLICK"})
+        engine = _engine(handler=handler)
+        engine.set_hint("set the sort dropdown before results count", steps=2)
+        _decide(engine)
+        _decide(engine)
+        _decide(engine)
+        rules = [b["questions"]["operation"]["instructions"]["rules"] for b in bodies]
+        assert "set the sort dropdown before results count" in rules[0]
+        assert "set the sort dropdown before results count" in rules[1]
+        assert "set the sort dropdown before results count" not in rules[2]
+
+    def test_blank_hints_are_ignored(self):
+        engine = _engine(handler=_handler_script({"operation": "CLICK"}))
+        engine.set_hint("   ")
+        _decide(engine)
+        assert engine._hint is None
+
+
+class TestPlannerHintParsing:
+    def test_parse_response_carries_a_bounded_hint(self):
+        from orchestrator import Orchestrator, clean_fast_engine_hint
+
+        o = Orchestrator.__new__(Orchestrator)
+        raw = json.dumps({
+            "action_type": "VisualClick",
+            "parameters": {"description": "next"},
+            "confidence": 0.9,
+            "fast_engine_hint": "  avoid   the table  " + "x" * 400,
+        })
+        response = o._parse_response(raw)
+        assert response.fast_engine_hint is not None
+        assert response.fast_engine_hint.startswith("avoid the table")
+        assert len(response.fast_engine_hint) <= 200
+        assert clean_fast_engine_hint("") is None
+        assert clean_fast_engine_hint(42) is None
+
+    def test_parse_response_without_hint_is_none(self):
+        from orchestrator import Orchestrator
+
+        o = Orchestrator.__new__(Orchestrator)
+        raw = json.dumps({
+            "action_type": "VisualClick",
+            "parameters": {"description": "next"},
+            "confidence": 0.9,
+        })
+        assert o._parse_response(raw).fast_engine_hint is None

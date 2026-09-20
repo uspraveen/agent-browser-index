@@ -1108,6 +1108,9 @@ async def run_task(
             # read-only fast path sits above the confidence rule, and a
             # stuck agent's last action is almost always a read.
             context["stuck_signal"] = stuck_signal
+            # Lets the planner's prompt offer the optional fast_engine_hint
+            # guidance channel (only meaningful when the fast path is active).
+            context["fast_engine_available"] = jev_engine is not None
             
             # Load screenshot as base64
             with open(screenshot_path, 'rb') as f:
@@ -1258,6 +1261,18 @@ async def run_task(
                 if llm_response.tier_used == "fast" and escalation_cooldown > 0:
                     escalation_cooldown -= 1
                 pending_escalation = False
+                # Guidance channel: the planner may leave a one-line
+                # correction for the fast engine's next few decisions.
+                if (
+                    jev_engine is not None
+                    and getattr(llm_response, "fast_engine_hint", None)
+                ):
+                    jev_engine.set_hint(llm_response.fast_engine_hint)
+                    cosmic_log.step(
+                        step_num,
+                        "jev.hint_set",
+                        hint=llm_response.fast_engine_hint,
+                    )
             llm_time_ms = (time.time() - llm_start) * 1000
 
             # Live overlay: count this LLM-driven step. Jev-decided steps are

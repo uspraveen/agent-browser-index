@@ -140,6 +140,18 @@ async def _close_async_openai_client(client: Optional[AsyncOpenAI]) -> None:
         await result
 
 
+def clean_fast_engine_hint(value) -> Optional[str]:
+    """Normalize the planner's optional one-line guidance for the Jev fast
+    path: whitespace-collapsed, hard-bounded, empty becomes None. Guidance is
+    a boundary marker, never a script — the bound keeps it that way."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text:
+        return None
+    return text[:200]
+
+
 class BaseLLMProvider(ABC):
     """Abstract base class for LLM providers"""
     
@@ -1665,6 +1677,17 @@ Recent search-result loop steps:
                 f" Fast-engine escalation for this step: {context['prefer_vision_hint']}. "
                 "Prefer Visual* tools for this step unless the DOM route is clearly sufficient."
             )
+        # Guidance channel: when the fast engine is active, the planner may
+        # leave a one-line correction the fast engine will read on its next
+        # few decisions. Boundary or recovery route — never micro-stepping.
+        if context.get("fast_engine_available"):
+            fast_engine_hint_doc = (
+                ',\n    "fast_engine_hint": "optional one-line correction or boundary for the fast '
+                "engine's next few decisions (e.g. 'the sort dropdown must be set before results "
+                "count'). Omit when you have nothing to correct. Never a substitute for your own action.\""
+            )
+        else:
+            fast_engine_hint_doc = ""
 
         escalation_rule = """- **Self-Escalation (use SPARINGLY — default false)**: `request_escalation: true` hands the NEXT step to a stronger frontier model with deeper reasoning. Only use it when you are genuinely stuck: at least 2 different approaches to the same sub-goal already failed, the page state contradicts what you expected and you cannot explain why, or the remaining task clearly needs deeper reasoning than you can provide. NEVER use it for routine steps, a single failure, slow tool responses, or minor uncertainty — those are normal. When true, put a one-line reason in `escalation_reason`."""
 
@@ -1753,7 +1776,7 @@ Output format (JSON):
     "estimated_completion": 0.6,
     "request_escalation": false,
     "escalation_reason": "",
-    "hand_back_to_base": false
+    "hand_back_to_base": false{fast_engine_hint_doc}
 }}
 
 Rules:
@@ -2078,6 +2101,7 @@ What is the next action to achieve the goal: {context['goal']}?
                     request_escalation=bool(data.get("request_escalation")),
                     escalation_reason=data.get("escalation_reason"),
                     hand_back_to_base=bool(data.get("hand_back_to_base")),
+                    fast_engine_hint=clean_fast_engine_hint(data.get("fast_engine_hint")),
                 )
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 pass

@@ -249,8 +249,12 @@ class LLMResponse:
     request_escalation: bool = False  # Base brain asks for the frontier model on the NEXT step
     escalation_reason: Optional[str] = None  # One-line why (required when request_escalation is true)
     hand_back_to_base: bool = False  # Escalation brain: blocker resolved, return control to base
-    tier_used: Optional[str] = None  # Which tier actually produced this decision ("fast"/"medium"/"slow")
+    tier_used: Optional[str] = None  # Which tier actually produced this decision ("fast"/"medium"/"slow"/"jev")
     parse_failed: bool = False  # True when the reply could not be parsed as a JSON decision
+    # One-line guidance the planner (base brain) may attach for the Jev fast
+    # path when it had to take over a step — a boundary or recovery route for
+    # the next few fast decisions, never step-by-step steering.
+    fast_engine_hint: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -269,6 +273,7 @@ class LLMResponse:
             "hand_back_to_base": self.hand_back_to_base,
             "tier_used": self.tier_used,
             "parse_failed": self.parse_failed,
+            "fast_engine_hint": self.fast_engine_hint,
         }
 
 
