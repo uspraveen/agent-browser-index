@@ -596,6 +596,34 @@ async def _consider_step_extension(
     return new_ceiling
 
 
+_CAPTCHA_WALL_MARKERS = ("sorry", "captcha")
+_CAPTCHA_WALL_MAX_STEPS = 3  # the model's own rule: never more than three attempts
+
+
+def _captcha_wall_url(url: str) -> bool:
+    """Known challenge-wall URL signatures (Google's /sorry/, explicit captcha
+    paths). Deliberately narrow — a normal page whose slug contains a word
+    like 'challenge' must never trip this."""
+    lowered = str(url or "").lower()
+    return any(marker in lowered for marker in _CAPTCHA_WALL_MARKERS)
+
+
+def update_captcha_wall(url: str, wall_url: str, wall_steps: int) -> tuple:
+    """Track consecutive decision steps parked on the same challenge URL.
+
+    Returns (new_wall_url, new_wall_steps, exhausted). Three steps on the wall
+    are allowed; the fourth decision sees exhausted=True and the prompt cuts
+    attempts off. Any non-wall URL resets the tracker completely.
+    """
+    if not _captcha_wall_url(url):
+        return "", 0, False
+    if url == wall_url:
+        wall_steps += 1
+    else:
+        wall_url, wall_steps = url, 0
+    return wall_url, wall_steps, wall_steps >= _CAPTCHA_WALL_MAX_STEPS
+
+
 async def run_task(
     goal: str,
     initial_url: str = None, # Optional
@@ -1010,6 +1038,8 @@ async def run_task(
     live_llm_decisions = 0
     jev_decisions = 0
     jev_fallthroughs = 0
+    captcha_wall_url = ""
+    captcha_wall_steps = 0
     
     try:
         if replay_summary and replay_summary.get("goal_completed"):
@@ -1111,6 +1141,13 @@ async def run_task(
             # Lets the planner's prompt offer the optional fast_engine_hint
             # guidance channel (only meaningful when the fast path is active).
             context["fast_engine_available"] = jev_engine is not None
+            # Deterministic CAPTCHA-wall cap: three decision steps parked on
+            # the same challenge URL with no progress, and the model is cut
+            # off from further attempts (prompt reads the flag).
+            captcha_wall_url, captcha_wall_steps, captcha_exhausted = update_captcha_wall(
+                str(browser_state.url or ""), captcha_wall_url, captcha_wall_steps
+            )
+            context["captcha_wall_exhausted"] = captcha_exhausted
             
             # Load screenshot as base64
             with open(screenshot_path, 'rb') as f:

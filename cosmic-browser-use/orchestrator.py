@@ -1619,7 +1619,7 @@ Recent search-result loop steps:
         available_tools_definitions += [
             "- PressKey(key) - Press keyboard key",
             "- ReadHistory(start_step, end_step) - Read detailed history of past steps",
-            "- AskUser(question, kind) - Ask the user a question if you are stuck, need clarification, or need to know what to do next. kind is optional: verification_code (a code/OTP they'll type back), confirm (nothing to type back - they do something like sign in or approve on their phone, then tell you when done), blocked (a CAPTCHA/bot-check you cannot solve yourself), or omit it for anything else. Returns user's answer.",
+            "- AskUser(question, kind) - Ask the user a question if you are stuck, need clarification, or need to know what to do next. kind is optional: verification_code (a code/OTP they'll type back), confirm (nothing to type back - they do something like sign in or approve on their phone, then tell you when done), blocked (a CAPTCHA/bot-check wall that beat your bounded attempts - ask them to take control and clear it, or to pick a different route), or omit it for anything else. Returns user's answer.",
         ]
         
         if dom_enabled:
@@ -1688,6 +1688,12 @@ Recent search-result loop steps:
             )
         else:
             fast_engine_hint_doc = ""
+        if context.get("captcha_wall_exhausted"):
+            mode_line += (
+                " CAPTCHA wall exhausted: three attempts without progress — the harness has cut off "
+                "further attempts on this challenge. Do NOT retry it. AskUser (kind: blocked) "
+                "recommending the user take control and clear it, or switch to a different source/route."
+            )
 
         escalation_rule = """- **Self-Escalation (use SPARINGLY — default false)**: `request_escalation: true` hands the NEXT step to a stronger frontier model with deeper reasoning. Only use it when you are genuinely stuck: at least 2 different approaches to the same sub-goal already failed, the page state contradicts what you expected and you cannot explain why, or the remaining task clearly needs deeper reasoning than you can provide. NEVER use it for routine steps, a single failure, slow tool responses, or minor uncertainty — those are normal. When true, put a one-line reason in `escalation_reason`."""
 
@@ -1732,11 +1738,11 @@ You control a browser by calling atomic tools. Each tool call is executed immedi
 - Never treat toolbar overflow buttons, kebab menus, option menus, share/save/report menus, side-panel menus, or recommendation-card menus as text expansion controls.
 - If clicking a "more" target opens a menu, popup, overlay, report option, or unrelated panel, close/ignore it and save the best visible answer instead of continuing expansion attempts.
 
-## CREDENTIAL / MFA HANDOFF (CRITICAL)
+## CREDENTIAL / MFA / CAPTCHA HANDOFF (CRITICAL)
 A password field or verification-code field is usually caught automatically before you ever see this prompt — but some flows have no input field at all (e.g. "Approve this sign-in on your phone", a CAPTCHA, a security-question dropdown, a passkey/biometric prompt). If you land on any of these:
-- Do NOT attempt to guess, generate, or fill in a password, security code, CAPTCHA answer, or security-question answer yourself. You do not have the user's credentials and cannot pass a CAPTCHA.
-- Do NOT click around looking for a way past it. There isn't one without the user.
-- Immediately use AskUser with a clear, specific question (what step you're stuck on, what the user needs to do), and wait for their reply before continuing.
+- Passwords, OTP/verification codes, security-question answers, passkeys/biometrics: NEVER guess, generate, or fill these — they belong to the user. AskUser (kind: verification_code) and wait for the real value or the user's action.
+- CAPTCHAs and bot-check walls: when the user has asked you to get past one, you MAY attempt it with your normal tools — click the checkbox or "I'm not a robot" control, VisualClick/DOMClick what the challenge shows. Two hard limits: image-decode challenges (grids, distorted text) are worth at most ONE look — do not grind them; and NEVER make more than THREE attempts on the same challenge without the page progressing. Never use a third-party CAPTCHA-solving service, and never attempt biometric or passkey prompts — those are AskUser territory. When the harness flags the wall as exhausted (context: captcha_wall_exhausted) or your three attempts are spent, STOP: AskUser (kind: blocked) recommending the user take control and clear it, or switch to a different source/route.
+- Keep using AskUser for anything requiring the user's credentials or presence, with a clear, specific question (what step you're stuck on, what the user needs to do), and wait for their reply before continuing.
 - Once the user replies, re-read the CURRENT screenshot/URL rather than assuming you know what page you're on now — they may have ended up somewhere you didn't expect (e.g. a "device confirmed" page, or straight to the logged-in destination).
 
 ## COMMIT AUTHORIZATION (CRITICAL)
