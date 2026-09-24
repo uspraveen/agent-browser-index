@@ -455,6 +455,34 @@ class TestCompletionClamp:
 
 
 class TestStateAndBounding:
+    def test_truncated_field_preview_is_labeled_in_decision_and_text_helper(self):
+        full_url = "https://www.linkedin.com/in/praveen-raj-2026"
+        entries = _entries()
+        entries[0].update(
+            value=full_url[:40],
+            value_truncated=True,
+            value_length=len(full_url),
+        )
+        handler, bodies = _recording_handler({"operation": "TYPE_TEXT"})
+        orchestrator = _FakeOrchestrator(text=full_url)
+        engine = _engine(
+            browser=_FakeBrowser(entries=entries),
+            orchestrator=orchestrator,
+            handler=handler,
+        )
+        response = _decide(engine)
+
+        assert response.tool_call.parameters["text"] == full_url
+        assert bodies[0]["state"]["elements"][0]["value_truncated"] is True
+        target = bodies[0]["questions"]["type_text_target"]["criteria"]["@e1"]
+        assert target["current_value_truncated"] is True
+        assert target["current_value_length"] == len(full_url)
+        payload = json.loads(
+            orchestrator.models[LLMTier.FAST].calls[0]["messages"][0]["content"]
+        )
+        assert payload["field"]["current_value_truncated"] is True
+        assert payload["field"]["current_value_length"] == len(full_url)
+
     def test_saved_notes_and_large_notes_index_reach_jev_state(self):
         handler, bodies = _recording_handler({"operation": "CLICK"})
         engine = _engine(handler=handler)

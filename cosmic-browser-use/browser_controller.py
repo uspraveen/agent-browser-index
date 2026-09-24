@@ -571,7 +571,17 @@ _SNAPSHOT_COLLECT_JS = """
       checked: null,
       selected: "",
     };
-    if (role === "textbox") entry.value = (ty === "password") ? "********" : clean(el.value).slice(0, 40);
+    if (role === "textbox") {
+      // Keep the bounded preview, but show when it omits the end of a value.
+      // aria-secret needs the same masking as a password input.
+      const secret = ty === "password" || el.getAttribute("aria-secret") === "true";
+      const value = secret ? "" : clean(el.value);
+      entry.value = secret ? "********" : value.slice(0, 40);
+      if (!secret && value.length > 40) {
+        entry.value_truncated = true;
+        entry.value_length = value.length;
+      }
+    }
     if (role === "checkbox" || role === "radio" || role === "switch") entry.checked = !!el.checked;
     if (ty === "password" || el.getAttribute("aria-secret") === "true") entry.secret = true;
     const expanded = el.getAttribute("aria-expanded");
@@ -670,6 +680,8 @@ def format_snapshot_lines(entries: List[Dict[str, Any]], start_ref: int = 1) -> 
             bits.append(f'"{name}"')
         if e.get("value"):
             bits.append(f"value='{e['value']}'")
+            if e.get("value_truncated"):
+                bits.append(f"[truncated; {e.get('value_length', '>40')} characters total]")
         if e.get("checked") is not None:
             bits.append("checked" if e.get("checked") else "unchecked")
         if e.get("selected"):
@@ -4357,6 +4369,51 @@ class BrowserController:
             except Exception:
                 return None
 
+    async def _plain_text_already_filled(self, locator, text: str, press_enter: bool) -> bool:
+        """Skip only an exact repeat on an ordinary editable field.
+
+        A combobox, autocomplete, password, or press_enter action may still
+        need focus/keyboard events even when its visible text already matches.
+        Unknown field state always takes the existing typing path.
+        """
+        if press_enter or not isinstance(text, str) or not text:
+            return False
+        try:
+            exact_plain_match = await locator.evaluate(
+                """(el, expected) => {
+                    const tag = (el.tagName || '').toLowerCase();
+                    if (tag !== 'input' && tag !== 'textarea') return false;
+                    const type = (el.type || 'text').toLowerCase();
+                    if (tag === 'input' && !['text', 'email', 'url', 'tel', 'search', 'number'].includes(type)) return false;
+                    if (el.disabled || el.readOnly || el.getAttribute('aria-readonly') === 'true'
+                        || el.getAttribute('aria-secret') === 'true' || el.closest('[inert]')) return false;
+                    const role = (el.getAttribute('role') || '').toLowerCase();
+                    if (role && !['textbox', 'searchbox', 'spinbutton'].includes(role)) return false;
+                    if (el.hasAttribute('aria-autocomplete') || el.hasAttribute('aria-controls')
+                        || el.hasAttribute('aria-owns') || el.hasAttribute('aria-haspopup')
+                        || el.hasAttribute('list')) return false;
+                    return el.value === expected;
+                }""",
+                text,
+            )
+            return bool(exact_plain_match) and not await self._is_combobox_like(locator)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _already_filled_result(action_type: ActionType, target: str, label: str = "") -> ActionResult:
+        """Report a harmless duplicate without echoing the field's value."""
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            description=(
+                f"Skipped {action_type.value} {target}: field already contains "
+                "the requested text; move to the next requirement"
+            ),
+            output=json.dumps({"already_filled": True, "label": label or None}),
+            metadata={"already_filled": True, "typed_into_label": label or None},
+        )
+
     @staticmethod
     async def _is_combobox_like(locator) -> bool:
         """True when the target is a custom dropdown/searchable select.
@@ -4600,6 +4657,8 @@ class BrowserController:
                 description=f"SnapshotType {ref}",
                 error=f"{parse_ref(ref)} is an {input_type or 'unknown-type'} input, not a text field.",
             )
+        if await self._plain_text_already_filled(locator, text, press_enter):
+            return self._already_filled_result(ActionType.SNAPSHOT_TYPE, parse_ref(ref) or str(ref), target_name)
         try:
             await locator.scroll_into_view_if_needed(timeout=2000)
             box = await locator.bounding_box(timeout=2000)
@@ -5069,6 +5128,8 @@ class BrowserController:
                             last_err = count_err
                             continue
                         try:
+                            if await self._plain_text_already_filled(locator, text, press_enter):
+                                return self._already_filled_result(ActionType.DOM_TYPE, selector)
                             await locator.scroll_into_view_if_needed(timeout=2000)
                             box = await locator.bounding_box(timeout=2000)
                             if box:
@@ -5239,6 +5300,11 @@ class BrowserController:
                 except Exception as e:
                     result = {"ok": False, "error": str(e)}
                 if result and result.get("ok"):
+                    type_locator = frame.locator(selector).nth(int(result.get("all_index") or 0))
+                    if await self._plain_text_already_filled(type_locator, text, press_enter):
+                        return self._already_filled_result(
+                            ActionType.DOM_TYPE, selector, str(result.get("label") or "")
+                        )
                     await self.cursor_overlay.show_click(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
                     await self.cursor_overlay.show_typing_start(self.page, int(result.get("x", 0)), int(result.get("y", 0)))
                     previous_value = str(result.get("previous_value") or "")

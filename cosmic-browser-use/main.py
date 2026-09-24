@@ -1664,7 +1664,13 @@ async def run_task(
                 credentials_request = action_result
                 break
             if llm_response.estimated_completion >= 0.95:
-                if action_result and action_result.success:
+                # An idempotent type skip proves only that one field is already
+                # filled. It is not evidence that the whole goal is complete.
+                if (
+                    action_result
+                    and action_result.success
+                    and not action_result.metadata.get("already_filled")
+                ):
                     print("\n🎉 GOAL ACHIEVED - Task complete!")
                     task_status = "success"
                     await demo_overlay.update(

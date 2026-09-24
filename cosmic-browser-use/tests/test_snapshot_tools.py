@@ -14,9 +14,11 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from cosmic_types import ActionType  # noqa: E402
 from browser_controller import (  # noqa: E402
     _SNAPSHOT_INTERACTIVE_CSS,
     BrowserController,
@@ -83,6 +85,15 @@ class TestSnapshotLines:
         assert "@e1 textbox \"Legal Name\" value='Test User'" in lines[0]
         assert "checked" in lines[1]
         assert "unchecked" in lines[2]
+
+    def test_long_value_preview_is_explicitly_marked(self):
+        preview = "https://www.linkedin.com/in/praveen-raj-2026"
+        lines = format_snapshot_lines([{
+            "tag": "input", "role": "textbox", "name": "LinkedIn",
+            "value": preview[:40], "value_truncated": True, "value_length": len(preview),
+        }])
+        assert f"value='{preview}'" not in lines[0]
+        assert f"[truncated; {len(preview)} characters total]" in lines[0]
 
     def test_truncation_marker_ends_the_map(self):
         lines = format_snapshot_lines([
@@ -272,3 +283,89 @@ class TestCollectSnapshot:
         assert collected["total"] == 3
         # The collector JS flagged the overflow; the structured core honors it.
         assert collected["truncated"] is True
+
+
+class TestAlreadyFilledType:
+    def test_snapshot_type_skips_exact_repeat_before_click_or_clear(self):
+        locator = Mock()
+        locator.evaluate = AsyncMock(side_effect=[
+            {"tag": "input", "type": "url", "editable": False},
+            True,
+        ])
+        locator.scroll_into_view_if_needed = AsyncMock()
+        controller = object.__new__(BrowserController)
+        controller._snapshot_resolve = AsyncMock(return_value=(
+            locator, None, {"fingerprint": {"name": "LinkedIn"}},
+        ))
+        controller._is_combobox_like = AsyncMock(return_value=False)
+
+        result = asyncio.run(controller._snapshot_type(
+            "@e7", "https://www.linkedin.com/in/praveen-raj",
+        ))
+        assert result.success is True
+        assert result.action_type == ActionType.SNAPSHOT_TYPE
+        assert result.metadata["already_filled"] is True
+        locator.scroll_into_view_if_needed.assert_not_awaited()
+
+    def test_autocomplete_and_enter_still_take_the_typing_path(self):
+        controller = object.__new__(BrowserController)
+        locator = Mock()
+        locator.evaluate = AsyncMock(return_value=True)
+        controller._is_combobox_like = AsyncMock(return_value=True)
+        assert not asyncio.run(controller._plain_text_already_filled(
+            locator, "San Mateo", False,
+        ))
+        controller._is_combobox_like.assert_awaited_once()
+        locator.evaluate.reset_mock()
+        assert not asyncio.run(controller._plain_text_already_filled(
+            locator, "San Mateo", True,
+        ))
+        locator.evaluate.assert_not_awaited()
+
+    def test_different_value_is_never_skipped(self):
+        controller = object.__new__(BrowserController)
+        locator = Mock()
+        locator.evaluate = AsyncMock(return_value=False)
+        controller._is_combobox_like = AsyncMock()
+        assert not asyncio.run(controller._plain_text_already_filled(
+            locator, "new value", False,
+        ))
+        controller._is_combobox_like.assert_not_awaited()
+
+    def test_dom_type_playwright_selector_skips_repeat(self):
+        controller = object.__new__(BrowserController)
+        controller.dom_calls = 0
+        controller._human_dwell_after_load = AsyncMock()
+        controller._frame_search_order = lambda: [object()]
+        controller._is_playwright_selector = lambda _selector: True
+        controller._tag_fallback_selectors = lambda _selector: []
+        locator = Mock()
+        locator.scroll_into_view_if_needed = AsyncMock()
+        controller._unique_visible_locator = AsyncMock(return_value=locator)
+        controller._plain_text_already_filled = AsyncMock(return_value=True)
+
+        result = asyncio.run(controller._dom_type("input[name=linkedin]", "url"))
+        assert result.success is True
+        assert result.action_type == ActionType.DOM_TYPE
+        assert result.metadata["already_filled"] is True
+        locator.scroll_into_view_if_needed.assert_not_awaited()
+
+    def test_dom_type_css_selector_skips_repeat(self):
+        controller = object.__new__(BrowserController)
+        controller.dom_calls = 0
+        controller._human_dwell_after_load = AsyncMock()
+        controller._is_playwright_selector = lambda _selector: False
+        controller._plain_text_already_filled = AsyncMock(return_value=True)
+        locator = Mock()
+        locator.nth.return_value = locator
+        frame = Mock()
+        frame.evaluate = AsyncMock(return_value={
+            "ok": True, "all_index": 0, "label": "LinkedIn",
+        })
+        frame.locator.return_value = locator
+        controller._frame_search_order = lambda: [frame]
+
+        result = asyncio.run(controller._dom_type("input[name=linkedin]", "url"))
+        assert result.success is True
+        assert result.action_type == ActionType.DOM_TYPE
+        assert result.metadata["already_filled"] is True
