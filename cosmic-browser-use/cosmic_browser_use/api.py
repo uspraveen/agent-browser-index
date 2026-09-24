@@ -239,6 +239,7 @@ async def run_goal(
     goal: str,
     *,
     initial_url: Optional[str] = None,
+    user_timezone: Optional[str] = None,
     max_steps: int = 40,
     memory_mode: str = "off",
     headless: bool = True,
@@ -341,6 +342,7 @@ async def run_goal(
     run_kwargs: Dict[str, Any] = dict(
         goal=str(goal).strip(),
         initial_url=initial_url,
+        user_timezone=user_timezone,
         max_steps=max(1, int(max_steps)),
         fast_model_config=fast_config,
         medium_model_config=medium_config,

@@ -28,6 +28,8 @@ import httpx
 from openai import AsyncOpenAI, APIConnectionError, APIStatusError
 
 # UPDATED IMPORTS
+from time_context import current_time_context
+
 from cosmic_types import (
     LLMResponse, ToolCall, ActionType,
     LLMProvider, LLMTier, LLMConfig
@@ -1719,6 +1721,7 @@ Recent search-result loop steps:
         ) if escalated else ""
 
         return f"""You are a high-speed browser automation agent. Your goal is: {context['goal']}
+{current_time_context(context.get('user_timezone'))}
 
 You control a browser by calling atomic tools. Each tool call is executed immediately.
 {mode_line}

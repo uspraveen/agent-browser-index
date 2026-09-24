@@ -655,6 +655,7 @@ async def run_task(
     replay_max_actions: int = 8,
     interaction_mode: str = "hybrid",
     decision_engine: str = "jev",
+    user_timezone: str = None,
     demo_overlay_enabled: bool = False,
     ask_user_handler=None,
     chrome_profile: str = None,
@@ -1133,6 +1134,7 @@ async def run_task(
             # 3. Get LLM decision
             llm_start = time.time()
             context = memory.get_context_for_llm(screenshot_path)
+            context["user_timezone"] = user_timezone
             # Routed to the tier selector AND shown to the model. Setting
             # previous_confidence alone was not enough: _select_tier's
             # read-only fast path sits above the confidence rule, and a

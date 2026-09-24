@@ -163,6 +163,15 @@ def _recording_handler(script):
     return handler, bodies
 
 
+def test_jev_state_includes_current_clock():
+    handler, bodies = _recording_handler({"operation": "CLICK", "click": "@e3"})
+    engine = _engine(handler=handler)
+    _decide(engine, _context(user_timezone="America/Chicago"))
+    assert bodies
+    assert "Current date and time (UTC):" in bodies[0]["state"]["current_time"]
+    assert "User's local time:" in bodies[0]["state"]["current_time"]
+
+
 # --------------------------------------------------------------------- #
 # Action space
 

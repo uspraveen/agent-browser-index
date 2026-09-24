@@ -30,6 +30,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from time_context import current_time_context
+
 from cosmic_types import ActionType, LLMResponse, LLMTier, ToolCall
 
 # Visible text for Jev's page state. Offscreen and hidden content stays out
@@ -485,6 +487,7 @@ class JevEngine:
         page_text = await self._visible_text()
         space = build_action_space(entries)
         state = {
+            "current_time": current_time_context(context.get("user_timezone")),
             "page": {
                 "url": (context.get("browser_state") or {}).get("url", ""),
                 "title": (context.get("browser_state") or {}).get("title", ""),
@@ -853,6 +856,7 @@ class JevEngine:
         """Field value for a TYPE_TEXT decision."""
         payload = {
             "goal": goal,
+            "current_time": current_time_context(context.get("user_timezone")),
             "field": {
                 "label": entry.get("name", ""),
                 "role": entry.get("role", ""),
