@@ -9,7 +9,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cosmic_types import ActionResult, ActionType  # noqa: E402
-from main import _wait_for_verification_settle  # noqa: E402
+from main import VerificationProfile, _wait_for_verification_settle  # noqa: E402
+from orchestrator import Orchestrator  # noqa: E402
 
 
 class SettleBrowser:
@@ -85,4 +86,75 @@ def test_unavailable_canvas_frame_falls_back_to_original_deadline():
         )
         assert mode == "deadline" and waited_ms >= 45
         assert browser.canvas_calls == 1
+    asyncio.run(scenario())
+
+
+def test_model_profile_request_is_parsed_without_changing_the_action():
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    for value, expected in (("realtime_canvas", "realtime_canvas"), ("standard", "standard"),
+                            ("auto", "auto"), ("anything_else", None), ([], None)):
+        import json
+        response = orchestrator._parse_response(json.dumps({
+            "action_type": "PressKey", "parameters": {"key": "Space"},
+            "verification_profile_request": value,
+        }))
+        assert response.tool_call.action_type == ActionType.PRESS_KEY
+        assert response.verification_profile_request == expected
+        assert response.to_dict()["verification_profile_request"] == expected
+
+
+def test_profile_scopes_to_page_and_url():
+    profile = VerificationProfile()
+    page_a, page_b = object(), object()
+    profile.request("realtime_canvas", page_a, "https://game.test/")
+    assert not profile.sync(page_a, "https://game.test/")
+    assert profile.mode == "realtime_canvas"
+    assert profile.sync(page_a, "https://other.test/")
+    assert profile.mode == "auto"
+    profile.request("standard", page_a, "https://game.test/")
+    assert profile.sync(page_b, "https://game.test/")
+    assert profile.mode == "auto"
+    profile.request("realtime_canvas", page_a, "https://game.test/")
+    assert profile.after_action(action(ActionType.RELOAD), page_a, "https://game.test/", None, True) == "navigation_or_tab_action"
+    assert profile.mode == "auto"
+    profile.request("realtime_canvas", page_a, "about:blank")
+    assert profile.after_action(
+        action(ActionType.NAVIGATE), page_a, "https://game.test/", "realtime_canvas", True,
+    ) is None
+    assert profile.mode == "realtime_canvas"
+    assert profile.url == "https://game.test/"
+    assert profile.after_action(
+        action(ActionType.SWITCH_TAB), page_b, "https://game.test/", None, True,
+    ) == "navigation_or_tab_action"
+    assert profile.mode == "auto"
+
+
+def test_requested_canvas_profile_keeps_all_runtime_guards():
+    async def scenario():
+        browser = SettleBrowser(canvas_frame=True)
+        page = SimpleNamespace(url="https://game.test/")
+        keypress = action(ActionType.PRESS_KEY)
+        mode, _ = await _wait_for_verification_settle(
+            browser, page, keypress, 0.05,
+            goal="Reach the next obstacle", key="Space", profile="realtime_canvas",
+        )
+        assert mode == "canvas_frame"
+        for result, key, profile in (
+            (keypress, "Enter", "realtime_canvas"),
+            (action(ActionType.DOM_CLICK), "Space", "realtime_canvas"),
+            (keypress, "Space", "standard"),
+        ):
+            mode, waited_ms = await _wait_for_verification_settle(
+                browser, page, result, 0.03,
+                goal="Play the Dino cactus game", key=key, profile=profile,
+            )
+            assert mode == "deadline" and waited_ms >= 25
+        assert browser.canvas_calls == 1
+        browser.canvas_frame = False
+        mode, waited_ms = await _wait_for_verification_settle(
+            browser, page, keypress, 0.04,
+            goal="Reach the next obstacle", key="Space", profile="realtime_canvas",
+        )
+        assert mode == "deadline" and waited_ms >= 35
+
     asyncio.run(scenario())

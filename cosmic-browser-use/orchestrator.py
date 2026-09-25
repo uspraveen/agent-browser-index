@@ -1785,7 +1785,8 @@ Output format (JSON):
     "estimated_completion": 0.6,
     "request_escalation": false,
     "escalation_reason": "",
-    "hand_back_to_base": false{fast_engine_hint_doc}
+    "hand_back_to_base": false,
+    "verification_profile_request": null{fast_engine_hint_doc}
 }}
 
 Rules:
@@ -1798,6 +1799,7 @@ Rules:
 - **Scroll-to-Extract Rule**: If you have scrolled 2 times on the SAME page searching for specific text/data (a price, a row in a table, a named item in a long list) and still have not found it, STOP scrolling. Switch to DOMExtract on the content container — long docs/pricing/table pages are exactly the "hard to read visually" case DOMExtract exists for. Do not scroll a 3rd time first.
 {dropdown_rule}
 - Set verification_hint for state changes (URL, title, element appearance)
+- Optional `verification_profile_request`: `realtime_canvas` for fast-changing canvas gameplay, `standard` for the full settle deadline, or `auto` to return to the default. Omit it unless changing the profile. The request applies to this page until navigation/tab change; it never disables screenshot/hash/DOM verification. The runtime still requires a supported keypress, a visible canvas, and no focused text field before using a rendered-frame wait. Ordinary page actions keep their normal settle deadline.
 - Set confidence honestly (it routes difficulty). Low confidence does NOT excuse passive actions: if uncertain, gather information (search, DOMExtract) instead of waiting. The harness escalates only on repeated stuck-signals, never on a single low number.
 - Your `action_type` must actually DO what your `reasoning` says. If your reasoning says "I'll search X next", the action must be that search (Navigate/DOMClick/VisualType) — never a TimedWait placeholder.
 - Estimate completion: 0.0 = just started, 1.0 = goal achieved
@@ -1850,6 +1852,7 @@ Current progress: {context['estimated_progress']:.0%} complete
             {"type": "text", "text": f"""Current state:
 URL: {context['browser_state']['url'] if context['browser_state'] else 'N/A'}
 Step: {context['current_step']}/{context['max_steps']}
+Verification profile: {context.get('verification_profile', 'auto')}
 
 ## ACTIVE TABS
 {self._format_tabs(context.get('browser_state'))}
@@ -2111,6 +2114,12 @@ What is the next action to achieve the goal: {context['goal']}?
                     escalation_reason=data.get("escalation_reason"),
                     hand_back_to_base=bool(data.get("hand_back_to_base")),
                     fast_engine_hint=clean_fast_engine_hint(data.get("fast_engine_hint")),
+                    verification_profile_request=(
+                        data.get("verification_profile_request")
+                        if isinstance(data.get("verification_profile_request"), str)
+                        and data.get("verification_profile_request") in {"auto", "standard", "realtime_canvas"}
+                        else None
+                    ),
                 )
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 pass

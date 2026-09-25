@@ -255,6 +255,9 @@ class LLMResponse:
     # path when it had to take over a step — a boundary or recovery route for
     # the next few fast decisions, never step-by-step steering.
     fast_engine_hint: Optional[str] = None
+    # Advisory settle policy request. The runtime validates the page/action;
+    # screenshot, hash, DOM and commit verification remain mandatory.
+    verification_profile_request: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -274,6 +277,7 @@ class LLMResponse:
             "tier_used": self.tier_used,
             "parse_failed": self.parse_failed,
             "fast_engine_hint": self.fast_engine_hint,
+            "verification_profile_request": self.verification_profile_request,
         }
 
 

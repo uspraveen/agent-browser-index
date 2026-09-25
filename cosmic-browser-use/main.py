@@ -70,6 +70,49 @@ _NO_PAGE_SETTLE_ACTIONS = {
 }
 
 
+_PAGE_CONTEXT_ACTIONS = {
+    ActionType.NAVIGATE, ActionType.GO_BACK, ActionType.GO_FORWARD,
+    ActionType.RELOAD, ActionType.NEW_TAB, ActionType.SWITCH_TAB,
+    ActionType.CLOSE_TAB,
+}
+
+
+class VerificationProfile:
+    """A model's settle preference, scoped to one page and exact URL."""
+
+    def __init__(self):
+        self.mode = "auto"
+        self.page = None
+        self.url = ""
+
+    def request(self, mode: str, page, url: str) -> None:
+        if not isinstance(mode, str) or mode not in {"auto", "standard", "realtime_canvas"}:
+            return
+        self.mode = mode
+        self.page = page if mode != "auto" else None
+        self.url = url if mode != "auto" else ""
+
+    def sync(self, page, url: str) -> bool:
+        """Reset when navigation, tab control or a page redirect changes context."""
+        if self.mode != "auto" and (page is not self.page or url != self.url):
+            self.request("auto", page, url)
+            return True
+        return False
+
+    def after_action(
+        self, action: ActionResult, page, url: str, request: Optional[str], verified: bool,
+    ) -> Optional[str]:
+        """Keep a request made on navigation, otherwise expire on context change."""
+        if action.success and action.action_type in _PAGE_CONTEXT_ACTIONS:
+            if request is not None and verified:
+                self.request(request, page, url)
+                return None
+            was_overridden = self.mode != "auto"
+            self.request("auto", page, url)
+            return "navigation_or_tab_action" if was_overridden else None
+        return "page_or_url_changed" if self.sync(page, url) else None
+
+
 def _is_realtime_canvas_goal(goal: str) -> bool:
     """Keep next-frame sampling limited to explicit game-playing goals."""
     text = (goal or "").lower()
@@ -86,11 +129,13 @@ async def _wait_for_verification_settle(
     *,
     goal: str = "",
     key: str = "",
+    profile: str = "auto",
 ) -> tuple[str, float]:
     """Wait for action evidence, retaining the old deadline on uncertainty.
 
     A rendered game-canvas frame may end the wait early for an explicit
-    game task. All other page actions keep the original deadline. A fresh
+    game task or guarded model request. All other page actions keep the
+    original deadline. A fresh
     after-state capture and the full verifier always follow.
     """
     started = time.monotonic()
@@ -102,7 +147,7 @@ async def _wait_for_verification_settle(
     if (
         action_result.success
         and action_result.action_type == ActionType.PRESS_KEY
-        and _is_realtime_canvas_goal(goal)
+        and (profile == "realtime_canvas" or (profile == "auto" and _is_realtime_canvas_goal(goal)))
         and ("space" if key == " " else str(key).strip().lower()) in {"space", "arrowup", "arrowdown"}
     ):
         try:
@@ -1106,6 +1151,7 @@ async def run_task(
     jev_fallthroughs = 0
     captcha_wall_url = ""
     captcha_wall_steps = 0
+    verification_profile = VerificationProfile()
     
     try:
         if replay_summary and replay_summary.get("goal_completed"):
@@ -1175,6 +1221,8 @@ async def run_task(
             screenshot_path, screenshot_hash, browser_state = await browser.capture_state(
                 f"step_{step_num:03d}"
             )
+            if verification_profile.sync(browser.page, browser_state.url):
+                cosmic_log.step(step_num, "verification_profile.reset", reason="page_or_url_changed")
             capture_time_ms = (time.time() - capture_start) * 1000
             
             print(f"📸 Screenshot: {screenshot_path}")
@@ -1200,6 +1248,7 @@ async def run_task(
             llm_start = time.time()
             context = memory.get_context_for_llm(screenshot_path)
             context["user_timezone"] = user_timezone
+            context["verification_profile"] = verification_profile.mode
             # Routed to the tier selector AND shown to the model. Setting
             # previous_confidence alone was not enough: _select_tier's
             # read-only fast path sits above the confidence rule, and a
@@ -1378,6 +1427,13 @@ async def run_task(
                         hint=llm_response.fast_engine_hint,
                     )
             llm_time_ms = (time.time() - llm_start) * 1000
+            requested_profile = getattr(llm_response, "verification_profile_request", None)
+            if not getattr(llm_response, "parse_failed", False) and requested_profile is not None:
+                verification_profile.request(requested_profile, browser.page, browser_state.url)
+                cosmic_log.step(
+                    step_num, "verification_profile.request",
+                    requested=requested_profile, effective=verification_profile.mode,
+                )
 
             # Live overlay: count this LLM-driven step. Jev-decided steps are
             # fast-path, not LLM-driven — they get their own counter so the
@@ -1577,6 +1633,7 @@ async def run_task(
                     action_result,
                     goal=config.goal,
                     key=llm_response.tool_call.parameters.get("key", ""),
+                    profile=verification_profile.mode,
                 )
                 try:
                     after_screenshot_path, after_screenshot_hash, new_browser_state = await browser.capture_state(f"step_{step_num:03d}_after")
@@ -1618,6 +1675,12 @@ async def run_task(
                     verification_status = VerificationStatus.ERROR
                     change_score = 0.0
                 verification_time_ms = (time.time() - verification_start) * 1000
+            profile_reset_reason = verification_profile.after_action(
+                action_result, browser.page, new_browser_state.url, requested_profile,
+                verification_status != VerificationStatus.ERROR,
+            )
+            if profile_reset_reason:
+                cosmic_log.step(step_num, "verification_profile.reset", reason=profile_reset_reason)
             
             action_result.verification_status = verification_status
             action_result.state_change_score = change_score
@@ -1659,6 +1722,7 @@ async def run_task(
                 verification_time_ms=verification_time_ms,
                 settle_mode=settle_mode,
                 settle_wait_ms=settle_wait_ms,
+                verification_profile=verification_profile.mode,
             )
             
             # 8. Add to memory
