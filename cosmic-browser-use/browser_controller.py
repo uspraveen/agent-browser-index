@@ -6234,6 +6234,40 @@ class BrowserController:
             return await self._hint_selector_visible(value)
         return None
 
+    async def wait_for_canvas_input_frame(self) -> bool:
+        """Observe two rendered frames after a key in a visible game canvas.
+
+        This is only called for explicit real-time game tasks. It does not
+        declare the action successful; the normal after-screenshot verifier
+        still decides that, with a deadline fallback if nothing changed.
+        """
+        if self.page is None:
+            return False
+        try:
+            return bool(await asyncio.wait_for(self.page.evaluate(r"""async () => {
+                const focus = document.activeElement;
+                if (focus && (['INPUT', 'TEXTAREA', 'SELECT'].includes(focus.tagName) || focus.isContentEditable))
+                    return false;
+                const visibleGameCanvas = [...document.querySelectorAll('canvas')].some(canvas => {
+                    const rect = canvas.getBoundingClientRect();
+                    const style = getComputedStyle(canvas);
+                    return rect.width >= 300 && rect.height >= 100 &&
+                        rect.right > 0 && rect.bottom > 0 &&
+                        rect.left < innerWidth && rect.top < innerHeight &&
+                        style.display !== 'none' && style.visibility !== 'hidden';
+                });
+                if (!visibleGameCanvas) return false;
+                return await new Promise(resolve => {
+                    const timer = setTimeout(() => resolve(false), 150);
+                    requestAnimationFrame(() => requestAnimationFrame(() => {
+                        clearTimeout(timer);
+                        resolve(true);
+                    }));
+                });
+            }"""), timeout=0.25))
+        except Exception:
+            return False
+
     async def _hint_selector_visible(self, selector: str) -> Optional[bool]:
         """Best-effort main-frame check that a CSS selector matches a visible element.
 

@@ -8,6 +8,7 @@ import argparse
 import json
 import time
 import sys
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional
@@ -50,6 +51,70 @@ load_dotenv()
 # ==============================================================================
 
 MIMO_DEFAULT_URL = "https://uspraveenraj--mimo-vl-7b-rl-serve.modal.run"
+
+
+# These actions do not dispatch a new page mutation after returning. Keep the
+# normal after-state capture, but do not wait an arbitrary extra half-second.
+_NO_PAGE_SETTLE_ACTIONS = {
+    ActionType.DOM_SNAPSHOT,
+    ActionType.SCREENSHOT,
+    ActionType.SAVE_NOTE,
+    ActionType.SAVE_LARGE_NOTE,
+    ActionType.READ_LARGE_NOTE,
+    ActionType.LIST_LARGE_NOTES,
+    ActionType.SEARCH_LARGE_NOTES,
+    ActionType.DELETE_NOTE,
+    ActionType.EDIT_NOTE,
+    ActionType.TIMED_WAIT,
+    ActionType.VISUAL_WAIT,
+}
+
+
+def _is_realtime_canvas_goal(goal: str) -> bool:
+    """Keep next-frame sampling limited to explicit game-playing goals."""
+    text = (goal or "").lower()
+    return bool(re.search(r"\b(play|playing|beat|jump|score|avoid)\b", text)) and bool(
+        re.search(r"\b(game|dino|t-?rex|runner|cactus)\b", text)
+    )
+
+
+async def _wait_for_verification_settle(
+    browser: BrowserController,
+    before_state,
+    action_result: ActionResult,
+    max_wait_seconds: float = 0.5,
+    *,
+    goal: str = "",
+    key: str = "",
+) -> tuple[str, float]:
+    """Wait for action evidence, retaining the old deadline on uncertainty.
+
+    A rendered game-canvas frame may end the wait early for an explicit
+    game task. All other page actions keep the original deadline. A fresh
+    after-state capture and the full verifier always follow.
+    """
+    started = time.monotonic()
+    if action_result.success and action_result.action_type in _NO_PAGE_SETTLE_ACTIONS:
+        return "action_complete", 0.0
+
+    max_wait_seconds = max(0.0, max_wait_seconds)
+    deadline = started + max_wait_seconds
+    if (
+        action_result.success
+        and action_result.action_type == ActionType.PRESS_KEY
+        and _is_realtime_canvas_goal(goal)
+        and ("space" if key == " " else str(key).strip().lower()) in {"space", "arrowup", "arrowdown"}
+    ):
+        try:
+            if await browser.wait_for_canvas_input_frame():
+                return "canvas_frame", (time.monotonic() - started) * 1000
+        except Exception:
+            pass
+
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+    return "deadline", (time.monotonic() - started) * 1000
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -1497,6 +1562,8 @@ async def run_task(
                 ActionType.PARSE_ERROR,
             }
             if action_result.action_type in read_only_action_types:
+                settle_mode = "read_only"
+                settle_wait_ms = 0.0
                 after_screenshot_path = screenshot_path
                 after_screenshot_hash = screenshot_hash
                 new_browser_state = browser_state
@@ -1504,7 +1571,13 @@ async def run_task(
                 change_score = 0.0
                 verification_time_ms = (time.time() - verification_start) * 1000
             else:
-                await asyncio.sleep(0.5)
+                settle_mode, settle_wait_ms = await _wait_for_verification_settle(
+                    browser,
+                    browser_state,
+                    action_result,
+                    goal=config.goal,
+                    key=llm_response.tool_call.parameters.get("key", ""),
+                )
                 try:
                     after_screenshot_path, after_screenshot_hash, new_browser_state = await browser.capture_state(f"step_{step_num:03d}_after")
                     verification_status, change_score = await browser.verify_action(
@@ -1514,6 +1587,26 @@ async def run_task(
                         action_description=action_result.description,
                         action_type=llm_response.tool_call.action_type,
                     )
+                    # A fast observation that does not confirm the action must
+                    # not replace the conservative baseline. Capture again at
+                    # its old deadline before persisting the step.
+                    retry_at_deadline = (
+                        settle_mode == "canvas_frame" and verification_status == VerificationStatus.NO_CHANGE
+                    )
+                    if retry_at_deadline:
+                        remaining = max(0.0, 0.5 - (time.time() - verification_start))
+                        if remaining:
+                            await asyncio.sleep(remaining)
+                            settle_wait_ms += remaining * 1000
+                        settle_mode += "_deadline_retry"
+                        after_screenshot_path, after_screenshot_hash, new_browser_state = await browser.capture_state(f"step_{step_num:03d}_after")
+                        verification_status, change_score = await browser.verify_action(
+                            before_state=browser_state,
+                            after_state=new_browser_state,
+                            verification_hint=llm_response.tool_call.verification_hint,
+                            action_description=action_result.description,
+                            action_type=llm_response.tool_call.action_type,
+                        )
                 except Exception as capture_err:
                     # The action already executed — a broken after-capture must
                     # not lose the whole run. Record the step against the last
@@ -1564,6 +1657,8 @@ async def run_task(
                 verification_status=verification_status.value,
                 change_score=change_score,
                 verification_time_ms=verification_time_ms,
+                settle_mode=settle_mode,
+                settle_wait_ms=settle_wait_ms,
             )
             
             # 8. Add to memory
