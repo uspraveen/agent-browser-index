@@ -5563,8 +5563,16 @@ class BrowserController:
         """Deterministically fill the login form on the current page using the
         per-run vault credentials provisioned by the Cosmic orchestrator.
 
-        Values never appear in this ActionResult, in screenshots, or in any
-        LLM context — the model only learns whether the fill succeeded.
+        The password and TOTP seed never appear in this ActionResult, in
+        screenshots, or in any LLM context. The username is not treated as a
+        secret: the page's own DOM snapshots already expose it once filled.
+        By default the vault entry's username is filled, but the caller may
+        pass `username` to fill a specific login name instead (the vault
+        password is still used), or `username: ""` to leave the username
+        field exactly as the model typed it. Whatever was overwritten is
+        reported back, so the model can reason about a failed login instead
+        of assuming the form still holds what it typed. Nothing is submitted
+        unless the caller passes submit=true.
         """
         if self.page is None:
             return ActionResult(success=False, action_type=ActionType.CREDENTIAL_FILL, description="CredentialFill", error="Browser page is not available.")
@@ -5582,9 +5590,22 @@ class BrowserController:
                 error=f"No credentials provisioned for this site ({current_url}). Available for: {available}. Call RequestCredentials if login is required here.",
             )
 
-        do_submit = parameters.get("submit", True)
+        do_submit = parameters.get("submit", False)
         if isinstance(do_submit, str):
             do_submit = do_submit.strip().lower() not in {"false", "0", "no", "off"}
+        # The username override is caller-supplied and carries no secret by
+        # policy (the password always comes from the vault). None keeps the
+        # vault's username; "" keeps what the model already typed into the
+        # field; any other value is coerced to its string form.
+        username_override = parameters.get("username")
+        if username_override is None:
+            username_value = str(entry.get("username", ""))
+            username_source = "vault"
+        else:
+            if not isinstance(username_override, str):
+                username_override = str(username_override)
+            username_value = username_override
+            username_source = "action" if username_override else "skipped"
         js_script = """
         (args) => {
             const visible = (el) => {
@@ -5615,8 +5636,10 @@ class BrowserController:
             const totpField = Array.from(scope.querySelectorAll('input'))
                 .filter(el => el !== pw && el !== user && visible(el) && /totp|otp|2fa|code/.test(hint(el)))[0] || null;
             const filled = [];
+            const previousUsername = user ? String(user.value || '') : null;
+            let passwordHadValue = false;
             if (user && args.username) { nativeFill(user, args.username); filled.push('username'); }
-            if (pw && args.password) { nativeFill(pw, args.password); filled.push('password'); }
+            if (pw && args.password) { passwordHadValue = !!pw.value; nativeFill(pw, args.password); filled.push('password'); }
             if (totpField && args.totp) { nativeFill(totpField, args.totp); filled.push('totp'); }
             let submitted = false;
             if (args.submit && pw && args.password) {
@@ -5627,12 +5650,18 @@ class BrowserController:
                 else if (form && form.requestSubmit) { form.requestSubmit(); submitted = true; }
                 else { pw.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true })); submitted = true; }
             }
-            return { found: true, filled, submitted };
+            return {
+                found: true,
+                filled,
+                submitted,
+                previous_username: (filled.includes('username') ? previousUsername : null),
+                password_had_value: passwordHadValue,
+            };
         }
         """
         try:
             fill_state = await self.page.evaluate(js_script, {
-                "username": entry.get("username", ""),
+                "username": username_value,
                 "password": entry.get("password", ""),
                 "totp": entry.get("totp_seed", ""),
                 "submit": bool(do_submit),
@@ -5647,13 +5676,47 @@ class BrowserController:
                 error=f"CredentialFill could not find a login form on this page: {reason}. If this page is not a login page, continue the task normally.",
             )
         filled = fill_state.get("filled", [])
-        description = f"CredentialFill: filled {', '.join(filled) if filled else 'nothing'}" + (" and submitted" if fill_state.get("submitted") else "")
+        submitted = bool(fill_state.get("submitted"))
+        previous_username = str(fill_state.get("previous_username") or "")
+        password_had_value = bool(fill_state.get("password_had_value"))
+        overwrote_username = previous_username if ("username" in filled and previous_username) else None
+        label_bits = []
+        if "username" in filled:
+            if username_source == "action":
+                label_bits.append("username (the value you passed)")
+            elif overwrote_username:
+                label_bits.append(f"username (overwrote '{overwrote_username}')")
+            else:
+                label_bits.append("username")
+        if "password" in filled:
+            label_bits.append("password (replaced what was in the field)" if password_had_value else "password")
+        if "totp" in filled:
+            label_bits.append("totp")
+        description = "CredentialFill: filled " + (", ".join(label_bits) if label_bits else "nothing")
+        if "username" not in filled and ("password" in filled or "totp" in filled):
+            description += " (username field left untouched)"
+        if submitted:
+            description += " and submitted"
+        output = json.dumps({
+            "status": "filled",
+            "fields": filled,
+            "submitted": submitted,
+            "site": entry.get("site_domain") or None,
+            "username_source": username_source,
+            "overwrote_username": overwrote_username,
+            "password_field_had_value": password_had_value,
+        })
         return ActionResult(
             success=bool(filled),
             action_type=ActionType.CREDENTIAL_FILL,
             description=description,
-            output='{"status": "filled", "fields": [' + ", ".join(f'"{f}"' for f in filled) + '], "submitted": ' + ("true" if fill_state.get("submitted") else "false") + "}",
+            output=output,
             error=None if filled else "No matching fields were filled; check the page state.",
+            metadata={
+                "credential_site": entry.get("site_domain") or None,
+                "username_source": username_source,
+                "submitted": submitted,
+            },
         )
 
     async def _request_credentials(self, parameters: Dict[str, Any]) -> ActionResult:

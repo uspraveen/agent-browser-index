@@ -1601,7 +1601,7 @@ Recent search-result loop steps:
                 "- SnapshotClick(ref) - Click the element a DOMSnapshot ref points at (e.g. '@e5'). The result names the role + visible name it clicked. Stale/unknown refs are refused — re-snapshot.",
                 "- SnapshotType(ref, text, press_enter) - Type into the text field a ref points at, with real keystrokes. Echoes the field label that received the text and warns when it replaced an existing value — read it before moving on.",
                 "- SnapshotSelect(ref, value|label|index, values|labels for multi-select) - Select option(s) in the native <select> dropdown a ref points at. Same option-matching rules as SelectOption.",
-                "- CredentialFill(submit) - Fill and (optionally) submit the login form on the current page using provisioned vault credentials. You never see or type the values. Only works when credentials were provisioned for this site.",
+                "- CredentialFill(username, submit) - Fill the login form on the current page from provisioned vault credentials: the password always comes from the vault and is never shown to you. By default the vault's username is filled too, overwriting whatever is in the field; the result names what it overwrote, so read it. Pass username to fill a specific login name instead (a handle or email the goal dictates; it is not a secret), or username:\"\" to leave the username field exactly as you typed it. Nothing is submitted unless you pass submit:true. Only works when credentials were provisioned for this site.",
                 "- RequestCredentials(site, reason) - End the run asking the orchestrator to provision credentials for a site (e.g. a login wall blocks the goal and no credentials are provisioned).",
             ]
             save_note_idx = available_tools_definitions.index("- SaveNote(note) - Save important information to memory. NOTE MUST NOT BE EMPTY.")
@@ -1704,7 +1704,8 @@ Recent search-result loop steps:
             domains_csv = ", ".join(available_credential_domains)
             credential_rule = f"""## CREDENTIALS (vault-backed, values never shown)
 - Login credentials are provisioned for these sites: {domains_csv}.
-- When a login form blocks the goal on one of these sites, call `CredentialFill` — it deterministically fills and submits the login form. You will never see or type the values.
+- When a login form blocks the goal on one of these sites, call `CredentialFill`. It fills the password from the vault (you never see it) and by default the vault's username too. The vault username is authoritative unless the goal explicitly demands a different login name; in that case pass `username` with that value, or `username:\"\"` to keep what you already typed. Pass `submit:true` to submit; for read-only or verification-only goals use `submit:false` and report what the page shows instead of ever submitting.
+- The fill result states exactly which fields were written and what it overwrote. Read it before diagnosing a failed login, and quote the site's own error text rather than inferring which credential part was wrong.
 - If CredentialFill fails or the site is NOT in the list above and login is required to proceed, call `RequestCredentials(site, reason)` — it ends the run and asks the orchestrator to provision credentials. Do not guess or brute-force credentials."""
         else:
             credential_rule = """## CREDENTIALS
