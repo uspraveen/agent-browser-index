@@ -425,7 +425,18 @@ def typing_landed_value(value: Optional[str], text: str) -> bool:
     if needle[:24].lower() in squished:
         return True
     nsq = needle.replace(" ", "").replace("\u00a0", "").lower()
-    return len(squished) >= substantial and squished in nsq
+    if len(squished) >= substantial and squished in nsq:
+        return True
+    # Rich editors with auto-closing brackets/quotes diverge from the typed
+    # stream by inserted closers (typing '{' yields '{}'), so the literal
+    # probes above fail on text that visibly landed; and a false 'not
+    # landed' sends the caller into the destructive fill-replace fallback.
+    # Compare shape instead: the needle with brackets, quotes, and whitespace
+    # removed, contained in the value treated the same way.
+    shape_pattern = r"[\s{}()\[\]<>'\"]"
+    shape_got = re.sub(shape_pattern, "", gl)
+    shape_needle = re.sub(shape_pattern, "", nl)
+    return len(shape_needle) >= substantial and shape_needle in shape_got
 
 
 # Read/identify the text field under viewport coordinates (VisualType's
@@ -1156,6 +1167,11 @@ class BrowserController:
         # Per-run vault credentials (provisioned by the Cosmic orchestrator).
         # Values never enter the LLM context — only CredentialFill consumes them.
         self.credential_store = credential_store
+        # Unsaved rich-editor typing from this run ({chars, warned}): armed
+        # when a typing action lands in a contenteditable target, consumed by
+        # the Reload/Navigate steering guard: one rejection, then the repeat
+        # is the explicit decision to discard.
+        self._unsaved_editor_typing: Optional[Dict[str, Any]] = None
         # Every commit-like control (submit/apply/save/send/delete/pay/…) is
         # held here before the click/Enter fires. The handler owns the policy
         # (the orchestrator authorizes or asks the user); the controller only
@@ -4369,6 +4385,46 @@ class BrowserController:
             except Exception:
                 return None
 
+    async def _is_contenteditable_target(self, locator) -> bool:
+        """True when the target is a rich text editor (a contenteditable
+        element that is not a form control) rather than a plain field. On
+        these, fill-replace rewrites the entire document with the typed text:
+        the Oct 2026 Hugging Face run lost a 355-line news.html to exactly
+        that, so typing into one is cursor-only and failures stay failures."""
+        try:
+            return bool(await locator.evaluate(
+                "el => el.isContentEditable === true && !('value' in el)"))
+        except Exception:
+            return False
+
+    async def _typing_fill_fallback(self, locator, text: str,
+                                    action_type: ActionType,
+                                    target: str) -> Optional[ActionResult]:
+        """The one deterministic fill when typed text did not land: the
+        escape hatch for focus-stealing pages on ordinary fields. Banned on
+        contenteditable rich editors: there the honest answer is a failure
+        that sends the model back to cursor typing, never a silent document
+        rewrite. Returns a blocking ActionResult when the fill is refused;
+        None when the fill ran (or harmlessly failed) and the caller should
+        re-verify as before."""
+        if await self._is_contenteditable_target(locator):
+            return ActionResult(
+                success=False,
+                action_type=action_type,
+                description=f"{action_type.value} {target}".strip(),
+                error=(
+                    f"Typed text did not stick in '{(target or 'the field')[:60]}' -- this target is a "
+                    "rich text editor (contenteditable), where a fill would rewrite the whole document "
+                    "with the typed text. Click into the editor at the right position and type again; "
+                    "re-snapshot first if the cursor position is uncertain."
+                ),
+            )
+        try:
+            await locator.fill(text, timeout=3000)
+        except Exception:
+            pass
+        return None
+
     async def _plain_text_already_filled(self, locator, text: str, press_enter: bool) -> bool:
         """Skip only an exact repeat on an ordinary editable field.
 
@@ -4713,12 +4769,14 @@ class BrowserController:
                             "SnapshotSelect for a native <select>."
                         ),
                     )
-                try:
-                    await locator.fill(text, timeout=3000)
-                    filled_instead = True
-                    final_value = await self._field_value(locator)
-                except Exception:
-                    pass
+                blocked = await self._typing_fill_fallback(
+                    locator, text, ActionType.SNAPSHOT_TYPE,
+                    str(target_name or parse_ref(ref)),
+                )
+                if blocked:
+                    return blocked
+                filled_instead = True
+                final_value = await self._field_value(locator)
             if not typing_landed_value(final_value, text):
                 return ActionResult(
                     success=False,
@@ -4739,6 +4797,8 @@ class BrowserController:
                 description += f" — field labeled '{label[:80]}'"
             if warning:
                 description += f" (WARNING: {warning} — if this is not the field you meant, refill the correct field and restore this one)"
+            if await self._is_contenteditable_target(locator):
+                self._unsaved_editor_typing = {"chars": len(text), "warned": False}
             return ActionResult(
                 success=True,
                 action_type=ActionType.SNAPSHOT_TYPE,
@@ -5179,12 +5239,13 @@ class BrowserController:
                                             "open the menu, type to filter, then click the option."
                                         ),
                                     )
-                                try:
-                                    await locator.fill(text, timeout=3000)
-                                    filled_instead = True
-                                    final_value = await self._field_value(locator)
-                                except Exception:
-                                    pass
+                                blocked = await self._typing_fill_fallback(
+                                    locator, text, ActionType.DOM_TYPE, selector,
+                                )
+                                if blocked:
+                                    return blocked
+                                filled_instead = True
+                                final_value = await self._field_value(locator)
                             if not typing_landed_value(final_value, text):
                                 return ActionResult(
                                     success=False,
@@ -5204,6 +5265,8 @@ class BrowserController:
                             description, warning = _type_echo_description(selector, label, text, previous_value, frame_note + tag_note, is_secret=is_secret)
                             if filled_instead:
                                 description += " — keyboard typing did not stick; filled instead (value verified)"
+                            if await self._is_contenteditable_target(locator):
+                                self._unsaved_editor_typing = {"chars": len(text), "warned": False}
                             return ActionResult(
                                 success=True,
                                 action_type=ActionType.DOM_TYPE,
@@ -5335,12 +5398,13 @@ class BrowserController:
                     final_value = await self._field_value(type_locator)
                     filled_instead = False
                     if not typing_landed_value(final_value, text):
-                        try:
-                            await type_locator.fill(text, timeout=3000)
-                            filled_instead = True
-                            final_value = await self._field_value(type_locator)
-                        except Exception:
-                            pass
+                        blocked = await self._typing_fill_fallback(
+                            type_locator, text, ActionType.DOM_TYPE, selector,
+                        )
+                        if blocked:
+                            return blocked
+                        filled_instead = True
+                        final_value = await self._field_value(type_locator)
                     if not typing_landed_value(final_value, text):
                         return ActionResult(
                             success=False,
@@ -5354,6 +5418,8 @@ class BrowserController:
                     description, warning = _type_echo_description(selector, label, text, previous_value, frame_note, is_secret=is_secret)
                     if filled_instead:
                         description += " — keyboard typing did not stick; filled instead (value verified)"
+                    if await self._is_contenteditable_target(type_locator):
+                        self._unsaved_editor_typing = {"chars": len(text), "warned": False}
                     return ActionResult(
                         success=True,
                         action_type=ActionType.DOM_TYPE,
@@ -5851,10 +5917,36 @@ class BrowserController:
         margin_y = max(3, int(height * ratio))
         return x <= margin_x or y <= margin_y or x >= width - margin_x or y >= height - margin_y
 
+    def _unsaved_editor_navigation_block(self, action_type: ActionType,
+                                         description: str) -> Optional[ActionResult]:
+        """One steering rejection when a navigation would discard edits the
+        agent typed into a rich editor this run (the Oct 2026 Hugging Face
+        reload threw away a half-applied news.html entry). The repeat passes:
+        an explicit second call IS the decision to discard."""
+        unsaved = getattr(self, "_unsaved_editor_typing", None)
+        if not unsaved or unsaved.get("warned"):
+            return None
+        unsaved["warned"] = True
+        return ActionResult(
+            success=False,
+            action_type=action_type,
+            description=description,
+            error=(
+                f"This navigation would discard {unsaved.get('chars', '?')} characters typed into a rich "
+                "text editor on this page that have not been saved or submitted. Save or submit the edit "
+                "first; if you really mean to abandon it, repeat the exact same navigation once and it "
+                "will proceed."
+            ),
+        )
+
     async def _navigate(self, url: str) -> ActionResult:
+        blocked = self._unsaved_editor_navigation_block(ActionType.NAVIGATE, f"Navigate to {url}")
+        if blocked:
+            return blocked
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
             self._pending_overlay_dismiss = True
+            self._unsaved_editor_typing = None
             return ActionResult(success=True, action_type=ActionType.NAVIGATE, description=f"Navigated to {url}")
         except Exception as e: return ActionResult(success=False, action_type=ActionType.NAVIGATE, description=f"Navigate {url}", error=str(e))
 
@@ -5899,9 +5991,13 @@ class BrowserController:
             return ActionResult(success=False, action_type=ActionType.GO_FORWARD, description="Go forward", error=str(e))
 
     async def _reload(self) -> ActionResult:
+        blocked = self._unsaved_editor_navigation_block(ActionType.RELOAD, f"Reload {self.page.url}")
+        if blocked:
+            return blocked
         try:
             await self.page.reload(wait_until="domcontentloaded", timeout=15000)
             self._pending_overlay_dismiss = True
+            self._unsaved_editor_typing = None
             return ActionResult(success=True, action_type=ActionType.RELOAD, description=f"Reloaded {self.page.url}")
         except Exception as e:
             if await self._recover_from_nav_timeout():
