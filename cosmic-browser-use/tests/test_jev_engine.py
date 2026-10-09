@@ -131,7 +131,13 @@ def _handler_script(script):
                 script.get("operation", "CLICK"),
                 script.get("operation_conf", 0.9),
             ),
-            "goal_progress": {"score": script.get("progress", 0.4), "probabilities": {}, "confidence": 1.0},
+            # The wire score is the expected level INDEX (0..levels-1), as the
+            # live APIs return it; scripts state progress as a 0..1 fraction.
+            "goal_progress": {
+                "score": script.get("progress", 0.4) * (len(questions["goal_progress"]["criteria"]) - 1),
+                "probabilities": {},
+                "confidence": 1.0,
+            },
             "needs_vision": {"noul": script.get("needs_vision", 0.0), "probabilities": {}, "confidence": 1.0},
         }
         if "click_target" in questions:
@@ -636,3 +642,116 @@ class TestPlannerHintParsing:
             "confidence": 0.9,
         })
         assert o._parse_response(raw).fast_engine_hint is None
+
+
+# --------------------------------------------------------------------- #
+# Perplexity decider (vision) — same wire contract, screenshot in state
+
+_WEBP_B64 = "data:image/jpeg;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA="
+
+
+class TestPplxProvider:
+    def test_from_env_selects_perplexity_with_vision(self, monkeypatch):
+        from jev_engine import PPLX_DECIDER_MODEL, PPLX_DECISIONS_URL
+        monkeypatch.setenv("PERPLEXITY_API_KEY", "pplx-test")
+        monkeypatch.delenv("PERPLEXITY_DECIDER_MODEL", raising=False)
+        monkeypatch.delenv("COSMIC_DECIDER_VISION", raising=False)
+        config = JevEngineConfig.from_env("pplx")
+        assert (config.provider, config.vision) == ("pplx", True)
+        assert config.api_key == "pplx-test"
+        assert config.api_url == PPLX_DECISIONS_URL and config.model == PPLX_DECIDER_MODEL
+        monkeypatch.setenv("COSMIC_DECIDER_VISION", "0")
+        assert JevEngineConfig.from_env("pplx").vision is False
+
+    def test_default_provider_is_still_typesafe_text_only(self):
+        config = JevEngineConfig.from_env()
+        assert (config.provider, config.vision) == ("typesafe", False)
+
+    def test_image_part_mime_comes_from_the_bytes_not_the_label(self):
+        from jev_engine import screenshot_image_part
+        part = screenshot_image_part(_WEBP_B64)
+        assert part["type"] == "image_url"
+        assert part["image_url"]["url"].startswith("data:image/webp;base64,UklGR")
+        png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        assert screenshot_image_part(png)["image_url"]["url"].startswith("data:image/png;base64,")
+        assert screenshot_image_part("data:image/jpeg;base64,x") is None
+        assert screenshot_image_part("") is None
+
+    def test_vision_request_carries_the_screenshot_and_drops_needs_vision(self):
+        handler, bodies = _recording_handler({"operation": "CLICK", "click": "@e3"})
+        engine = _engine(handler=handler, config_overrides={"vision": True, "provider": "pplx"})
+        response = asyncio.run(engine.decide_step(_context(), screenshot_b64=_WEBP_B64))
+        assert response is not None and response.tier_used == "jev"
+        state = bodies[0]["state"]
+        assert isinstance(state, list) and len(state) == 2
+        assert json.loads(state[0])["page"]["url"] == "https://example.com/jobs"
+        assert state[1]["image_url"]["url"].startswith("data:image/webp;base64,")
+        assert "needs_vision" not in bodies[0]["questions"]
+        assert "You also see a screenshot" in bodies[0]["questions"]["operation"]["instructions"]["rules"]
+
+    def test_vision_without_a_usable_screenshot_falls_back_to_json_state(self):
+        handler, bodies = _recording_handler({"operation": "CLICK", "click": "@e3"})
+        engine = _engine(handler=handler, config_overrides={"vision": True, "provider": "pplx"})
+        _decide(engine)  # "data:image/jpeg;base64,x" is not an image
+        assert isinstance(bodies[0]["state"], dict)
+
+    def test_blind_provider_keeps_blind_rules_and_needs_vision(self):
+        handler, bodies = _recording_handler({"operation": "CLICK", "click": "@e3"})
+        engine = _engine(handler=handler)
+        _decide(engine)
+        assert "needs_vision" in bodies[0]["questions"]
+        assert "You have NO vision" in bodies[0]["questions"]["operation"]["instructions"]["rules"]
+
+
+class TestSatisfiedFields:
+    def _browser(self, filled=True):
+        entries = [
+            {"ref": "@e1", "tag": "textarea", "role": "textbox", "name": "Message",
+             "value": "Hi — I'm Cosmic, Praveen's Life OS. I'm", "value_truncated": True, "frame_index": 0},
+            {"ref": "@e2", "tag": "button", "role": "button", "name": "Cancel", "frame_index": 0},
+            {"ref": "@e3", "tag": "button", "role": "button", "name": "Continue", "frame_index": 0},
+        ]
+        browser = _FakeBrowser(entries=entries)
+
+        async def resolve(ref, label):
+            return object(), None, {}
+
+        async def already(locator, text, press_enter):
+            return filled
+
+        browser._snapshot_resolve = resolve
+        browser._plain_text_already_filled = already
+        return browser
+
+    def test_a_type_that_would_change_nothing_falls_through_and_is_remembered(self):
+        handler, bodies = _recording_handler({"operation": "TYPE_TEXT", "type": "@e1"})
+        engine = _engine(browser=self._browser(filled=True), handler=handler)
+        assert _decide(engine) is None
+        assert "already holds the value" in engine.last_debug["fallthrough"]
+        _decide(engine)
+        second = bodies[1]["questions"]
+        assert "type_text_target" not in second  # @e1 is no longer typeable
+        assert any(el.get("already_holds_requested_value") for el in bodies[1]["state"]["elements"])
+
+    def test_a_real_change_still_types(self):
+        engine = _engine(browser=self._browser(filled=False), handler=_handler_script({"operation": "TYPE_TEXT", "type": "@e1"}))
+        response = _decide(engine)
+        assert response is not None and response.tool_call.action_type == ActionType.SNAPSHOT_TYPE
+
+    def test_a_new_page_forgets_satisfied_fields(self):
+        handler, bodies = _recording_handler({"operation": "TYPE_TEXT", "type": "@e1"})
+        engine = _engine(browser=self._browser(filled=True), handler=handler)
+        _decide(engine)
+        _decide(engine, _context(browser_state={"url": "https://example.com/other", "title": "x", "scroll_y": 0}))
+        assert "type_text_target" in bodies[1]["questions"]
+
+
+class TestStepSnapshotReuse:
+    def test_a_provided_snapshot_is_used_and_disabled_controls_ride_along(self):
+        handler, bodies = _recording_handler({"operation": "CLICK", "click": "@e3"})
+        browser = _FakeBrowser()
+        engine = _engine(browser=browser, handler=handler)
+        snapshot = {"entries": _entries(), "total": 3, "disabled": [{"role": "button", "name": "Continue"}]}
+        asyncio.run(engine.decide_step(_context(), screenshot_b64="x", snapshot=snapshot))
+        assert browser.snapshot_calls == []
+        assert bodies[0]["state"]["disabled_controls"] == ["button Continue"]

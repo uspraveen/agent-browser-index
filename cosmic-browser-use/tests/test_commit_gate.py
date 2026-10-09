@@ -291,3 +291,45 @@ def test_model_request_resolves_a_ref_and_clears_the_miss_flag():
     assert seen["classifier_miss"] is False
     assert seen["target"] == "File return"
     assert seen["fields"] == [{"label": "Tax year", "value": "2025"}]
+
+
+def test_a_fixable_hold_tells_the_model_to_fix_and_resubmit():
+    async def handler(payload):
+        return {"allowed": False, "retry_after_fix": True,
+                "reason": "Cosmic checked this before submitting and sent it back: 'Your Name' holds an email address."}
+
+    controller = _controller(handler)
+    result = _gate(controller)
+    assert result.success is False
+    assert result.error.startswith("commit_held:")
+    assert "Your Name" in result.error and "submit again" in result.error
+    assert "Do not retry" not in result.error
+
+
+def test_gate_payload_carries_a_screenshot_for_the_visual_check():
+    seen: dict = {}
+
+    async def handler(payload):
+        seen.update(payload)
+        return {"allowed": True}
+
+    class ShotPage(_FakePage):
+        async def screenshot(self, **_kwargs):
+            return b"\xff\xd8\xff\xe0fakejpeg"
+
+    controller = _controller(handler)
+    controller.page = ShotPage()
+    assert _gate(controller) is None
+    assert seen["screenshot_b64"] == "/9j/4GZha2VqcGVn"
+
+
+def test_no_screenshot_is_not_an_error():
+    seen: dict = {}
+
+    async def handler(payload):
+        seen.update(payload)
+        return {"allowed": True}
+
+    controller = _controller(handler)  # _FakePage has no screenshot()
+    assert _gate(controller) is None
+    assert "screenshot_b64" not in seen

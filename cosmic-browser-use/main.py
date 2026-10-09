@@ -24,7 +24,8 @@ from cosmic_types import (
 from memory_manager import MemoryManager
 from takeover import TakeoverSession, run_takeover
 from orchestrator import Orchestrator, reset_fireworks_http2_preference
-from browser_controller import BrowserController
+from browser_controller import BrowserController, format_disabled_lines, format_snapshot_lines
+from value_provenance import TypeValueGuard, user_answers
 from jev_engine import JevEngine, JevEngineConfig
 from credentials import CredentialStore
 from find_coordinates_mimo import check_mimo_health
@@ -792,8 +793,16 @@ async def run_task(
         interaction_mode = "hybrid"
     enable_dom_fallback = interaction_mode != "vision"
     decision_engine = (decision_engine or "jev").strip().lower()
-    if decision_engine not in {"jev", "llm"}:
+    if decision_engine not in {"jev", "pplx", "llm"}:
         decision_engine = "jev"
+    if decision_engine == "pplx" and not os.getenv("PERPLEXITY_API_KEY"):
+        # The Perplexity decider (vision) is preferred when configured; without
+        # its key the run keeps whichever fast path it can still use.
+        print("⚠️  [Decider] PERPLEXITY_API_KEY not set — falling back to the Jev fast path.")
+        decision_engine = "jev"
+    if decision_engine == "pplx" and interaction_mode == "vision":
+        print("⚠️  [Decider] vision interaction mode has no DOM snapshot — decision engine set to 'llm'.")
+        decision_engine = "llm"
     if decision_engine == "jev":
         # Default-on must never break a run: without a Jev key, or in vision
         # mode (no DOM snapshot to decide over), the classic planner runs.
@@ -979,19 +988,27 @@ async def run_task(
     # routine steps; every other step (and every fall-through) uses the
     # normal planner. Constructed after the browser so it can pull snapshots.
     jev_engine = None
-    if decision_engine == "jev":
+    if decision_engine in {"jev", "pplx"}:
         jev_engine = JevEngine(
             orchestrator=orchestrator,
             browser=browser,
-            config=JevEngineConfig.from_env(),
+            config=JevEngineConfig.from_env("pplx" if decision_engine == "pplx" else "typesafe"),
             debug_logger=cosmic_log,
         )
         print(
-            f"⚡ Decision engine: Jev fast path (model={jev_engine.config.model}, "
-            f"min_confidence={jev_engine.config.min_confidence}); "
+            f"⚡ Decision engine: {jev_engine.config.provider} fast path (model={jev_engine.config.model}, "
+            f"vision={jev_engine.config.vision}, min_confidence={jev_engine.config.min_confidence}); "
             "falls through to the LLM planner whenever the fast path is not confident."
         )
-        cosmic_log.event("jev.enabled", model=jev_engine.config.model)
+        cosmic_log.event(
+            "jev.enabled",
+            model=jev_engine.config.model,
+            provider=jev_engine.config.provider,
+            vision=jev_engine.config.vision,
+        )
+    # Harness-side Personal-Data Integrity Rule: every type action is checked
+    # for invented personal values before it runs (inert without a decider).
+    type_guard = TypeValueGuard(decider=jev_engine)
 
     await browser.start(initial_url)
     if live_frame_callback is not None:
@@ -1269,6 +1286,27 @@ async def run_task(
             with open(screenshot_path, 'rb') as f:
                 screenshot_b64 = f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}"
 
+            # One element map per step, shared by the fast path and the
+            # planner. Every collection renumbers the refs, so both must read
+            # the same one. Giving the planner the map for free replaces the
+            # DOMSnapshot step it otherwise spends just to see the page — 12 of
+            # 35 steps on 2026-10-08.
+            step_snapshot = None
+            if context.get("enable_dom_fallback", True):
+                try:
+                    step_snapshot = await browser._collect_snapshot(
+                        jev_engine.config.max_elements if jev_engine is not None else 80
+                    )
+                except Exception:
+                    step_snapshot = None
+            if step_snapshot and step_snapshot.get("total"):
+                context["element_map"] = {
+                    "lines": format_snapshot_lines(step_snapshot.get("entries") or []),
+                    "disabled": format_disabled_lines(step_snapshot.get("disabled") or []),
+                    "total": int(step_snapshot.get("total") or 0),
+                    "truncated": bool(step_snapshot.get("truncated")),
+                }
+
             llm_response = None
 
             credential_handoff_reason = await _should_try_credential_handoff_governor(
@@ -1365,7 +1403,7 @@ async def run_task(
             # finalizer (an LLM decision), never on Jev's word alone.
             if llm_response is None and jev_engine is not None:
                 jev_response = await jev_engine.decide_step(
-                    context=context, screenshot_b64=screenshot_b64
+                    context=context, screenshot_b64=screenshot_b64, snapshot=step_snapshot
                 )
                 if jev_response is not None:
                     llm_response = jev_response
@@ -1585,6 +1623,30 @@ async def run_task(
                         ),
                         execution_time_ms=0,
                     )
+
+            # Type-value guard: a type whose value identifies the user but
+            # appears in neither the goal, the notes nor the user's answers was
+            # invented — refuse it and point at AskUser. A value that does not
+            # fit its field (an email in "Your Name") is held back once.
+            if not action_result and llm_response.tool_call.action_type in {
+                ActionType.SNAPSHOT_TYPE, ActionType.DOM_TYPE, ActionType.VISUAL_TYPE,
+            }:
+                refusal = await type_guard.check(
+                    tool_call=llm_response.tool_call,
+                    goal=str(config.goal or ""),
+                    notes=[str(n) for n in ((context.get("browser_state") or {}).get("notes") or [])],
+                    answers=user_answers(memory.steps),
+                    refs=getattr(browser, "_snapshot_refs", None),
+                )
+                if refusal:
+                    action_result = ActionResult(
+                        success=False,
+                        action_type=llm_response.tool_call.action_type,
+                        description=f"{llm_response.tool_call.action_type.value} refused by the type-value guard",
+                        error=refusal,
+                        execution_time_ms=0,
+                    )
+                    cosmic_log.step(step_num, "type_guard.refused", reason=refusal[:300])
 
             # Normal execution
             if not action_result:
@@ -1923,6 +1985,7 @@ async def run_task(
             orchestrator_stats=orchestrator.get_stats(),
             browser_stats=browser.get_stats(),
             jev_stats=jev_stats,
+            type_guard_stats=dict(type_guard.stats),
         )
 
         if memory_mode in {"learn", "auto"} and cosmic_runtime:
@@ -2101,7 +2164,7 @@ async def main():
     parser.add_argument("--disable-supermemory", action="store_true", help="Use only local workflow memory; skip Supermemory reads/writes.")
     parser.add_argument("--replay-max-actions", type=int, default=int(os.getenv("COSMIC_REPLAY_MAX_ACTIONS", "8")), help="Maximum indexed replay actions before returning to the normal agent loop.")
     parser.add_argument("--interaction-mode", type=str, choices=["hybrid", "vision"], default=os.getenv("COSMIC_INTERACTION_MODE", "hybrid"), help="Tool surface mode. 'vision' removes DOM tools/prompts; 'hybrid' keeps DOM fallback/extraction.")
-    parser.add_argument("--decision-engine", type=str, choices=["jev", "llm"], default=os.getenv("COSMIC_DECISION_ENGINE", "jev"), help="Per-step decision engine. 'jev' (default) decides routine structured-page steps with the TypeSafe Jev fast path over the DOM snapshot and falls through to the LLM planner otherwise (auto-downgrades to 'llm' without TYPESAFE_API_KEY or in vision mode). 'llm' is the classic planner-only loop.")
+    parser.add_argument("--decision-engine", type=str, choices=["jev", "pplx", "llm"], default=os.getenv("COSMIC_DECISION_ENGINE", "jev"), help="Per-step decision engine. 'jev' (default) decides routine structured-page steps with the TypeSafe Jev fast path over the DOM snapshot and falls through to the LLM planner otherwise (auto-downgrades to 'llm' without TYPESAFE_API_KEY or in vision mode). 'pplx' uses Perplexity's multimodal decider (pplx-decider) on the same contract and also shows it the step screenshot (falls back to 'jev' without PERPLEXITY_API_KEY). 'llm' is the classic planner-only loop.")
     parser.add_argument("--demo-overlay", action="store_true", help="Demo-only: render a glassy COSMIC memory overlay inside the browser. Hidden during every agent/MiMo screenshot. Off by default.")
     parser.add_argument(
         "--ask-user-bridge-url",

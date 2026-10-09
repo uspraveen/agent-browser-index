@@ -63,6 +63,12 @@ class TakeoverRecord:
     # rather than the DOM.
     new_origins: List[str] = field(default_factory=list)
     dropped_origins: List[str] = field(default_factory=list)
+    # Form fields the human filled or changed: {field, before, after[, new]}.
+    # Storage shows a login; only this shows "they filled half the form" — the
+    # 2026-10-08 record of a 194s, 1,768-input session said just "stayed on
+    # the same page", and the orchestrator concluded the human "briefly" took
+    # over and restarted from scratch.
+    form_changes: List[Dict[str, Any]] = field(default_factory=list)
     input_events: int = 0
     human_note: str = ""
     summary: str = ""
@@ -88,6 +94,7 @@ class TakeoverRecord:
             "title_after": self.title_after,
             "new_origins": list(self.new_origins),
             "dropped_origins": list(self.dropped_origins),
+            "form_changes": [dict(change) for change in self.form_changes],
             "input_events": self.input_events,
             "human_note": self.human_note,
             "summary": self.summary,
@@ -242,6 +249,47 @@ def diff_storage_origins(
     }
 
 
+def diff_form_values(
+    before: Optional[List[Dict[str, Any]]],
+    after: Optional[List[Dict[str, Any]]],
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Which visible form fields the human filled or changed.
+
+    Fields are matched by label plus occurrence (two "Email" fields stay
+    distinct). A field that only exists afterwards and holds a value counts as
+    filled — the human advanced the form and answered the new page. Without a
+    'before' reading nothing can be told apart, so nothing is claimed.
+    """
+    if not isinstance(before, list) or not isinstance(after, list):
+        return []
+
+    def keyed(rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
+        seen: Dict[str, int] = {}
+        out: Dict[tuple, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("label") or "").strip() or "(unlabeled field)"
+            n = seen.get(label, 0)
+            seen[label] = n + 1
+            out[(label, n)] = str(row.get("value") or "")
+        return out
+
+    b, a = keyed(before), keyed(after)
+    changes: List[Dict[str, Any]] = []
+    for key, value in a.items():
+        prev = b.get(key)
+        if prev is None:
+            if value and value != "unchecked":
+                changes.append({"field": key[0], "before": "", "after": value, "new": True})
+        elif prev != value:
+            changes.append({"field": key[0], "before": prev, "after": value})
+        if len(changes) >= limit:
+            break
+    return changes
+
+
 def describe_takeover(record: TakeoverRecord) -> str:
     """A one-line, deterministic account of the handover.
 
@@ -260,6 +308,18 @@ def describe_takeover(record: TakeoverRecord) -> str:
         extra = len(record.new_origins) - 4
         more = " (+" + str(extra) + " more)" if extra > 0 else ""
         parts.append("gained signed-in state for " + shown + more)
+    if record.form_changes:
+        shown = ", ".join(
+            "'{}' = '{}'".format(str(c.get("field") or "")[:50], str(c.get("after") or "")[:40])
+            for c in record.form_changes[:8]
+        )
+        extra = len(record.form_changes) - 8
+        more = " (+" + str(extra) + " more)" if extra > 0 else ""
+        parts.append(
+            "filled or changed {} form field(s): {}{} - those values are the user's own, keep them".format(
+                len(record.form_changes), shown, more
+            )
+        )
     if record.human_note:
         parts.append("said: " + record.human_note)
     tail = "; ".join(parts)
@@ -286,6 +346,7 @@ async def run_takeover(
     record = TakeoverRecord(started_at=time.time())
     session._begin()
     before_storage = None
+    before_fields = None
     stamp = int(record.started_at * 1000)
     try:  # noqa: TRY300 - the except below is the "never raises" guarantee
         captured = await _safe_call(browser.capture_state, f"takeover_before_{stamp}")
@@ -295,6 +356,7 @@ async def run_takeover(
             record.title_before = getattr(state, "title", "") or ""
             record.state_before = state
         before_storage = await _safe_call(_storage_state, browser)
+        before_fields = await _safe_call(_form_values, browser)
         await _notify(on_state, "paused", record)
 
         deadline = record.started_at + session.timeout_sec
@@ -326,6 +388,8 @@ async def run_takeover(
             delta = diff_storage_origins(before_storage, after_storage)
             record.new_origins = delta["new"]
             record.dropped_origins = delta["dropped"]
+            after_fields = await _safe_call(_form_values, browser)
+            record.form_changes = diff_form_values(before_fields, after_fields)
         except Exception:
             pass
         record.summary = describe_takeover(record)
@@ -339,6 +403,13 @@ async def _storage_state(browser: Any) -> Optional[Dict[str, Any]]:
     if context is None:
         return None
     return await context.storage_state()
+
+
+async def _form_values(browser: Any) -> Optional[List[Dict[str, Any]]]:
+    reader = getattr(browser, "form_field_values", None)
+    if reader is None:
+        return None
+    return await reader()
 
 
 async def _safe_call(fn: Any, *args: Any, **kwargs: Any) -> Any:

@@ -88,9 +88,13 @@ _COMMIT_CLASSIFY_JS = r"""
         const ctype = (c.getAttribute('type') || '').toLowerCase();
         if (['hidden','submit','button','reset','image','file'].indexOf(ctype) >= 0) continue;
         if (c.disabled) continue;
+        // Same labeler as the snapshot and the card-edit writer, so the card,
+        // the orchestrator's check and an edited value all name a field the
+        // same way. (Partiful's name field used to arrive here labeled " ",
+        // from a non-breaking-space placeholder.)
         let label = '';
-        try { if (c.labels && c.labels.length) label = c.labels[0].innerText || ''; } catch (e) {}
-        if (!label) label = c.getAttribute('aria-label') || c.getAttribute('placeholder') || c.getAttribute('name') || c.getAttribute('id') || '';
+        try { label = String((/*FIELDLABEL*/)(c) || '').trim(); } catch (e) {}
+        if (!label) label = c.getAttribute('aria-label') || c.getAttribute('name') || c.getAttribute('id') || '';
         let value = '';
         if (ctype === 'password') value = '********';
         else if (ctype === 'checkbox' || ctype === 'radio') value = c.checked ? 'checked' : 'unchecked';
@@ -120,10 +124,11 @@ _COMMIT_CLASSIFY_JS = r"""
 """
 
 # Same classifier, but for a screen point (VisualClick): the element under the
-# click is what the model actually aimed at.
-_COMMIT_PROBE_AT_POINT_JS = (
+# click is what the model actually aimed at. Assembled after _FIELD_LABEL_JS
+# exists (see "commit classifier assembly" below) — the classifier embeds it.
+_COMMIT_PROBE_AT_POINT_TEMPLATE = (
     "([x, y]) => { const el = document.elementFromPoint(x, y); if (!el) return null; "
-    "return (" + _COMMIT_CLASSIFY_JS + ")(el); }"
+    "return (/*CLASSIFY*/)(el); }"
 )
 
 # Enter can implicitly submit the form under focus. The gate rule matches the
@@ -140,7 +145,7 @@ _COMMIT_PROBE_AT_POINT_JS = (
 # A form with exactly one text input and no submit button still submits on
 # Enter (implicit submission with no default button); that counts too, so an
 # email-capture box cannot slip a send past the gate.
-_ENTER_COMMIT_PROBE_JS = r"""
+_ENTER_COMMIT_PROBE_TEMPLATE = r"""
 () => {
   const el = document.activeElement;
   if (!el) return null;
@@ -201,7 +206,37 @@ _ENTER_COMMIT_PROBE_JS = r"""
   }
   return null;
 }
-""".replace("/*CLASSIFY*/", "(" + _COMMIT_CLASSIFY_JS + ")")
+"""
+# Where an Enter after typing would land: the focused field's form, how many
+# visible editable text fields that form holds, and whether it is a search
+# form. Enter in a multi-field form submits the whole form, so the type
+# actions skip it there (see BrowserController._enter_after_typing).
+_ENTER_FORM_SHAPE_JS = r"""
+() => {
+  const el = document.activeElement;
+  if (!el) return null;
+  const tag = (el.tagName || '').toLowerCase();
+  const form = el.form || (el.closest ? el.closest('form') : null);
+  if (!form) return {in_form: false, text_fields: 0, search: false, tag: tag};
+  const etype = (el.getAttribute('type') || '').toLowerCase();
+  const search = etype === 'search'
+    || (form.getAttribute('role') || '').toLowerCase() === 'search'
+    || (el.getAttribute('role') || '').toLowerCase() === 'searchbox';
+  const TEXTISH = ['', 'text', 'email', 'tel', 'url', 'number', 'password', 'search'];
+  let n = 0;
+  for (const c of form.querySelectorAll('input, textarea')) {
+    if (c.disabled || c.readOnly) continue;
+    const ct = (c.getAttribute('type') || '').toLowerCase();
+    if ((c.tagName || '').toLowerCase() === 'input' && TEXTISH.indexOf(ct) < 0) continue;
+    const r = c.getBoundingClientRect();
+    const s = window.getComputedStyle(c);
+    if (!(r.width > 0 && r.height > 0) || s.display === 'none' || s.visibility === 'hidden') continue;
+    n += 1;
+  }
+  return {in_form: true, text_fields: n, search: search, tag: tag};
+}
+"""
+
 from browser_memory.coordinates import replay_coordinates
 from browser_memory.demo_overlay import DemoOverlayManager
 from browser_memory.cursor_overlay import CursorOverlayManager
@@ -263,9 +298,80 @@ _FIELD_LABEL_JS = """
         }
       } catch (e) {}
     }
+    // Fields whose visible label is not programmatically associated. Only
+    // fillable fields: a button's name is its own text, and nothing below may
+    // change it. Both rules are structural, never keyword lists:
+    //  - floating label: a sibling <label> in the field's own wrapper (the
+    //    `<input placeholder=" "><label>Your Name</label>` pattern);
+    //  - question text: the visible text that precedes the field inside the
+    //    largest wrapper that still holds no other field, which is the text a
+    //    human reads as "this field's question" ("What is your LinkedIn? *").
+    const ftag = (el.tagName || '').toLowerCase();
+    const ftype = (el.getAttribute('type') || '').toLowerCase();
+    const frole = (el.getAttribute('role') || '').toLowerCase();
+    const fillable = (ftag === 'input' && ['button', 'submit', 'reset', 'image', 'hidden', 'checkbox', 'radio', 'file', 'range', 'color'].indexOf(ftype) < 0)
+      || ftag === 'textarea' || ftag === 'select' || el.isContentEditable
+      || ['textbox', 'searchbox', 'spinbutton'].indexOf(frole) >= 0
+      || (frole === 'combobox' && ftag !== 'button');
+    if (fillable) {
+      const squash = (s) => String(s == null ? '' : s).replace(/\\s+/g, ' ').trim();
+      const parent = el.parentElement;
+      if (parent) {
+        for (const sib of Array.from(parent.children)) {
+          if (sib === el || (sib.tagName || '').toLowerCase() !== 'label') continue;
+          if (sib.htmlFor && sib.htmlFor !== el.id) continue;
+          const txt = squash(sib.innerText || sib.textContent);
+          if (txt) return txt.slice(0, 120);
+        }
+      }
+      const FIELDS = "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]), textarea, select, [contenteditable=''], [contenteditable='true'], [role=textbox], [role=searchbox], [role=spinbutton]";
+      const SKIP = 'input, textarea, select, button, [role=button], option, script, style, noscript, template';
+      const visibleText = (n) => {
+        const p = n.parentElement;
+        if (!p || (p.closest && p.closest(SKIP))) return false;
+        try {
+          if (p.checkVisibility) return p.checkVisibility({checkOpacity: true, checkVisibilityCSS: true});
+        } catch (e) {}
+        const st = window.getComputedStyle(p);
+        return !!st && st.display !== 'none' && st.visibility !== 'hidden';
+      };
+      const precedingText = (box) => {
+        const parts = [];
+        const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+        let n;
+        while ((n = walker.nextNode())) {
+          if (!(el.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_PRECEDING)) break;
+          const t = squash(n.textContent);
+          if (t && visibleText(n)) parts.push(t);
+        }
+        return squash(parts.join(' '));
+      };
+      // Innermost wrapper with real text wins, so a section heading two levels
+      // up never gets glued onto the first question; a lone prefix glyph
+      // ("$", "+1") is not a label and lets the walk continue outward.
+      let box = el.parentElement;
+      let found = '';
+      for (let depth = 0; box && depth < 5 && box !== document.body && box !== document.documentElement; depth++) {
+        let others = 0;
+        for (const f of box.querySelectorAll(FIELDS)) { if (f !== el) { others += 1; break; } }
+        if (others) break;
+        const txt = precedingText(box);
+        if (txt.length > 160) break;
+        if (txt.length >= 3) { found = txt; break; }
+        if (txt) found = txt;
+        box = box.parentElement;
+      }
+      if (found) return found.slice(-120);
+    }
     if (el.name) return String(el.name).slice(0, 120);
     const placeholder = el.getAttribute && el.getAttribute('placeholder');
     if (placeholder && placeholder.trim()) return placeholder.trim().slice(0, 120);
+    if (fillable) {
+      // Last resort: the autofill token names the field's meaning outright
+      // (autocomplete="name" / "email" / "tel"), and is never page copy.
+      const ac = String((el.getAttribute && el.getAttribute('autocomplete')) || '').trim();
+      if (ac && ['on', 'off'].indexOf(ac.toLowerCase()) < 0) return ('autocomplete: ' + ac).slice(0, 120);
+    }
   } catch (e) {}
   return '';
 }
@@ -335,11 +441,44 @@ _APPLY_FIELD_EDITS_JS = r"""
 # Read back what the keyboard actually landed in: focus was set inside the
 # target frame, so document.activeElement there is the field that received
 # every keystroke — regardless of which selector produced it.
+# --- commit classifier assembly ---------------------------------------------
+# The classifier names a form's fields with _FIELD_LABEL_JS, which is defined
+# above only now; every constant embedding the classifier is assembled here.
+# Methods that concatenate _COMMIT_CLASSIFY_JS at call time read this binding.
+_COMMIT_CLASSIFY_JS = _COMMIT_CLASSIFY_JS.replace("/*FIELDLABEL*/", _FIELD_LABEL_JS)
+_COMMIT_PROBE_AT_POINT_JS = _COMMIT_PROBE_AT_POINT_TEMPLATE.replace("/*CLASSIFY*/", _COMMIT_CLASSIFY_JS)
+_ENTER_COMMIT_PROBE_JS = _ENTER_COMMIT_PROBE_TEMPLATE.replace("/*CLASSIFY*/", "(" + _COMMIT_CLASSIFY_JS + ")")
+
 _TYPE_ECHO_JS = """
 () => {
   const el = document.activeElement;
   if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && !el.isContentEditable)) return null;
   return {label: (%s)(el), value: String(el.value == null ? '' : el.value)};
+}
+""" % _FIELD_LABEL_JS
+
+# Every visible form field as {label, value} — the takeover's before/after
+# reading, so the record can say which fields the human filled. Passwords are
+# masked at the source; values are bounded.
+_FORM_VALUES_JS = """
+() => {
+  const labelFor = (%s);
+  const out = [];
+  for (const el of document.querySelectorAll('input, textarea, select')) {
+    if (out.length >= 60) break;
+    const t = (el.getAttribute('type') || '').toLowerCase();
+    if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].indexOf(t) >= 0) continue;
+    const r = el.getBoundingClientRect();
+    const s = window.getComputedStyle(el);
+    if (!(r.width > 0 && r.height > 0) || s.display === 'none' || s.visibility === 'hidden') continue;
+    let value = '';
+    if (t === 'checkbox' || t === 'radio') value = el.checked ? 'checked' : 'unchecked';
+    else if ((el.tagName || '').toLowerCase() === 'select') value = (el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent : '') || '';
+    else value = String(el.value == null ? '' : el.value);
+    if (t === 'password') value = value ? '********' : '';
+    out.push({label: String(labelFor(el) || '').slice(0, 80), value: String(value).replace(/\\s+/g, ' ').trim().slice(0, 120)});
+  }
+  return out;
 }
 """ % _FIELD_LABEL_JS
 
@@ -613,7 +752,21 @@ _SNAPSHOT_COLLECT_JS = """
     }
     entries.push(entry);
   }
-  return {count: entries.length, truncated: entries.length > 0 && !!entries[entries.length - 1].truncated, entries};
+  // Visible-but-disabled controls get no ref (nothing can act on them, and
+  // the ref numbering must stay identical to the re-check's enabled-only
+  // list), but they are reported: a disabled "Continue" is the page saying a
+  // required field is still empty, and an agent that cannot see the submit
+  // button at all invents one elsewhere.
+  const disabled = [];
+  for (const el of elements) {
+    if (disabled.length >= 15) break;
+    if (!(el.disabled || el.getAttribute("aria-disabled") === "true")) continue;
+    if (!isVisible(el)) continue;
+    const role = implicitRole(el);
+    if (!role) continue;
+    disabled.push({role: role, name: nameFor(el)});
+  }
+  return {count: entries.length, truncated: entries.length > 0 && !!entries[entries.length - 1].truncated, entries, disabled};
 }
 """.replace("/*HELPERS*/", _SNAPSHOT_HELPERS_JS)
 
@@ -699,6 +852,49 @@ def format_snapshot_lines(entries: List[Dict[str, Any]], start_ref: int = 1) -> 
             bits.append(f"selected='{e['selected']}'")
         lines.append(" ".join(bits))
     return lines
+
+
+def format_disabled_lines(disabled: List[Dict[str, Any]]) -> List[str]:
+    """The controls the page shows but will not accept yet — no refs, never
+    actionable. Rendered after the map so the model sees the real submit
+    button and knows why it cannot fire (a required field is still empty)."""
+    rows = []
+    for d in disabled or []:
+        if not isinstance(d, dict):
+            continue
+        role = str(d.get("role") or "element")
+        name = str(d.get("name") or "").strip()
+        rows.append(f'- {role} "{name}"' if name else f"- {role}")
+    if not rows:
+        return []
+    return [
+        "Disabled right now (visible, not clickable — usually a required field is still empty or invalid):",
+        *rows,
+    ]
+
+
+INDEXED_DB_ORIGIN_CAP_BYTES = 262_144
+
+
+def cap_indexed_db(state: Any, per_origin_cap: int = INDEXED_DB_ORIGIN_CAP_BYTES) -> Any:
+    """Drop any origin's IndexedDB whose serialized size exceeds the cap.
+
+    Auth records (Firebase's firebaseLocalStorageDb and the like) are a few
+    KB; anything past the cap is an app cache, which is not worth carrying
+    into — and slowing down — every future run. Cookies and localStorage are
+    never touched."""
+    if not isinstance(state, dict):
+        return state
+    for origin in state.get("origins") or []:
+        if not isinstance(origin, dict) or not origin.get("indexedDB"):
+            continue
+        try:
+            size = len(json.dumps(origin["indexedDB"]))
+        except (TypeError, ValueError):
+            size = per_origin_cap + 1
+        if size > per_origin_cap:
+            origin.pop("indexedDB", None)
+    return state
 
 
 def mask_snapshot_value(value: Any, is_password: bool) -> str:
@@ -3049,14 +3245,21 @@ class BrowserController:
                 await self.page.keyboard.press("Backspace")
                 await self._human_type(str(params.get("text", "")))
                 await self.cursor_overlay.show_typing_stop(self.page)
+                enter_note = ""
                 if params.get("press_enter", False):
-                    await self.cursor_overlay.show_key(self.page, "Enter")
-                    await self.page.keyboard.press("Enter")
-                    try:
-                        await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
-                    except Exception:
-                        pass
+                    # Same rules as every other type path, including the commit
+                    # gate this replay path used to skip entirely.
+                    blocked, enter_note = await self._enter_after_typing(
+                        None,
+                        action_type=tool_call.action_type,
+                        description="Indexed type (Enter submit)",
+                        target="Enter in replayed field",
+                    )
+                    if blocked is not None:
+                        return blocked
                 description = f"Indexed type into visual index for {visual_index.get('target_description', 'field') if visual_index else 'field'}"
+                if enter_note:
+                    description += f" — {enter_note}"
 
             return ActionResult(
                 success=True,
@@ -3828,6 +4031,60 @@ class BrowserController:
         except Exception:
             return None
 
+    async def _enter_form_shape(self, frame=None) -> Optional[Dict[str, Any]]:
+        target = frame or (self.page.main_frame if self.page is not None else None)
+        if target is None:
+            return None
+        try:
+            shape = await target.evaluate(_ENTER_FORM_SHAPE_JS)
+        except Exception:
+            return None
+        return shape if isinstance(shape, dict) else None
+
+    async def _enter_after_typing(
+        self,
+        frame,
+        *,
+        action_type: ActionType,
+        description: str,
+        target: str,
+    ) -> Tuple[Optional[ActionResult], str]:
+        """Press Enter after a type action, or decline to.
+
+        Returns (blocked_result, note). Inside a form with several text fields
+        Enter is not "confirm this field" — it submits the whole form, half
+        filled (the 2026-10-08 Partiful run pressed it on the last question
+        and tried to submit a page of empty required fields). So it is skipped
+        there and the note tells the model to use the form's own button, which
+        the commit gate sees. A search form keeps its Enter. Otherwise the
+        existing Enter-commit gate decides, exactly as before.
+        """
+        shape = await self._enter_form_shape(frame)
+        if shape and shape.get("in_form") and not shape.get("search") and int(shape.get("text_fields") or 0) >= 2:
+            return None, (
+                f"Enter was NOT pressed: this field is one of {int(shape.get('text_fields') or 0)} text fields "
+                "in one form, where Enter submits the whole form. Fill the remaining fields, then click the "
+                "form's own submit/continue button."
+            )
+        enter_commit = await self._enter_commit_probe(frame)
+        if enter_commit:
+            blocked = await self._gate_commit(
+                action_type=action_type,
+                description=description,
+                info=enter_commit,
+                target=target,
+                frame=frame,
+            )
+            if blocked is not None:
+                return blocked, ""
+        await self.cursor_overlay.show_key(self.page, "Enter")
+        await self.page.keyboard.press("Enter")
+        try:
+            await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
+        except Exception:
+            pass
+        return None, ""
+
     async def _enter_commit_probe(self, frame=None) -> Optional[Dict[str, Any]]:
         """A visible commit-named submit control in the active form, if any.
 
@@ -3910,6 +4167,11 @@ class BrowserController:
             "empty_field_count": max(0, int(info.get("empty_field_count") or 0)),
             "url": page_url,
         }
+        # For the orchestrator's visual check of what is about to be sent. The
+        # Cosmic bridge strips it before anything reaches a card or a log.
+        shot = await self._commit_screenshot_b64()
+        if shot:
+            payload["screenshot_b64"] = shot
         try:
             decision = await self.commit_gate_handler(payload)
         except Exception as exc:
@@ -3937,6 +4199,18 @@ class BrowserController:
                 })
             return None
         self.commit_blocked_count += 1
+        if isinstance(decision, dict) and decision.get("retry_after_fix"):
+            # Held, not refused: the authorizer found something wrong that the
+            # agent itself can correct. "Never retry" would be exactly wrong.
+            return ActionResult(
+                success=False,
+                action_type=action_type,
+                description=description,
+                error=(
+                    f"commit_held: {reason or 'the form is not ready to submit'} Nothing was submitted. "
+                    "Fix exactly that on the page, then submit again — the check runs again then."
+                ),
+            )
         detail = reason or "the user has not authorized this action"
         if user_note:
             detail = f"{detail}. User note: {user_note[:300]}"
@@ -3950,6 +4224,19 @@ class BrowserController:
                 "and continue with anything else that does not commit."
             ),
         )
+
+    async def _commit_screenshot_b64(self) -> str:
+        """Viewport JPEG (base64) of the page a commit is about to submit.
+        Best-effort and bounded: no screenshot just means no visual check."""
+        if self.page is None:
+            return ""
+        try:
+            data = await self.page.screenshot(type="jpeg", quality=60, timeout=3000)
+        except Exception:
+            return ""
+        if not data or len(data) > 2_500_000:
+            return ""
+        return base64.b64encode(data).decode("ascii")
 
     async def _apply_commit_field_edits(self, decision: Any, frame: Any) -> None:
         """Write user-corrected card values into the form, just before it commits.
@@ -4064,6 +4351,9 @@ class BrowserController:
                 description=f"Commit authorization (gate off): {target}",
                 output=json.dumps({"authorized": True, "gate": "off"}),
             )
+        shot = await self._commit_screenshot_b64()
+        if shot:
+            payload["screenshot_b64"] = shot
         try:
             decision = await self.commit_gate_handler(payload)
         except Exception as exc:
@@ -4074,6 +4364,17 @@ class BrowserController:
         else:
             allowed = bool(decision)
             reason = ""
+        if not allowed and isinstance(decision, dict) and decision.get("retry_after_fix"):
+            self.commit_blocked_count += 1
+            return ActionResult(
+                success=False,
+                action_type=ActionType.REQUEST_COMMIT_AUTHORIZATION,
+                description=f"Commit held for a fix: {target}",
+                error=(
+                    f"commit_held: {reason or 'the form is not ready to submit'} Nothing was submitted. "
+                    "Fix exactly that on the page, then request authorization again."
+                ),
+            )
         if not allowed:
             self.commit_blocked_count += 1
             return ActionResult(
@@ -4139,21 +4440,16 @@ class BrowserController:
         await self.page.keyboard.press("Backspace")
         await self._human_type(text)
         await self.cursor_overlay.show_typing_stop(self.page)
+        enter_note = ""
         if press_enter:
-            enter_commit = await self._enter_commit_probe()
-            if enter_commit:
-                blocked = await self._gate_commit(
-                    action_type=ActionType.VISUAL_TYPE,
-                    description=f"Type '{text[:60]}' (Enter submit)",
-                    info=enter_commit,
-                    target=f"Enter in '{field_description[:80]}'",
-                )
-                if blocked is not None:
-                    return blocked
-            await self.cursor_overlay.show_key(self.page, "Enter")
-            await self.page.keyboard.press("Enter")
-            try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
-            except: pass
+            blocked, enter_note = await self._enter_after_typing(
+                None,
+                action_type=ActionType.VISUAL_TYPE,
+                description=f"Type '{text[:60]}' (Enter submit)",
+                target=f"Enter in '{field_description[:80]}'",
+            )
+            if blocked is not None:
+                return blocked
         # Verify at the grounded point; one JS fill when keystrokes were
         # swallowed. Only main-frame fields are verifiable this way — when the
         # point resolves to nothing readable (e.g. a cross-origin iframe),
@@ -4171,6 +4467,8 @@ class BrowserController:
         description = f"Typed '{desc_text}'"
         if filled_instead:
             description += " — keyboard typing did not stick; filled instead (value verified)"
+        if enter_note:
+            description += f" — {enter_note}"
         return ActionResult(success=True, action_type=ActionType.VISUAL_TYPE, description=description, coordinates=(x, y), metadata={"mimo_grounding": dict(self.last_mimo_grounding or {}), "fill_fallback": filled_instead})
 
     async def _point_field(self, x: int, y: int) -> Dict[str, Any]:
@@ -4517,6 +4815,7 @@ class BrowserController:
         frames = self._frame_search_order()
         self._snapshot_refs = {}
         entries: List[Dict[str, Any]] = []
+        disabled: List[Dict[str, Any]] = []
         per_frame_counts: List[int] = []
         total = 0
         truncated = False
@@ -4532,6 +4831,9 @@ class BrowserController:
                 continue
             frame_entries = result.get("entries") or []
             per_frame_counts.append(len(frame_entries))
+            for item in result.get("disabled") or []:
+                if isinstance(item, dict) and len(disabled) < 15:
+                    disabled.append({"role": str(item.get("role") or ""), "name": str(item.get("name") or "")})
             # nth indexes THIS frame's filtered visible list at recheck time —
             # a global counter would offset every non-main-frame ref and make
             # iframe elements permanently "stale".
@@ -4556,6 +4858,7 @@ class BrowserController:
         return {
             "refs": self._snapshot_refs,
             "entries": entries,
+            "disabled": disabled,
             "total": total,
             "truncated": truncated,
             "frames": len(per_frame_counts),
@@ -4589,7 +4892,11 @@ class BrowserController:
             success=True,
             action_type=ActionType.DOM_SNAPSHOT,
             description=f"Snapshotted {total} interactive elements",
-            output="\n".join([header] + format_snapshot_lines(collected["entries"], start_ref=1)),
+            output="\n".join(
+                [header]
+                + format_snapshot_lines(collected["entries"], start_ref=1)
+                + format_disabled_lines(collected.get("disabled") or [])
+            ),
             metadata={
                 "refs": total,
                 "frames": collected["frames"],
@@ -4732,23 +5039,21 @@ class BrowserController:
             await self.page.keyboard.press("Backspace")
             await self._human_type(text)
             await self.cursor_overlay.show_typing_stop(self.page)
-            if press_enter:
-                enter_commit = await self._enter_commit_probe(frame)
-                if enter_commit:
-                    blocked = await self._gate_commit(
-                        action_type=ActionType.SNAPSHOT_TYPE,
-                        description=f"SnapshotType {ref} (Enter submit)",
-                        info=enter_commit,
-                        target=f"Enter in '{(target_name or parse_ref(ref))[:80]}'",
-                        frame=frame,
-                    )
-                    if blocked is not None:
-                        return blocked
-                await self.cursor_overlay.show_key(self.page, "Enter")
-                await self.page.keyboard.press("Enter")
-                try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
-                except: pass
+            # The echo names the field that received the keystrokes, so it is
+            # read while that field still has focus. Read after Enter, it named
+            # whatever focus moved to (Partiful advances to the phone field on
+            # Enter, and the agent was told its email landed in "phoneNumber").
             echo = await self._read_type_echo(frame)
+            enter_note = ""
+            if press_enter:
+                blocked, enter_note = await self._enter_after_typing(
+                    frame,
+                    action_type=ActionType.SNAPSHOT_TYPE,
+                    description=f"SnapshotType {ref} (Enter submit)",
+                    target=f"Enter in '{(target_name or parse_ref(ref))[:80]}'",
+                )
+                if blocked is not None:
+                    return blocked
             # Verify by locator, not by hope: focus-driven sites (meta.ai
             # steals focus to a media control on click) swallow keystrokes
             # silently. If the text did not land, one deterministic fill
@@ -4797,6 +5102,8 @@ class BrowserController:
                 description += f" — field labeled '{label[:80]}'"
             if warning:
                 description += f" (WARNING: {warning} — if this is not the field you meant, refill the correct field and restore this one)"
+            if enter_note:
+                description += f" — {enter_note}"
             if await self._is_contenteditable_target(locator):
                 self._unsaved_editor_typing = {"chars": len(text), "warned": False}
             return ActionResult(
@@ -5206,23 +5513,18 @@ class BrowserController:
                             await self.page.keyboard.press("Backspace")
                             await self._human_type(text)
                             await self.cursor_overlay.show_typing_stop(self.page)
-                            if press_enter:
-                                enter_commit = await self._enter_commit_probe(frame)
-                                if enter_commit:
-                                    blocked = await self._gate_commit(
-                                        action_type=ActionType.DOM_TYPE,
-                                        description=f"Type into {selector} (Enter submit)",
-                                        info=enter_commit,
-                                        target=f"Enter in '{selector[:80]}'",
-                                        frame=frame,
-                                    )
-                                    if blocked is not None:
-                                        return blocked
-                                await self.cursor_overlay.show_key(self.page, "Enter")
-                                await self.page.keyboard.press("Enter")
-                                try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
-                                except: pass
+                            # Echo first: after Enter, focus may have moved on.
                             echo = await self._read_type_echo(frame)
+                            enter_note = ""
+                            if press_enter:
+                                blocked, enter_note = await self._enter_after_typing(
+                                    frame,
+                                    action_type=ActionType.DOM_TYPE,
+                                    description=f"Type into {selector} (Enter submit)",
+                                    target=f"Enter in '{selector[:80]}'",
+                                )
+                                if blocked is not None:
+                                    return blocked
                             # Same locator-verified landing check as the CSS
                             # path; one fill when keystrokes were swallowed.
                             final_value = await self._field_value(locator)
@@ -5265,6 +5567,8 @@ class BrowserController:
                             description, warning = _type_echo_description(selector, label, text, previous_value, frame_note + tag_note, is_secret=is_secret)
                             if filled_instead:
                                 description += " — keyboard typing did not stick; filled instead (value verified)"
+                            if enter_note:
+                                description += f" — {enter_note}"
                             if await self._is_contenteditable_target(locator):
                                 self._unsaved_editor_typing = {"chars": len(text), "warned": False}
                             return ActionResult(
@@ -5375,23 +5679,18 @@ class BrowserController:
                     await self.page.keyboard.press("Backspace")
                     await self._human_type(text)
                     await self.cursor_overlay.show_typing_stop(self.page)
-                    if press_enter:
-                        enter_commit = await self._enter_commit_probe(frame)
-                        if enter_commit:
-                            blocked = await self._gate_commit(
-                                action_type=ActionType.DOM_TYPE,
-                                description=f"Type into {selector} (Enter submit)",
-                                info=enter_commit,
-                                target=f"Enter in '{selector[:80]}'",
-                                frame=frame,
-                            )
-                            if blocked is not None:
-                                return blocked
-                        await self.cursor_overlay.show_key(self.page, "Enter")
-                        await self.page.keyboard.press("Enter")
-                        try: await self.page.wait_for_load_state("domcontentloaded", timeout=2000)
-                        except: pass
+                    # Echo first: after Enter, focus may have moved on.
                     echo = await self._read_type_echo(frame)
+                    enter_note = ""
+                    if press_enter:
+                        blocked, enter_note = await self._enter_after_typing(
+                            frame,
+                            action_type=ActionType.DOM_TYPE,
+                            description=f"Type into {selector} (Enter submit)",
+                            target=f"Enter in '{selector[:80]}'",
+                        )
+                        if blocked is not None:
+                            return blocked
                     # Verify by locator, not by hope — focus-stealing pages
                     # swallow keystrokes silently; one fill replaces them.
                     type_locator = frame.locator(selector).nth(int(result.get("all_index") or 0))
@@ -5418,6 +5717,8 @@ class BrowserController:
                     description, warning = _type_echo_description(selector, label, text, previous_value, frame_note, is_secret=is_secret)
                     if filled_instead:
                         description += " — keyboard typing did not stick; filled instead (value verified)"
+                    if enter_note:
+                        description += f" — {enter_note}"
                     if await self._is_contenteditable_target(type_locator):
                         self._unsaved_editor_typing = {"chars": len(text), "warned": False}
                     return ActionResult(
@@ -6577,6 +6878,39 @@ class BrowserController:
 
         return VerificationStatus.NO_CHANGE, 0.0
 
+    async def form_field_values(self) -> List[Dict[str, str]]:
+        """Visible form fields as {label, value}, across same-origin frames.
+        Read by the takeover before and after a human drives the page."""
+        rows: List[Dict[str, str]] = []
+        for frame in self._frame_search_order():
+            try:
+                got = await frame.evaluate(_FORM_VALUES_JS)
+            except Exception:
+                continue
+            if isinstance(got, list):
+                rows.extend(row for row in got if isinstance(row, dict))
+            if len(rows) >= 60:
+                break
+        return rows[:60]
+
+    async def _persist_storage_state(self, state_path: Path) -> None:
+        """Write the session for the next run: cookies, localStorage AND
+        IndexedDB. Firebase-style sites keep their login in IndexedDB, so a
+        cookies+localStorage file silently logged the 2026-10-08 Partiful
+        re-dispatch out of the session the user had just signed in to. Each
+        origin's IndexedDB is capped (see cap_indexed_db) so one site's cache
+        cannot bloat the file every run loads, and the write is atomic so a
+        crash mid-write never leaves a corrupt file behind."""
+        try:
+            state = await self.context.storage_state(indexed_db=True)
+        except TypeError:  # Playwright < 1.51 has no indexed_db option
+            state = await self.context.storage_state()
+        state = cap_indexed_db(state)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = state_path.with_name(state_path.name + ".tmp")
+        tmp_path.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp_path, state_path)
+
     async def close(self):
         # In CDP mode, ask the agent Chrome to exit via the browser-level
         # Browser.close command FIRST: Chrome then flushes cookies/session
@@ -6598,9 +6932,7 @@ class BrowserController:
             # without it every retry re-authenticates and re-prompts the user.
             if self.config.storage_state_path and self.context is not None:
                 try:
-                    state_path = Path(self.config.storage_state_path).expanduser()
-                    state_path.parent.mkdir(parents=True, exist_ok=True)
-                    await self.context.storage_state(path=str(state_path))
+                    await self._persist_storage_state(Path(self.config.storage_state_path).expanduser())
                 except Exception:
                     pass
             try:

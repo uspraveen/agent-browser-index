@@ -462,3 +462,72 @@ def test_watchdog_propagates_a_run_failure_unchanged():
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ------------------------------------------------------------- form delta
+
+
+def test_form_diff_reports_filled_changed_and_newly_answered_fields():
+    from takeover import diff_form_values
+
+    before = [
+        {"label": "Your Name", "value": "uspraveenraj@gmail.com"},
+        {"label": "Phone Number", "value": ""},
+        {"label": "Follow organizers", "value": "checked"},
+    ]
+    after = [
+        {"label": "Your Name", "value": "Praveen Raj"},
+        {"label": "Phone Number", "value": "5018910400"},
+        {"label": "Follow organizers", "value": "checked"},
+        {"label": "What is your LinkedIn? *", "value": ""},
+        {"label": "First name *", "value": "Praveen Raj"},
+    ]
+    changes = diff_form_values(before, after)
+    fields = [c["field"] for c in changes]
+    assert fields == ["Your Name", "Phone Number", "First name *"]
+    assert changes[0]["before"] == "uspraveenraj@gmail.com" and changes[0]["after"] == "Praveen Raj"
+    assert changes[2].get("new") is True
+
+
+def test_form_diff_claims_nothing_without_a_before_reading():
+    from takeover import diff_form_values
+
+    assert diff_form_values(None, [{"label": "x", "value": "y"}]) == []
+
+
+def test_summary_names_the_fields_the_human_filled():
+    text = describe_takeover(_record(form_changes=[
+        {"field": "Your Name", "before": "", "after": "Praveen Raj"},
+        {"field": "Phone Number", "before": "", "after": "5018910400"},
+    ]))
+    assert "stayed on the same page" in text
+    assert "filled or changed 2 form field(s)" in text
+    assert "'Your Name' = 'Praveen Raj'" in text
+
+
+def test_run_takeover_records_form_changes_from_the_browser():
+    class FormBrowser(FakeBrowser):
+        def __init__(self):
+            super().__init__(states=[FakeState("https://a.test/rsvp", "RSVP"), FakeState("https://a.test/rsvp", "RSVP")])
+            self._readings = [
+                [{"label": "Your Name", "value": ""}],
+                [{"label": "Your Name", "value": "Praveen Raj"}],
+            ]
+
+        async def form_field_values(self):
+            return self._readings.pop(0)
+
+    session = TakeoverSession()
+    browser = FormBrowser()
+
+    async def scenario():
+        session.request_pause()
+        task = asyncio.ensure_future(run_takeover(session=session, browser=browser))
+        await asyncio.sleep(0.03)
+        session.resume()
+        return await task
+
+    record = asyncio.run(scenario())
+    assert record.form_changes == [{"field": "Your Name", "before": "", "after": "Praveen Raj"}]
+    assert record.to_dict()["form_changes"] == record.form_changes
+    assert "Praveen Raj" in record.summary
