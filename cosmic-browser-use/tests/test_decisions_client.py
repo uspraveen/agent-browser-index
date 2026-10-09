@@ -245,6 +245,13 @@ def test_openai_request_translates_every_question_type():
     assert by_name["fits"] == {"type": "predicate", "name": "fits", "instructions": "It is the wrong kind of data."}
 
 
+def test_structured_choice_descriptions_stay_json():
+    body = {"state": "s", "questions": {"click_target": {"type": "choice", "instructions": "which?", "criteria": {
+        "@e1": {"element": "[@e1] Your Name", "current_value": "x"}, "@e2": {"element": "[@e2] Email"}}}}}
+    request, _local = openai_request(body, "gpt-6-luna")
+    assert request["questions"][0]["choices"][0]["description"] == '{"element": "[@e1] Your Name", "current_value": "x"}'
+
+
 def test_noul_criteria_ride_along_and_plain_state_is_json():
     body = {"state": {"goal": "g"}, "questions": {"v": {"type": "noul", "instructions": "Needs vision?",
                                                         "criteria": {"true": "pixels", "false": "table"}}}}

@@ -117,7 +117,10 @@ def openai_request(body: Dict[str, Any], model: str) -> Tuple[Dict[str, Any], Di
             for value, description in criteria.items():
                 choice = {"value": value}
                 if description is not None:
-                    choice["description"] = _text(description)
+                    # Structured descriptions (an element and its current
+                    # value) stay JSON: written as "key: value" text, OpenAI
+                    # picked the wrong Wikipedia link in the live check.
+                    choice["description"] = description if isinstance(description, str) else json.dumps(description, ensure_ascii=False)
                 choices.append(choice)
             questions_out.append({"type": "choice", "name": name, "instructions": instructions, "choices": choices})
         elif kind == "score":
