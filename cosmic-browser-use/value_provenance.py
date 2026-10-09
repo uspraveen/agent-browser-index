@@ -149,6 +149,19 @@ class TypeValueGuard:
                     f"Is {value!r} a sensible thing to enter in a form field labeled {field!r}? "
                     "(For example, an email address is not a sensible entry for a name field.)"
                 ),
+                # OpenAI's decider (the fallback) rated an email in a "First
+                # name" field a fit at 1.00 under the wording above; asked the
+                # other way round it caught every misfit in the 2026-10-09
+                # bake-off. `invert` turns its answer back into "fits".
+                "fallback": {
+                    "invert": True,
+                    "instructions": (
+                        f"The value {value!r} is the wrong kind of data for a form field labeled "
+                        f"{field!r} — for example an email address typed into a name or ZIP-code "
+                        "field, a person's name typed into an email field, or free text typed into "
+                        "a phone or card-number field."
+                    ),
+                },
             }
         try:
             answers_out = await judge({"goal": goal[:2000], "field": field, "value": value[:500]}, questions)

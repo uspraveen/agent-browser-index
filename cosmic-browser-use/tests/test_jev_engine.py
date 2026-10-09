@@ -755,3 +755,89 @@ class TestStepSnapshotReuse:
         asyncio.run(engine.decide_step(_context(), screenshot_b64="x", snapshot=snapshot))
         assert browser.snapshot_calls == []
         assert bodies[0]["state"]["disabled_controls"] == ["button Continue"]
+
+
+# --------------------------------------------------------------------- #
+# Busy Perplexity: retries, then OpenAI's Decisions API (2026-10-09)
+
+_PPLX_URL = "https://api.perplexity.ai/v1/decisions"
+_OPENAI_URL = "https://api.openai.com/v1/decisions"
+
+
+def _openai_from(script):
+    """An OpenAI-shaped reply for whatever the engine asked, per a script."""
+    def reply(request_json):
+        answers = []
+        for q in request_json["questions"]:
+            if q["type"] == "choice":
+                values = [c["value"] for c in q["choices"]]
+                pick = {"operation": script.get("operation"), "click_target": script.get("click")}.get(q["name"])
+                pick = pick if pick in values else values[0]
+                answers.append({"type": "choice", "name": q["name"], "choice": pick, "confidence": 0.9,
+                                "probabilities": [{"value": v, "probability": round(0.9 if v == pick else 0.1 / (len(values) - 1), 2)} for v in values]})
+            elif q["type"] == "score":
+                answers.append({"type": "score", "name": q["name"], "score": 0.5, "confidence": 0.8, "probabilities": []})
+            else:
+                answers.append({"type": "predicate", "name": q["name"], "probability": script.get(q["name"], 0.0)})
+        return {"model": "gpt-6-luna", "answers": answers, "usage": {"input_tokens": 1}}
+    return reply
+
+
+def _busy_pplx_engine(openai_script, pplx_status=429, openai_status=200):
+    import decisions_client
+    decisions_client._COOLDOWN_UNTIL.clear()
+    calls = []
+
+    def handler(request):
+        url = str(request.url)
+        calls.append((url, json.loads(request.content)))
+        if url == _PPLX_URL:
+            return httpx.Response(pplx_status, text="busy")
+        if openai_status != 200:
+            return httpx.Response(openai_status, text="down")
+        return httpx.Response(200, json=_openai_from(openai_script)(json.loads(request.content)))
+
+    engine = _engine(handler=handler, config_overrides={
+        "provider": "pplx", "vision": True, "api_url": _PPLX_URL, "attempts": 3,
+        "retry_statuses": (429, 500, 502, 503, 529), "retry_max_wait_ms": 0, "fallback_api_key": "sk-test",
+    })
+    return engine, calls
+
+
+class TestDeciderFallback:
+    def test_a_busy_perplexity_step_is_decided_by_openai(self):
+        engine, calls = _busy_pplx_engine({"operation": "CLICK", "click": "@e3"})
+        response = asyncio.run(engine.decide_step(_context(), screenshot_b64=_WEBP_B64))
+        assert response is not None
+        assert response.tool_call.action_type == ActionType.SNAPSHOT_CLICK
+        assert response.tool_call.parameters["ref"] == "@e3"
+        assert [u for u, _ in calls] == [_PPLX_URL] * 3 + [_OPENAI_URL]
+        assert (engine.stats["primary_retries"], engine.stats["fallback_calls"], engine.stats["api_failures"]) == (2, 1, 0)
+        assert engine.last_debug["provider"] == "openai" and engine.last_debug["primary_error"] == "HTTP 429"
+        openai_request = calls[-1][1]
+        assert openai_request["model"] == "gpt-6-luna"
+        assert any(p["type"] == "input_image" for p in openai_request["input"][0]["content"])
+        import decisions_client
+        decisions_client._COOLDOWN_UNTIL.clear()
+
+    def test_both_providers_down_is_one_failure(self):
+        engine, _calls = _busy_pplx_engine({}, pplx_status=503, openai_status=500)
+        assert asyncio.run(engine.decide_step(_context(), screenshot_b64=_WEBP_B64)) is None
+        assert engine.stats["api_failures"] == 1
+        assert "fallback HTTP 500" in engine.last_debug["failure"]
+
+    def test_the_guard_reads_openais_inverted_misfit_answer_as_fits(self):
+        from value_provenance import TypeValueGuard
+        # OpenAI answers the rephrased question: P(wrong kind of data) = 0.97.
+        engine, calls = _busy_pplx_engine({"personal": 0.02, "fits": 0.97})
+        guard = TypeValueGuard(decider=engine)
+        refusal = asyncio.run(guard.check(
+            tool_call=ToolCall(action_type=ActionType.SNAPSHOT_TYPE, parameters={"ref": "@e1", "text": "someone@example.com"}),
+            goal="RSVP for me", notes=[], answers=[], refs={"@e1": {"name": "First name"}},
+        ))
+        assert refusal is not None and refusal.startswith("Held back typing")
+        assert "fallback" not in calls[0][1]["questions"]["fits"]  # Perplexity got the original wording
+        fits_q = next(q for q in calls[-1][1]["questions"] if q["name"] == "fits")
+        assert fits_q["instructions"].startswith("The value 'someone@example.com' is the wrong kind of data")
+        import decisions_client
+        decisions_client._COOLDOWN_UNTIL.clear()

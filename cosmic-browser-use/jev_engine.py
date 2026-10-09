@@ -21,7 +21,6 @@ memory, and escalation state machines are inherited unchanged. Jev never
 touches a Playwright locator directly.
 """
 
-import asyncio
 import base64
 import json
 import math
@@ -35,6 +34,7 @@ import httpx
 from time_context import current_time_context
 
 from cosmic_types import ActionType, LLMResponse, LLMTier, ToolCall
+from decisions_client import OPENAI_DECIDER_MODEL, OPENAI_DECISIONS_URL, post_decisions
 
 # Visible text for Jev's page state. Offscreen and hidden content stays out
 # of the model context, mirroring how the rendered agent sees the page.
@@ -138,6 +138,10 @@ class JevEngineConfig:
     Perplexity's Decisions API (pplx-decider, multimodal). With `vision` on,
     the step screenshot rides inside `state` as an image part, so the decider
     reads the page the way a person does instead of guessing from a table.
+
+    The pplx provider retries a busy Perplexity (10 requests/second per
+    organization, shared by every run) and then falls back to OpenAI's
+    Decisions API when an OpenAI key is configured (decisions_client).
     """
 
     api_key: str = ""
@@ -153,6 +157,15 @@ class JevEngineConfig:
     standdown_steps: int = 5
     provider: str = "typesafe"
     vision: bool = False
+    # Primary calls per decision and the statuses worth another try.
+    attempts: int = 2
+    retry_statuses: tuple = (429, 503, 529)
+    retry_max_wait_ms: int = 1000
+    # OpenAI Decisions fallback (pplx provider only); empty key = off.
+    fallback_api_key: str = ""
+    fallback_url: str = OPENAI_DECISIONS_URL
+    fallback_model: str = OPENAI_DECIDER_MODEL
+    fallback_timeout_ms: int = 8000
 
     @classmethod
     def from_env(cls, provider: str = "typesafe") -> "JevEngineConfig":
@@ -166,6 +179,7 @@ class JevEngineConfig:
             standdown_steps=int(os.getenv("COSMIC_JEV_STANDDOWN_STEPS", "5")),
         )
         if str(provider or "").strip().lower() == "pplx":
+            fallback_on = os.getenv("COSMIC_DECIDER_FALLBACK", "openai").strip().lower() not in {"", "0", "false", "off", "no", "none"}
             return cls(
                 api_key=os.getenv("PERPLEXITY_API_KEY", ""),
                 api_url=os.getenv("PERPLEXITY_DECISIONS_URL", PPLX_DECISIONS_URL),
@@ -174,6 +188,13 @@ class JevEngineConfig:
                 timeout_ms=int(os.getenv("PERPLEXITY_DECIDER_TIMEOUT_MS", "12000")),
                 provider="pplx",
                 vision=os.getenv("COSMIC_DECIDER_VISION", "1").strip().lower() not in {"0", "false", "off", "no"},
+                attempts=max(1, int(os.getenv("COSMIC_DECIDER_PPLX_ATTEMPTS", "3"))),
+                retry_statuses=(429, 500, 502, 503, 529),
+                retry_max_wait_ms=int(os.getenv("COSMIC_DECIDER_RETRY_MAX_WAIT_MS", "1000")),
+                fallback_api_key=(os.getenv("OPENAI_DECIDER_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip() if fallback_on else "",
+                fallback_url=os.getenv("OPENAI_DECISIONS_URL", OPENAI_DECISIONS_URL),
+                fallback_model=os.getenv("OPENAI_DECIDER_MODEL", OPENAI_DECIDER_MODEL),
+                fallback_timeout_ms=int(os.getenv("OPENAI_DECIDER_TIMEOUT_MS", "8000")),
                 **shared,
             )
         return cls(
@@ -468,6 +489,8 @@ class JevEngine:
             "text_helper_calls": 0,
             "note_helper_calls": 0,
             "api_failures": 0,
+            "primary_retries": 0,
+            "fallback_calls": 0,
             "standdowns": 0,
             "total_latency_ms": 0.0,
         }
@@ -485,6 +508,8 @@ class JevEngine:
         self._satisfied: Dict[str, Dict[str, str]] = {}
         # Filled per decide_step call for the main loop's cosmic_debug event.
         self.last_debug: Dict[str, Any] = {}
+        self._last_provider: Optional[str] = None
+        self._last_primary_error: Optional[str] = None
 
     @property
     def available(self) -> bool:
@@ -708,7 +733,10 @@ class JevEngine:
             "elements": collected.get("total"),
             "latency_ms": latency_ms,
             "model": result.get("model"),
+            "provider": self._last_provider,
         }
+        if self._last_primary_error:
+            self.last_debug["primary_error"] = self._last_primary_error
 
         # Vision judgment: the dedicated noul answer or the explicit operation.
         if needs_vision >= 0.6 and operation != "ESCALATE_VISION":
@@ -947,46 +975,35 @@ class JevEngine:
     async def judge(self, state: Dict[str, Any], questions: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """One side question to the decider (e.g. the type-value guard's).
         Text-only, and outside the fast path's breaker: a failed side question
-        must never disable the fast path, and never raises."""
+        must never disable the fast path, and never raises. Retries and the
+        OpenAI fallback apply here exactly as for steps."""
         if not self.config.api_key:
             return None
         try:
-            response = await self.client.post(
-                self.config.api_url,
-                json={"model": self.config.model, "state": state, "questions": questions},
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
+            data, meta = await post_decisions(
+                self.client, self.config, {"model": self.config.model, "state": state, "questions": questions}
             )
-            if response.is_error:
-                return None
-            return (response.json() or {}).get("answers")
         except Exception:
             return None
+        self._count_transport(meta)
+        if not isinstance(data, dict):
+            return None
+        return data.get("answers")
 
     async def _post(self, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        for attempt in range(2):
-            try:
-                response = await self.client.post(
-                    self.config.api_url,
-                    json=body,
-                    headers={"Authorization": f"Bearer {self.config.api_key}"},
-                )
-            except httpx.HTTPError as exc:
-                self._record_failure(f"transport: {type(exc).__name__}")
-                return None
-            if response.status_code in {429, 503, 529} and attempt == 0:
-                # Never time.sleep in the event loop: it froze the live frame
-                # relay and the takeover listener for the whole back-off.
-                await asyncio.sleep(0.5)
-                continue
-            if response.is_error:
-                self._record_failure(f"HTTP {response.status_code}")
-                return None
-            try:
-                return response.json()
-            except ValueError:
-                self._record_failure("non-JSON response")
-                return None
-        return None
+        data, meta = await post_decisions(self.client, self.config, body)
+        self._count_transport(meta)
+        if data is None:
+            self._record_failure(meta.get("error") or "no answer")
+            return None
+        return data
+
+    def _count_transport(self, meta: Dict[str, Any]) -> None:
+        self._last_provider = meta.get("provider")
+        self._last_primary_error = meta.get("error") if meta.get("fallback") else None
+        self.stats["primary_retries"] += int(meta.get("retries") or 0)
+        if meta.get("fallback"):
+            self.stats["fallback_calls"] += 1
 
     def _record_failure(self, reason: str) -> None:
         self.stats["api_failures"] += 1
