@@ -2348,7 +2348,7 @@ async def main():
             temperature=args.temperature if args.temperature is not None else default_temp,
         )
 
-        # Escalation brain: frontier model (default: grok-4.6 on xAI).
+        # Escalation brain: frontier model (default: grok-4.7 on xAI).
         # A Fireworks-style --slow-model override stays on Fireworks; anything
         # else runs on xAI. Without an xAI key, escalation degrades gracefully.
         escalation_model = (args.slow_model or os.getenv("ESCALATION_MODEL") or resolve_escalation_model()).strip()

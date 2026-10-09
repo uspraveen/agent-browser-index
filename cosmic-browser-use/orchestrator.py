@@ -14,6 +14,7 @@ Supports:
 - Streaming support
 """
 import asyncio
+import base64
 import inspect
 import json
 import os
@@ -265,98 +266,152 @@ class GeminiProvider(BaseLLMProvider):
         }
 
 
+def sniff_image_media_type(base64_data: str, declared: str = "") -> str:
+    """The real media type of a base64 image, from its magic number.
+
+    The step loop labels every screenshot image/jpeg whatever the file is
+    (captures are WebP), and the Anthropic API checks the declared type
+    against the bytes. Falls back to the declared type when unrecognised."""
+    try:
+        head = base64.b64decode(base64_data[:24] + "=" * (-len(base64_data[:24]) % 4))
+    except (ValueError, TypeError):
+        return declared or "image/jpeg"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return declared or "image/jpeg"
+
+
+class ModelRefusalError(RuntimeError):
+    """The model declined the request (stop_reason == "refusal"). Raised so a
+    fallback model or the frontier tier takes the step instead of the run
+    acting on an empty decision."""
+
+
 class ClaudeProvider(BaseLLMProvider):
-    """Anthropic Claude provider"""
-    
+    """Anthropic Claude via the official SDK (default: claude-haiku-5-5).
+
+    Haiku 5.5 rejects non-default sampling params, thinking budgets and
+    assistant prefill with a 400, so none of those are ever sent. Thinking is
+    adaptive by default on the 5.x models; depth is steered with
+    output_config.effort (BROWSER_AGENT_CLAUDE_EFFORT, default "low" — a
+    per-step browser decision is a fast call), and
+    BROWSER_AGENT_CLAUDE_THINKING=disabled turns it off (accepted on Haiku 5.5
+    at effort high or below). A user-scoped API key needs the workspace it
+    bills to: ANTHROPIC_WORKSPACE_ID becomes the anthropic-workspace-id header.
+    """
+
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        import anthropic  # official SDK; imported here so other providers never need it
+
+        default_headers: Dict[str, str] = {}
+        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
+        if workspace_id:
+            default_headers["anthropic-workspace-id"] = workspace_id
+        self._anthropic = anthropic
+        self.sdk = anthropic.AsyncAnthropic(
+            api_key=config.api_key or None,
+            base_url=config.api_base or None,
+            timeout=config.timeout_ms / 1000,
+            max_retries=2,
+            default_headers=default_headers or None,
+        )
+        effort = os.getenv("BROWSER_AGENT_CLAUDE_EFFORT", "low").strip().lower()
+        self.effort = effort if effort in {"low", "medium", "high", "xhigh", "max"} else "low"
+        self.thinking_disabled = os.getenv("BROWSER_AGENT_CLAUDE_THINKING", "").strip().lower() in {
+            "disabled", "off", "0", "false", "none",
+        }
+
+    @staticmethod
+    def _to_claude_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """OpenAI-shaped messages (image_url data URLs) -> Messages API blocks."""
+        claude_messages = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                claude_messages.append({"role": msg["role"], "content": content})
+                continue
+            blocks = []
+            for item in content:
+                if item.get("type") == "text":
+                    blocks.append({"type": "text", "text": item["text"]})
+                elif item.get("type") == "image_url":
+                    url = str((item.get("image_url") or {}).get("url") or "")
+                    if url.startswith("data:"):
+                        header, data = url.split(",", 1)
+                        declared = header.split(":", 1)[1].split(";", 1)[0]
+                        blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": sniff_image_media_type(data, declared),
+                                "data": data,
+                            },
+                        })
+                    elif url:
+                        blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+            claude_messages.append({"role": msg["role"], "content": blocks})
+        return claude_messages
+
     async def generate(
         self,
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_mode: bool = False,
     ) -> Dict[str, Any]:
-        """Call Claude API."""
-        url = self.config.api_base or "https://api.anthropic.com/v1/messages"
-        
-        # FIXED: Use API key from config
-        headers = {
-            "x-api-key": self.config.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        
-        # Convert OpenAI-format messages to Claude format
-        # Claude requires images in a different format than OpenAI
-        claude_messages = []
-        for msg in messages:
-            claude_msg = {"role": msg["role"]}
-            
-            # Handle multimodal content
-            if isinstance(msg["content"], list):
-                claude_content = []
-                for item in msg["content"]:
-                    if item["type"] == "text":
-                        claude_content.append({"type": "text", "text": item["text"]})
-                    elif item["type"] == "image_url":
-                        # Convert OpenAI image format to Claude format
-                        img_data = item["image_url"]["url"]
-                        if img_data.startswith("data:"):
-                            # Parse: data:image/jpeg;base64,<base64data>
-                            parts = img_data.split(",", 1)
-                            media_type = parts[0].split(":")[1].split(";")[0]  # Extract "image/jpeg"
-                            base64_data = parts[1]
-                            
-                            claude_content.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": base64_data,
-                                }
-                            })
-                        else:
-                            # URL-based image (if ever used)
-                            claude_content.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "url",
-                                    "url": img_data,
-                                }
-                            })
-                claude_msg["content"] = claude_content
-            else:
-                # Simple text content
-                claude_msg["content"] = msg["content"]
-            
-            claude_messages.append(claude_msg)
-        
-        payload = {
+        """One Messages API call. `json_mode` is accepted for interface parity;
+        the prompts already demand JSON and prefill is not available."""
+        request: Dict[str, Any] = {
             "model": self.config.model_id,
-            "messages": claude_messages,  # Use converted messages
             "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
+            "messages": self._to_claude_messages(messages),
+            "output_config": {"effort": self.effort},
         }
-        
+        if self.thinking_disabled:
+            request["thinking"] = {"type": "disabled"}
         if system_prompt:
-            payload["system"] = system_prompt
-        
+            request["system"] = system_prompt
         if tools:
-            payload["tools"] = tools
-        
-        response = await self.client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        # Extract text content
-        content = ""
-        for block in data["content"]:
-            if block["type"] == "text":
-                content += block["text"]
-        
-        return {
-            "content": content,
-            "raw_response": data,
-        }
+            request["tools"] = tools
+
+        response = await self.sdk.messages.create(**request)
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            prompt = (
+                int(getattr(usage, "input_tokens", 0) or 0)
+                + int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+                + int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            )
+            completion = int(getattr(usage, "output_tokens", 0) or 0)
+            self.accumulate_usage({
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+            })
+        if getattr(response, "stop_reason", None) == "refusal":
+            details = getattr(response, "stop_details", None)
+            category = getattr(details, "category", None) if details is not None else None
+            raise ModelRefusalError(f"{self.config.model_id} declined this step (category={category})")
+
+        content = "".join(
+            getattr(block, "text", "") for block in response.content if getattr(block, "type", "") == "text"
+        )
+        return {"content": content, "raw_response": response.to_dict() if hasattr(response, "to_dict") else {}}
+
+    async def close(self):
+        try:
+            await self.sdk.close()
+        except Exception:
+            pass
+        await super().close()
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -367,27 +422,43 @@ class OpenAIProvider(BaseLLMProvider):
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        json_mode: bool = False,
     ) -> Dict[str, Any]:
         """Call OpenAI API."""
         url = self.config.api_base or "https://api.openai.com/v1/chat/completions"
-        
+
         # FIXED: Use API key from config
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        
+
         # Add system prompt as first message
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + messages
-        
-        payload = {
-            "model": self.config.model_id,
-            "messages": messages,
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-        }
-        
+
+        model = str(self.config.model_id or "")
+        if model.startswith(("gpt-5", "gpt-6")):
+            # Reasoning models reject temperature and max_tokens; output is
+            # capped with max_completion_tokens and depth set by
+            # reasoning_effort (BROWSER_AGENT_OPENAI_REASONING_EFFORT, default
+            # "low": ~0.9s for a gpt-6-luna screenshot decision).
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_completion_tokens": self.config.max_tokens,
+                "reasoning_effort": os.getenv("BROWSER_AGENT_OPENAI_REASONING_EFFORT", "low").strip() or "low",
+            }
+        else:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
+            }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
         if tools:
             payload["tools"] = tools
         
@@ -701,6 +772,54 @@ class VLLMProvider(BaseLLMProvider):
         }
 
 
+class FallbackProvider(BaseLLMProvider):
+    """A base brain with a same-tier fallback model.
+
+    The primary answers every step; any error from it — HTTP failure,
+    timeout, a refusal — sends that one step to the fallback model instead,
+    so a provider hiccup costs one slower step rather than an escalation to
+    the frontier brain. If the fallback fails too, the error propagates and
+    the planner's own frontier failover takes over, exactly as before.
+    Usage stays separated per model so cost is reported against what ran.
+    """
+
+    def __init__(self, primary: BaseLLMProvider, fallback: BaseLLMProvider):
+        self.config = primary.config
+        self.primary = primary
+        self.fallback = fallback
+        self.fallback_count = 0
+        self.last_error = ""
+
+    @property
+    def usage_totals(self) -> Dict[str, int]:  # type: ignore[override]
+        return self.primary.usage_totals
+
+    async def generate(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        try:
+            return await self.primary.generate(messages=messages, system_prompt=system_prompt, tools=tools, **kwargs)
+        except Exception as exc:
+            self.fallback_count += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+            print(
+                f"\n⚠️  [Orchestrator] {self.primary.config.model_id} failed ({type(exc).__name__}) — "
+                f"this step goes to {self.fallback.config.model_id}."
+            )
+            return await self.fallback.generate(messages=messages, system_prompt=system_prompt, tools=tools, **kwargs)
+
+    async def close(self):
+        for provider in (self.primary, self.fallback):
+            try:
+                await provider.close()
+            except Exception:
+                pass
+
+
 class Orchestrator:
     """
     Multi-LLM orchestrator with automatic tiering.
@@ -734,7 +853,17 @@ class Orchestrator:
         self.total_latency_ms = {tier: 0.0 for tier in LLMTier}
     
     def _create_provider(self, config: LLMConfig) -> BaseLLMProvider:
-        """Factory method to create provider based on config."""
+        """Factory method to create provider based on config. A config with a
+        `fallback` becomes a FallbackProvider over the two."""
+        fallback_config = getattr(config, "fallback", None)
+        if fallback_config is not None:
+            return FallbackProvider(
+                self._create_single_provider(config),
+                self._create_single_provider(fallback_config),
+            )
+        return self._create_single_provider(config)
+
+    def _create_single_provider(self, config: LLMConfig) -> BaseLLMProvider:
         if config.provider == LLMProvider.GEMINI:
             return GeminiProvider(config)
         elif config.provider == LLMProvider.CLAUDE:
@@ -2203,8 +2332,28 @@ What is the next action to achieve the goal: {context['goal']}?
                     if self.models.get(LLMTier.SLOW) is not self.models.get(LLMTier.FAST)
                     else {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "provider": None, "model": None}
                 ),
+                **self._fallback_usage(),
             },
+            **self._fallback_stats(),
         }
+
+    def _fallback_usage(self) -> Dict[str, Any]:
+        """The base brain's fallback model, reported as its own brain so its
+        cost is priced against the model that actually ran."""
+        base = self.models.get(LLMTier.FAST)
+        if not isinstance(base, FallbackProvider):
+            return {}
+        usage = dict(base.fallback.usage_totals or {})
+        provider = getattr(base.fallback.config, "provider", None)
+        usage["provider"] = getattr(provider, "value", provider)
+        usage["model"] = base.fallback.config.model_id
+        return {"base_fallback": usage}
+
+    def _fallback_stats(self) -> Dict[str, Any]:
+        base = self.models.get(LLMTier.FAST)
+        if not isinstance(base, FallbackProvider):
+            return {}
+        return {"base_fallbacks": {"count": base.fallback_count, "last_error": base.last_error}}
     
     async def close(self):
         """Close all providers."""

@@ -40,14 +40,17 @@ def _env(name: str, default: str = "") -> str:
 def _resolve_model_configs():
     """Build fast/medium/slow LLMConfig triple from env, mirroring main.py's CLI defaults.
 
-    Two model sets, selected by BROWSER_AGENT_MODEL_SET (default "bu"):
+    Three model sets, selected by BROWSER_AGENT_MODEL_SET (default "bu"):
       - "bu" (default): browser-use's hosted bu-2-0 as the base brain (fast
-        tier), GLM 5.3 Flash on Fireworks — the previous default — as the
-        escalation brain (slow tier). Falls back to "legacy" automatically
-        if BROWSER_USE_API_KEY isn't set, so a deploy that hasn't received
-        the key yet keeps working exactly as before.
-      - "legacy": GLM 5.3 Flash (Fireworks) as the base brain, xAI grok-4.6
-        as escalation — the pre-BU default, reachable via
+        tier); escalation is xAI grok-4.7 when XAI_API_KEY is set, else GLM
+        5.3 Flash. Falls back to "legacy" automatically if
+        BROWSER_USE_API_KEY isn't set.
+      - "claude": Claude Haiku 5.5 as the base brain with GPT-6 Luna as its
+        same-tier fallback (when OPENAI_API_KEY is set), same escalation as
+        "bu". Falls back to "bu" without an Anthropic key. A user-scoped key
+        also needs ANTHROPIC_WORKSPACE_ID.
+      - "legacy": GLM 5.3 Flash (Fireworks) as the base brain, xAI grok as
+        escalation — the pre-BU default, reachable via
         BROWSER_AGENT_MODEL_SET=legacy.
     """
     from cosmic_types import LLMConfig, LLMProvider, LLMTier
@@ -58,12 +61,18 @@ def _resolve_model_configs():
         resolve_browser_agent_model_set,
         XAI_BASE_URL,
         BROWSER_USE_BASE_URL,
+        CLAUDE_BASE_MODEL_ID,
+        OPENAI_FALLBACK_MODEL_ID,
     )
 
     fireworks_key = _env("FIREWORKS_API_KEY") or _env("SLIDE_AGENT_FIREWORKS_API_KEY")
     browser_use_key = _env("BROWSER_USE_API_KEY")
+    anthropic_key = _env("BROWSER_AGENT_ANTHROPIC_API_KEY") or _env("ANTHROPIC_API_KEY")
+    openai_key = _env("BROWSER_AGENT_OPENAI_API_KEY") or _env("OPENAI_API_KEY")
     model_set = resolve_browser_agent_model_set()
 
+    if model_set == "claude" and not anthropic_key:
+        model_set = "bu"
     if model_set == "bu" and not browser_use_key:
         model_set = "legacy"
 
@@ -71,6 +80,59 @@ def _resolve_model_configs():
     fast_max_tokens = int(_env("BROWSER_AGENT_MAX_TOKENS", "2048"))
     slow_timeout_ms = int(_env("BROWSER_AGENT_SLOW_TIMEOUT_MS", "120000"))
     slow_max_tokens = int(_env("BROWSER_AGENT_SLOW_MAX_TOKENS", "4096"))
+
+    def escalation_config() -> Optional[LLMConfig]:
+        # Escalation has to point *up* — the frontier model whenever its key
+        # is present, GLM as the no-key fallback (see the "bu" branch below).
+        xai_key = _env("XAI_API_KEY")
+        if xai_key and _env("BROWSER_AGENT_ESCALATION", "").strip().lower() not in {"fireworks", "glm"}:
+            return LLMConfig(
+                provider=LLMProvider.XAI,
+                model_id=_env("XAI_MODEL") or resolve_escalation_model(),
+                api_key=xai_key,
+                api_base=_env("XAI_BASE_URL") or XAI_BASE_URL,
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=slow_max_tokens,
+            )
+        if fireworks_key:
+            return LLMConfig(
+                provider=LLMProvider.FIREWORKS_KIMI,
+                model_id=_env("ESCALATION_FIREWORKS_MODEL") or resolve_fireworks_default_model(),
+                api_key=fireworks_key,
+                api_base=_env("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1",
+                tier=LLMTier.SLOW,
+                timeout_ms=slow_timeout_ms,
+                max_tokens=slow_max_tokens,
+            )
+        return None
+
+    if model_set == "claude":
+        # Claude Haiku 5.5 base brain. Its thinking tokens count toward
+        # max_tokens, so the per-step cap is larger than the bu/GLM 2048.
+        claude_max_tokens = int(_env("BROWSER_AGENT_CLAUDE_MAX_TOKENS", "8192"))
+        fallback_config: Optional[LLMConfig] = None
+        if openai_key:
+            fallback_config = LLMConfig(
+                provider=LLMProvider.OPENAI,
+                model_id=_env("BROWSER_AGENT_FALLBACK_MODEL") or OPENAI_FALLBACK_MODEL_ID,
+                api_key=openai_key,
+                api_base=_env("BROWSER_AGENT_OPENAI_URL") or None,
+                tier=LLMTier.FAST,
+                timeout_ms=fast_timeout_ms,
+                max_tokens=claude_max_tokens,
+            )
+        fast_config = LLMConfig(
+            provider=LLMProvider.CLAUDE,
+            model_id=_env("BROWSER_AGENT_CLAUDE_MODEL") or CLAUDE_BASE_MODEL_ID,
+            api_key=anthropic_key,
+            api_base=_env("ANTHROPIC_BASE_URL") or None,
+            tier=LLMTier.FAST,
+            timeout_ms=fast_timeout_ms,
+            max_tokens=claude_max_tokens,
+            fallback=fallback_config,
+        )
+        return fast_config, None, escalation_config()
 
     if model_set == "bu":
         fast_config = LLMConfig(
@@ -82,40 +144,12 @@ def _resolve_model_configs():
             timeout_ms=fast_timeout_ms,
             max_tokens=fast_max_tokens,
         )
-        medium_config = None
-        slow_config: Optional[LLMConfig] = None
         # Escalation has to point *up*. Pairing bu-2-0 with GLM 5.3 Flash made
         # "escalate" mean falling back to the model that used to be the routine
         # brain, so a genuinely stuck step got no more reasoning than the step
-        # that got stuck. Prefer the frontier model whenever its key is
-        # present — the same one the legacy set escalated to — and keep GLM as
-        # the fallback for a deploy that has no xAI key.
-        xai_key = _env("XAI_API_KEY")
-        prefer_fireworks_escalation = _env("BROWSER_AGENT_ESCALATION", "").strip().lower() in {
-            "fireworks",
-            "glm",
-        }
-        if xai_key and not prefer_fireworks_escalation:
-            slow_config = LLMConfig(
-                provider=LLMProvider.XAI,
-                model_id=_env("XAI_MODEL") or resolve_escalation_model(),
-                api_key=xai_key,
-                api_base=_env("XAI_BASE_URL") or XAI_BASE_URL,
-                tier=LLMTier.SLOW,
-                timeout_ms=slow_timeout_ms,
-                max_tokens=slow_max_tokens,
-            )
-        elif fireworks_key:
-            slow_config = LLMConfig(
-                provider=LLMProvider.FIREWORKS_KIMI,
-                model_id=_env("ESCALATION_FIREWORKS_MODEL") or resolve_fireworks_default_model(),
-                api_key=fireworks_key,
-                api_base=_env("FIREWORKS_BASE_URL") or "https://api.fireworks.ai/inference/v1",
-                tier=LLMTier.SLOW,
-                timeout_ms=slow_timeout_ms,
-                max_tokens=slow_max_tokens,
-            )
-        return fast_config, medium_config, slow_config
+        # that got stuck. escalation_config() prefers the frontier model
+        # whenever its key is present and keeps GLM as the no-key fallback.
+        return fast_config, None, escalation_config()
 
     # legacy: GLM 5.3 Flash (Fireworks) base + xAI grok escalation — unchanged.
     if not fireworks_key:

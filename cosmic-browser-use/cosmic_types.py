@@ -82,7 +82,7 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     # Fireworks OpenAI-compatible API (e.g. GLM 5.3 Flash — accounts/fireworks/models/glm-5p3-flash, or Kimi K2.6 — accounts/fireworks/models/kimi-k2p6)
     FIREWORKS_KIMI = "fireworks_kimi"
-    # xAI OpenAI-compatible API (grok-4.6) — used as the escalation/frontier brain
+    # xAI OpenAI-compatible API (grok-4.7) — used as the escalation/frontier brain
     XAI = "xai"
     # browser-use's hosted cloud model (default: bu-2-0) — OpenAI-shaped messages,
     # but its own response envelope ({"completion": ..., "usage": ...}), not the
@@ -293,6 +293,9 @@ class LLMConfig:
     temperature: float = 0.3
     supports_vision: bool = True
     tier: LLMTier = LLMTier.MEDIUM
+    # Same-tier fallback model: any error from this model sends that one call
+    # to the fallback before the planner escalates (see FallbackProvider).
+    fallback: Optional["LLMConfig"] = None
 
 
 @dataclass

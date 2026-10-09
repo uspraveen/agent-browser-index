@@ -17,14 +17,20 @@ _KIMI_PROVIDER_ALIASES = {"fireworks", "kimi", "glm", "fireworks_glm", "firework
 FIREWORKS_DEFAULT_MODEL_ID = "accounts/fireworks/models/glm-5p3-flash"
 # Opt-in alternative: Kimi K2.6 on Fireworks.
 FIREWORKS_KIMI_MODEL_ID = "accounts/fireworks/models/kimi-k2p6"
-# Escalation brain: Grok 4.6 on xAI (frontier model, vision-capable, OpenAI-compatible).
-XAI_ESCALATION_MODEL_ID = "grok-4.6"
+# Escalation brain: Grok 4.7 on xAI (frontier model, vision-capable, OpenAI-compatible).
+XAI_ESCALATION_MODEL_ID = "grok-4.7"
 XAI_BASE_URL = "https://api.x.ai/v1"
 
 # browser-use's hosted cloud model — vision-capable, optimized/fast for
 # browser-automation-style decisions. Default base brain for the "bu" model set.
 BROWSER_USE_DEFAULT_MODEL_ID = "bu-2-0"
 BROWSER_USE_BASE_URL = "https://llm.api.browser-use.com"
+
+# "claude" model set: Claude Haiku 5.5 as the base brain, GPT-6 Luna (OpenAI)
+# as its same-tier fallback, the xAI escalation brain above for SLOW.
+CLAUDE_BASE_MODEL_ID = "claude-haiku-5-5"
+OPENAI_FALLBACK_MODEL_ID = "gpt-6-luna"
+_CLAUDE_MODEL_SET_ALIASES = {"claude", "anthropic", "haiku", "claude_haiku"}
 
 # BROWSER_AGENT_MODEL_SET values that mean "use the pre-BU pair" (GLM base +
 # xAI escalation). Anything else (including unset) resolves to "bu".
@@ -52,12 +58,16 @@ def resolve_browser_agent_model_set() -> str:
 
     'bu' (default): browser-use's hosted bu-2-0 as the base brain (fast tier),
     GLM 5.3 Flash on Fireworks — the previous default — as escalation (slow tier).
-    'legacy': GLM 5.3 Flash (Fireworks) as the base brain, xAI grok-4.6 as
+    'legacy': GLM 5.3 Flash (Fireworks) as the base brain, xAI grok as
     escalation — the pre-BU default, kept reachable via BROWSER_AGENT_MODEL_SET=legacy.
+    'claude': Claude Haiku 5.5 as the base brain with GPT-6 Luna as its
+    fallback (BROWSER_AGENT_MODEL_SET=claude).
     """
     raw = (os.getenv("BROWSER_AGENT_MODEL_SET") or "").strip().lower()
     if raw in _LEGACY_MODEL_SET_ALIASES:
         return "legacy"
+    if raw in _CLAUDE_MODEL_SET_ALIASES:
+        return "claude"
     return "bu"
 
 
